@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: Apache-2.0
 //! Asserts the discriminator table still matches reality.
 //!
-//! Two independent checks, because either alone can pass while the table is
+//! Fixtures are every distinct discriminator pump.fun emitted across three
+//! two-hour windows, pulled from CryptoHouse (ADR 0002) together with a real
+//! sample of each one's instruction data. Sourcing them that way rather than by
+//! sampling RPC slots is what surfaced the eleven instructions the first capture
+//! missed — including `create`, the original launch path, which is still live.
+//!
+//! Four independent checks, because any one of them can pass while the table is
 //! wrong:
 //!
-//! 1. **Against the chain.** Every fixture is raw instruction data captured from
-//!    mainnet, paired with the name the program itself logged. Decoding the
-//!    bytes must yield that instruction. This catches a table entry that was
-//!    typed wrong.
-//! 2. **Against the convention.** Recomputing `sha256("global:" + anchor_name)`
-//!    must reproduce the same eight bytes. This catches a fixture captured from
-//!    a mislabelled transaction, and documents where the constants come from.
+//! 1. Real captured bytes decode to the expected instruction.
+//! 2. `sha256("global:" + name)[..8]` reproduces the table's bytes.
+//! 3. Every table entry was actually observed on chain.
+//! 4. Instructions seen on chain but *not* in the table decode to `Unknown` —
+//!    never silently to something else.
 //!
-//! Regenerate fixtures with `python scripts/probe/capture_fixtures.py`.
+//! Regenerate with `python scripts/probe/capture_fixtures_cryptohouse.py`.
 
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
 use radar_decode::pumpfun::{self, Instruction};
 use radar_decode::{Decoded, Discriminator, decode_pumpfun};
 use sha2::{Digest, Sha256};
@@ -25,12 +28,13 @@ const FIXTURES: &str = include_str!("fixtures/pumpfun_instructions.json");
 
 #[derive(serde::Deserialize)]
 struct Fixture {
-    logged_name: String,
-    snake_case: String,
-    discriminator: Vec<u8>,
-    instruction_data_b64: String,
-    data_len: usize,
-    signature: String,
+    discriminator: String,
+    anchor_name: Option<String>,
+    kind: String,
+    observed_count: u64,
+    sample_data_b58: String,
+    min_data_len: usize,
+    example_signature: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -43,25 +47,18 @@ fn load() -> Fixtures {
     serde_json::from_str(FIXTURES).expect("fixtures parse")
 }
 
-/// Maps the name pump.fun logs to the variant it should decode to.
-fn variant_for(logged: &str) -> Option<Instruction> {
-    Some(match logged {
-        "CreateV2" => Instruction::CreateV2,
-        "Buy" => Instruction::Buy,
-        "BuyV2" => Instruction::BuyV2,
-        "BuyExactSolIn" => Instruction::BuyExactSolIn,
-        "BuyExactQuoteInV2" => Instruction::BuyExactQuoteInV2,
-        "Sell" => Instruction::Sell,
-        "SellV2" => Instruction::SellV2,
-        "ClaimCashback" => Instruction::ClaimCashback,
-        "ClaimCashbackV2" => Instruction::ClaimCashbackV2,
-        "CollectCreatorFee" => Instruction::CollectCreatorFee,
-        "CollectCreatorFeeV2" => Instruction::CollectCreatorFeeV2,
-        "DistributeCreatorFees" => Instruction::DistributeCreatorFees,
-        "InitUserVolumeAccumulator" => Instruction::InitUserVolumeAccumulator,
-        "CloseUserVolumeAccumulator" => Instruction::CloseUserVolumeAccumulator,
-        _ => return None,
-    })
+fn decode_b58(s: &str) -> Vec<u8> {
+    bs58::decode(s)
+        .into_vec()
+        .expect("fixture sample is valid base58")
+}
+
+/// The table, keyed by Anchor name.
+fn by_name(name: &str) -> Option<Instruction> {
+    pumpfun::KNOWN
+        .iter()
+        .find(|(_, _, n)| *n == name)
+        .map(|(ix, _, _)| *ix)
 }
 
 #[test]
@@ -70,47 +67,50 @@ fn the_program_id_matches_the_fixtures() {
 }
 
 #[test]
-fn real_mainnet_bytes_decode_to_the_instruction_the_program_logged() {
+fn captured_mainnet_bytes_decode_to_the_expected_instruction() {
     let f = load();
     assert!(!f.instructions.is_empty(), "no fixtures captured");
+    let mut checked = 0;
 
-    for (key, fx) in &f.instructions {
-        let data = base64::engine::general_purpose::STANDARD
-            .decode(&fx.instruction_data_b64)
-            .unwrap_or_else(|e| panic!("{key}: bad base64: {e}"));
-        assert_eq!(
-            data.len(),
-            fx.data_len,
-            "{key}: fixture length disagrees with itself"
-        );
-
-        let Some(expected) = variant_for(&fx.logged_name) else {
+    for (disc_hex, fx) in &f.instructions {
+        let Some(name) = fx.anchor_name.as_deref() else {
+            continue;
+        };
+        let Some(expected) = by_name(name) else {
             panic!(
-                "{key}: mainnet is running an instruction the table does not know \
-                 (sig {}). Add it rather than deleting the fixture.",
-                fx.signature
+                "mainnet emits `{name}` ({disc_hex}, {} times, sig {}) and the table has no \
+                 entry for it. Add it rather than dropping the fixture.",
+                fx.observed_count, fx.example_signature
             );
         };
 
+        let data = decode_b58(&fx.sample_data_b58);
+        assert!(
+            data.len() >= fx.min_data_len,
+            "{name}: sample is shorter than the observed minimum"
+        );
         match decode_pumpfun(&data) {
             Decoded::Known(got) => assert_eq!(
                 got, expected,
-                "{key}: decoded to {got:?} but the program logged {}",
-                fx.logged_name
+                "{name} ({disc_hex}): decoded to {got:?} (sig {})",
+                fx.example_signature
             ),
-            other => panic!(
-                "{key}: expected {expected:?}, got {other:?} (sig {})",
-                fx.signature
-            ),
+            other => panic!("{name} ({disc_hex}): expected {expected:?}, got {other:?}"),
         }
+        checked += 1;
     }
+    assert!(
+        checked >= 20,
+        "only {checked} named fixtures checked; expected the full table"
+    );
 }
 
 #[test]
 fn table_discriminators_match_the_anchor_naming_convention() {
     // Anchor derives these as sha256("global:" + snake_case_name)[..8]. Every
-    // one of the fourteen captured from mainnet matched, so the convention holds
-    // for this program and the constants are not arbitrary.
+    // named instruction captured from mainnet matched, so the constants are
+    // derived rather than arbitrary — but they are stored as bytes, because
+    // bytes are what the chain sends and names are what drift.
     for (ix, bytes, anchor_name) in pumpfun::KNOWN {
         let mut h = Sha256::new();
         h.update(format!("global:{anchor_name}").as_bytes());
@@ -126,61 +126,88 @@ fn table_discriminators_match_the_anchor_naming_convention() {
 }
 
 #[test]
-fn fixture_discriminators_match_the_table() {
+fn fixture_discriminators_agree_with_the_table_bytes() {
     let f = load();
-    for (key, fx) in &f.instructions {
-        let Some(expected) = variant_for(&fx.logged_name) else {
+    for (disc_hex, fx) in &f.instructions {
+        let Some(name) = fx.anchor_name.as_deref() else {
             continue;
         };
-        let captured: [u8; 8] = fx.discriminator[..].try_into().expect("8 bytes");
+        let Some(ix) = by_name(name) else { continue };
         assert_eq!(
-            expected.discriminator().as_bytes(),
-            &captured,
-            "{key}: table and captured bytes disagree"
+            ix.discriminator().to_string(),
+            *disc_hex,
+            "{name}: table bytes and captured bytes disagree"
         );
     }
 }
 
 #[test]
-fn the_snake_case_names_agree_between_fixture_and_table() {
-    // The capture script derives snake_case from the logged name and the table
-    // carries it independently. If those ever disagree, the discriminator in the
-    // table was computed from a different name than the one on chain, and the
-    // convention test would be checking the table against itself.
-    let f = load();
-    for (key, fx) in &f.instructions {
-        let Some(ix) = variant_for(&fx.logged_name) else {
-            continue;
-        };
-        assert_eq!(
-            ix.anchor_name(),
-            fx.snake_case,
-            "{key}: table name and captured name disagree"
-        );
-    }
-}
-
-#[test]
-fn every_table_entry_has_a_fixture() {
+fn every_table_entry_was_observed_on_chain() {
     // A constant with nothing behind it is a claim. If an instruction is in the
-    // table but was never seen on chain, either it is dead or the capture window
-    // was too small -- and either way it should not be silently trusted.
+    // table but never appeared, either it is dead or the capture window was too
+    // narrow — and either way it should not be silently trusted.
     let f = load();
-    let captured: Vec<Instruction> = f
+    let observed: Vec<&str> = f
         .instructions
         .values()
-        .filter_map(|fx| variant_for(&fx.logged_name))
+        .filter_map(|fx| fx.anchor_name.as_deref())
         .collect();
 
-    let missing: Vec<_> = pumpfun::KNOWN
+    let missing: Vec<&str> = pumpfun::KNOWN
         .iter()
-        .map(|(ix, _, _)| *ix)
-        .filter(|ix| !captured.contains(ix))
+        .map(|(_, _, n)| *n)
+        .filter(|n| !observed.contains(n))
         .collect();
 
     assert!(
         missing.is_empty(),
         "table entries never observed on mainnet: {missing:?} — \
-         re-run scripts/probe/capture_fixtures.py over a wider window, or drop them"
+         widen the windows in capture_fixtures_cryptohouse.py, or drop them"
+    );
+}
+
+#[test]
+fn instructions_the_table_does_not_know_decode_to_unknown() {
+    // Three discriminators appear on chain whose names resisted an 8,064-candidate
+    // brute force. They are real instructions and must stay visible as Unknown so
+    // the unknown-rate alarm can see them — never silently mapped to something
+    // that happens to be nearby.
+    let f = load();
+    let mut unknown_seen = 0;
+
+    for (disc_hex, fx) in &f.instructions {
+        if fx.anchor_name.is_some() || fx.kind != "instruction" {
+            continue;
+        }
+        let data = decode_b58(&fx.sample_data_b58);
+        let d = decode_pumpfun(&data);
+        assert!(
+            d.is_unrecognised(),
+            "unnamed discriminator {disc_hex} decoded to {d:?} — a name was guessed"
+        );
+        unknown_seen += 1;
+    }
+    assert!(
+        unknown_seen > 0,
+        "expected at least one unnamed instruction in the fixtures"
+    );
+}
+
+#[test]
+fn the_anchor_event_tag_is_present_and_not_treated_as_an_instruction() {
+    // It is the second highest-volume discriminator on the program. Treating it
+    // as an instruction would double-count every trade that emits an event.
+    let f = load();
+    let event = f
+        .instructions
+        .values()
+        .find(|fx| fx.kind == "anchor_event_cpi")
+        .expect("the anchor event CPI tag should appear in any real capture");
+
+    assert_eq!(event.discriminator, pumpfun::ANCHOR_EVENT_CPI.to_string());
+    let data = decode_b58(&event.sample_data_b58);
+    assert!(
+        decode_pumpfun(&data).is_unrecognised(),
+        "the event CPI tag must not resolve to a user instruction"
     );
 }

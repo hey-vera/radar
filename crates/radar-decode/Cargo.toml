@@ -16,7 +16,7 @@ radar-types.workspace = true
 # Test-only. The crate itself computes no hashes: the discriminator table is
 # constant bytes captured from mainnet, and sha2 is here purely so a test can
 # prove those constants match the Anchor naming convention they claim to follow.
-base64 = "0.22"
+bs58.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 sha2 = "0.10"

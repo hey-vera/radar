@@ -1,272 +1,296 @@
 {
-  "captured_from": "solana mainnet-beta",
+  "source": "CryptoHouse (crypto-clickhouse.clickhouse.com), solana.instructions",
   "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "windows": [
+    {
+      "from": "2026-08-21 06:00:00",
+      "to": "2026-08-21 08:00:00"
+    },
+    {
+      "from": "2026-08-20 18:00:00",
+      "to": "2026-08-20 20:00:00"
+    },
+    {
+      "from": "2026-08-19 12:00:00",
+      "to": "2026-08-19 14:00:00"
+    }
+  ],
+  "note": "Names recovered by brute-forcing sha256('global:'+name)[..8], not read from documentation. A null anchor_name means the name is not in the candidate list; the instruction is real and must decode to Unknown.",
   "instructions": {
-    "SellV2": {
-      "logged_name": "SellV2",
-      "snake_case": "sell_v2",
-      "discriminator": [
-        93,
-        246,
-        130,
-        60,
-        231,
-        233,
-        64,
-        178
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "XfaCPOfpQLKd94YCERIAAGRGBBAAAAAA",
-      "data_len": 24,
-      "slot": 440973737,
-      "signature": "5vExQFcxYVyUPugbFD5msBvtMmThCk7HTHu2qdDdENjrkgPB75DKRLeBwWe5JbE633LVbspHJGkjMBbjThMxce7K"
+    "38fc74089edfcd5f": {
+      "discriminator": "38fc74089edfcd5f",
+      "anchor_name": "buy_exact_sol_in",
+      "kind": "instruction",
+      "observed_count": 2700690,
+      "sample_data_b58": "PvwdRapqdNv7KFUmC8CpgSb7d1vSyQiNsa",
+      "min_data_len": 24,
+      "max_data_len": 32,
+      "example_signature": "2wbxvGzRpR5NihnuapaaK7Qy4FpnMWRFwvimBeWaGPLcUfpXW9onET34gLjFhLPer2Tn4SZfPe5YxmZTEgCFUUqY",
+      "example_slot": 440523573
     },
-    "CollectCreatorFee": {
-      "logged_name": "CollectCreatorFee",
-      "snake_case": "collect_creator_fee",
-      "discriminator": [
-        20,
-        22,
-        86,
-        123,
-        198,
-        28,
-        219,
-        132
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "FBZWe8Yc24Q=",
-      "data_len": 8,
-      "slot": 440973737,
-      "signature": "5A6eAru5ZhxzKxkzFismNHCqHLXa1PRYBJxGVent2BCw1vGys1UNqyogGdqwpTxDgmM4b14PbMEgqMNsAkdMegpd"
+    "e445a52e51cb9a1d": {
+      "discriminator": "e445a52e51cb9a1d",
+      "anchor_name": null,
+      "kind": "anchor_event_cpi",
+      "observed_count": 382285,
+      "sample_data_b58": "2ytdt8TmtejZES5wWFDuEAwpKq1UxRuFoyo4uwgYfXeEc1vvWFuJWgeU1cRXkNP8BynUGYsv11GyRbuHaT2S7rUemcske3Jh8cUypUYTM3HvRfT8g1AfDyaW9LwUzeqHHEW3fUDPPYVsiD7h8Egjo2VqAQd4GPqTRNKK58f5rMMtB4EHT8xKAfuyEUzM8ZQadFJCEgZLHpHaMVgRjoMow6aQnt23ATHZRWBfEtJZXjWeZ3tnunaFV36ZVRnH1eLn1JtJFTJg4Ypj1zPzHFyHfr6fa6aUgFTk9jmCaTStAbXnqx1c3yDmMzZ3zA92daEQaxmLuDoARbxpHnq39y81rsR6MpW35gAc9xjp2F8dpaS8G3nhpeFkuCwmwey9bRFtiDPKgNxAMaN69m5opkfS3ouCN574bPLtWXcUsrqA8JLkKRcwAmEAoMf1gfj9mDttai1kqPrDsVFYMkpv8FbnFF6fy97sbc7iugCATjehVZUHZVfaXN2fUK",
+      "min_data_len": 80,
+      "max_data_len": 707,
+      "example_signature": "262T88LDJBq9WAvnmuHSMdkUGeKoZshxgrxwhYEW3ew4hFaxjUgoEwFWuP9X1k8SYphc5K6e9SsCBaLbC3xvbUKk",
+      "example_slot": 440523573
     },
-    "Buy": {
-      "logged_name": "Buy",
-      "snake_case": "buy",
-      "discriminator": [
-        102,
-        6,
-        61,
-        18,
-        1,
-        218,
-        235,
-        234
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "ZgY9EgHa6+o17wanYAAAABevAwQAAAAAAQ==",
-      "data_len": 25,
-      "slot": 440973737,
-      "signature": "5eWBxk5QsNmvXy2Jvpi5fEmNSt7XYtX2aUo59uqNyQ6vubzDbuiMXAEs4zBeqQ5JnPaUgBq9yj4PyvkXE47AbpGc"
+    "33e685a4017f83ad": {
+      "discriminator": "33e685a4017f83ad",
+      "anchor_name": "sell",
+      "kind": "instruction",
+      "observed_count": 180684,
+      "sample_data_b58": "5jRcjdixRUDHJEqfQz5kFe3yuALV8R959",
+      "min_data_len": 24,
+      "max_data_len": 26,
+      "example_signature": "ygAQcdTcEqaxNP6seytE9amYLApEn6LkFXBzcfv5JW8QyP9zXRuSDPm7Xq9FdTPkrDd5ngXCyKUbtrzbGqeH4PG",
+      "example_slot": 440267325
     },
-    "BuyExactSolIn": {
-      "logged_name": "BuyExactSolIn",
-      "snake_case": "buy_exact_sol_in",
-      "discriminator": [
-        56,
-        252,
-        116,
-        8,
-        158,
-        223,
-        205,
-        95
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "OPx0CJ7fzV/6YvABAAAAAI1eciRAAAAA",
-      "data_len": 24,
-      "slot": 440973737,
-      "signature": "pTrsq4wknba2949V2wfFzLXToPDKZ5jtbkVCVGNDT7NWzKowZdwyr4J45WZ8kD2qGba7WYm5sZhoGALDdeRG5RD"
+    "66063d1201daebea": {
+      "discriminator": "66063d1201daebea",
+      "anchor_name": "buy",
+      "kind": "instruction",
+      "observed_count": 113210,
+      "sample_data_b58": "48CS5rNxJb97ANg1ZjmzUUA1zvuLdEYmvXzx",
+      "min_data_len": 24,
+      "max_data_len": 26,
+      "example_signature": "3KPpmuQ2g34GPtAdEx2ADBuFXmUEFWRbaknVMxGYtkiJvMyu1boJXzB5KGo7ye5KB7CnFYL72GGXbFnoDpRtRknZ",
+      "example_slot": 440267326
     },
-    "Sell": {
-      "logged_name": "Sell",
-      "snake_case": "sell",
-      "discriminator": [
-        51,
-        230,
-        133,
-        164,
-        1,
-        127,
-        131,
-        173
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "M+aFpAF/g6196WnObAEAADf0AwAAAAAA",
-      "data_len": 24,
-      "slot": 440973737,
-      "signature": "3kGX6pLN5itic6G1AkVcw6MU1c4s2VKe41fXwtbv2QUHMnMAH2UAkwik9XdZ8u9R2esVZEQoxL8J3ttXPCFoo5kr"
+    "c2ab1c46684d5b2f": {
+      "discriminator": "c2ab1c46684d5b2f",
+      "anchor_name": "buy_exact_quote_in_v2",
+      "kind": "instruction",
+      "observed_count": 67470,
+      "sample_data_b58": "JkK5BJGr6ZHHNWB8D9U67Vq9gCgb7tNn3",
+      "min_data_len": 24,
+      "max_data_len": 25,
+      "example_signature": "2GnpApYJdQyfu45LEJPTtxorxs13SCqDxQztTsTbwMzBb6mPyxhJR4SqKD3BxV8VmbEgDnZqcWNaH7xiTX96KMGj",
+      "example_slot": 440523574
     },
-    "BuyExactQuoteInV2": {
-      "logged_name": "BuyExactQuoteInV2",
-      "snake_case": "buy_exact_quote_in_v2",
-      "discriminator": [
-        194,
-        171,
-        28,
-        70,
-        104,
-        77,
-        91,
-        47
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "wqscRmhNWy+A0fAIAAAAAHU8lI+fAAAA",
-      "data_len": 24,
-      "slot": 440973737,
-      "signature": "4wvJLW1Rhq1vpNunoteUPBMM14GrWRUWmagcCyzWMes2zxQ4CMU5dsVPFVAmAnFye4wSCPtEMTzYYRuJPrLMfmM2"
+    "5df6823ce7e940b2": {
+      "discriminator": "5df6823ce7e940b2",
+      "anchor_name": "sell_v2",
+      "kind": "instruction",
+      "observed_count": 42842,
+      "sample_data_b58": "9Zq9ZwMbe2brzihvxSTgrKoTTcKDzNfQT",
+      "min_data_len": 24,
+      "max_data_len": 26,
+      "example_signature": "5Dt8zNXTuMGYmYy47m9NA6XU2VvedGrAUt58GQ1kActJsayyWpZEW4Dt8HS6HHSGQYyRyFEpjyYySju7z28T2X9X",
+      "example_slot": 440523573
     },
-    "BuyV2": {
-      "logged_name": "BuyV2",
-      "snake_case": "buy_v2",
-      "discriminator": [
-        184,
-        23,
-        238,
-        97,
-        103,
-        197,
-        211,
-        61
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "uBfuYWfF0z1Zk6s0ZgAAAJgFcwMAAAAA",
-      "data_len": 24,
-      "slot": 440973736,
-      "signature": "4uAf1V98Lzcptek5SpBDBN7sS1sPWAGx6ftEGySXZng9Pxo5Mo1WSLGesMn4QVTrWeSo7VkfsV8QWYYPKSjRJDS8"
+    "f945a4da9667548a": {
+      "discriminator": "f945a4da9667548a",
+      "anchor_name": "close_user_volume_accumulator",
+      "kind": "instruction",
+      "observed_count": 37030,
+      "sample_data_b58": "ihFZiQrP7CM",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "3nAsEgi9ppCBq8JosSRGvxjqPnfGWT1UVC6xPykPi4Bnf1gkewoReJGSpRpmGw7Q4M3hzEjANdWVHDBaj9w3PKKa",
+      "example_slot": 440267326
     },
-    "CloseUserVolumeAccumulator": {
-      "logged_name": "CloseUserVolumeAccumulator",
-      "snake_case": "close_user_volume_accumulator",
-      "discriminator": [
-        249,
-        69,
-        164,
-        218,
-        150,
-        103,
-        84,
-        138
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "+UWk2pZnVIo=",
-      "data_len": 8,
-      "slot": 440973734,
-      "signature": "6iqgJtbWLhyjwdsnzfRrcjVrNnFh4PYMJEyFhAn8zMyfmeK8T7HeLH7swqFky8RG2n2eiY3YH6YUgicTj7CPU9L"
+    "7af3cc415e741d37": {
+      "discriminator": "7af3cc415e741d37",
+      "anchor_name": "claim_cashback_v2",
+      "kind": "instruction",
+      "observed_count": 14342,
+      "sample_data_b58": "MZnvBLgK1Tt",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "26ZEwQdCcMXNjVA84uPGPUXPerMRYUa1Gs2zo3Czk2a4uRA6YEw14VoWees7Mw7oZiLtCVwFZsZD1PsZyDQhXF3F",
+      "example_slot": 440523573
     },
-    "InitUserVolumeAccumulator": {
-      "logged_name": "InitUserVolumeAccumulator",
-      "snake_case": "init_user_volume_accumulator",
-      "discriminator": [
-        94,
-        6,
-        202,
-        115,
-        255,
-        96,
-        232,
-        183
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "XgbKc/9g6Lc=",
-      "data_len": 8,
-      "slot": 440973734,
-      "signature": "4HwJK3nq4Hbey1YbpbLJgckFw4UqY2wT1BgwBpMCrZHMTWhpmr53q72jTYnSL164rPM4JNKUdmTLnGTtimRTrkmx"
+    "b817ee6167c5d33d": {
+      "discriminator": "b817ee6167c5d33d",
+      "anchor_name": "buy_v2",
+      "kind": "instruction",
+      "observed_count": 11498,
+      "sample_data_b58": "HnQ14hy6fxGCdcQEp6qCENG22w5zFSUfq",
+      "min_data_len": 24,
+      "max_data_len": 26,
+      "example_signature": "2SfFuQbp8ow1TQApGGGD2sra3MHCTubRETNXfz9j3uL9fq1vqNDSZ6wRda3YGWgd5QvfiMt65fKkVuLb1xHGDyxd",
+      "example_slot": 440523575
     },
-    "CollectCreatorFeeV2": {
-      "logged_name": "CollectCreatorFeeV2",
-      "snake_case": "collect_creator_fee_v2",
-      "discriminator": [
-        207,
-        17,
-        138,
-        242,
-        4,
-        34,
-        19,
-        56
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "zxGK8gQiEzg=",
-      "data_len": 8,
-      "slot": 440973731,
-      "signature": "35RgQqDkXrocLv7wtYZCsS59wiLRLsuViyEjdvx2VpziSghvmwthGzdX9awN3dEUGfkUFJ3vtFULV8UqSp6sx7ck"
+    "5e06ca73ff60e8b7": {
+      "discriminator": "5e06ca73ff60e8b7",
+      "anchor_name": "init_user_volume_accumulator",
+      "kind": "instruction",
+      "observed_count": 8781,
+      "sample_data_b58": "GjBA1Qzhrva",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "4umtDToAKHbwnEDM9QqW27fjXk1DWwDP77MZENYRB1yp2qpUGLByRrcXG9QQwdFpf81CrCTcpbStMbRVowYovDQX",
+      "example_slot": 440523573
     },
-    "ClaimCashbackV2": {
-      "logged_name": "ClaimCashbackV2",
-      "snake_case": "claim_cashback_v2",
-      "discriminator": [
-        122,
-        243,
-        204,
-        65,
-        94,
-        116,
-        29,
-        55
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "evPMQV50HTc=",
-      "data_len": 8,
-      "slot": 440973729,
-      "signature": "RF72NJJ3pd2QNwTo5NVygAVKjJKmBUGe133ht1tuorpmQUn4cLHYjCaH6soijK4xo4cP2XZuYYVgeAFZm6n8FzY"
+    "253a237ebe35e4c5": {
+      "discriminator": "253a237ebe35e4c5",
+      "anchor_name": "claim_cashback",
+      "kind": "instruction",
+      "observed_count": 7464,
+      "sample_data_b58": "7E9g4XZrCjE",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "n39pE9hGhZ4CEnb2pD3HcmkvKPjHZVjZLoejtW72AVyV2TnZbyAf29h8wULxt5BQDoG9KDfVyHaUpJ5fJMyisBR",
+      "example_slot": 440523575
     },
-    "DistributeCreatorFees": {
-      "logged_name": "DistributeCreatorFees",
-      "snake_case": "distribute_creator_fees",
-      "discriminator": [
-        165,
-        114,
-        103,
-        0,
-        121,
-        206,
-        247,
-        81
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "pXJnAHnO91E=",
-      "data_len": 8,
-      "slot": 440973725,
-      "signature": "45Y3MuyrDVaAtmXccv79ugWyeQz99juxJnVPKHVnV5JULyTT6jvHtnX99Xv85vRksEwnyYf29jAvcb5iPQHu5XKU"
+    "d6904cec5f8b31b4": {
+      "discriminator": "d6904cec5f8b31b4",
+      "anchor_name": "create_v2",
+      "kind": "instruction",
+      "observed_count": 4680,
+      "sample_data_b58": "Bw9mRuhxGqD7jwDrm2VtWDn8hoehozN2ziNy6foxh9HjjaNoRMCAMt4KxhHqbib5W1EVVb1jYRdWceRuoKKZDpzxqdEXyYMAS9vphKM5BD2eivw2PrgKQGARBGaMdHMfAtSda7bijxt2PsNiV5X2RNVD5kXiDD6u5G9ZoGFMBCevAHnZwjCG6j",
+      "min_data_len": 92,
+      "max_data_len": 250,
+      "example_signature": "5vXh17Tcq8VnKHJnARdG94gKUMkV6keK6jwog7yK2nBEjZ8tdZfAU1wdTiddSXs26pPSQep7A6qkqaz5xNkjb1it",
+      "example_slot": 440267329
     },
-    "ClaimCashback": {
-      "logged_name": "ClaimCashback",
-      "snake_case": "claim_cashback",
-      "discriminator": [
-        37,
-        58,
-        35,
-        126,
-        190,
-        53,
-        228,
-        197
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "JTojfr415MU=",
-      "data_len": 8,
-      "slot": 440973724,
-      "signature": "5Xgypu3Ztv8V9C96tdQ1zBhac61mLrDRyy9zgaD36KsBHyGYfmC5yVZCuuiuuCkBsaUPhG6fi95RUmAFpHvNjzVp"
+    "ea66c2cb96483ee5": {
+      "discriminator": "ea66c2cb96483ee5",
+      "anchor_name": "extend_account",
+      "kind": "instruction",
+      "observed_count": 2012,
+      "sample_data_b58": "gCzGGoTR6NG",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "4Arjkifz87VWe4JKuxyb59xzguutUshD9MrXf5GB8uUkzWxKfKHru3dCtD4bhSYzFXDRPvbHrifJ8WTmiEpFpSrC",
+      "example_slot": 440267358
     },
-    "CreateV2": {
-      "logged_name": "CreateV2",
-      "snake_case": "create_v2",
-      "discriminator": [
-        214,
-        144,
-        76,
-        236,
-        95,
-        139,
-        49,
-        180
-      ],
-      "computed_matches": true,
-      "instruction_data_b64": "1pBM7F+LMbQfAAAASnVzdCBidXkgJDEwIHdvcnRoIG9mIHRoaXMgY29pbgMAAAAkMTAqAAAAaHR0cHM6Ly9tZXRhZGF0YS5qN3RyYWNrZXIuaW8vbS9kSHRlTFdYdE9W3U9z8vzOw3ToxHqOSDr8l2iuJXgYEQe38KnHXw5OR4oAAQ==",
-      "data_len": 130,
-      "slot": 440973708,
-      "signature": "31Lwg77jTfY6X4o4eu5hdEw87oj5BR3DsLdWyBCeqKkRrS7a8iZLmC8jkj5PhN28LZnX9oWFEuVm5ptWbppUorhE"
+    "66063d1201daebe6": {
+      "discriminator": "66063d1201daebe6",
+      "anchor_name": null,
+      "kind": "instruction",
+      "observed_count": 1170,
+      "sample_data_b58": "AJTQ2h9DXr9ShePdWHBKU841icD2tSrXR",
+      "min_data_len": 24,
+      "max_data_len": 24,
+      "example_signature": "4mmwRLkf2S8ncdYaMQY4f2EWRc6BzNqjXswHvdF6P5PLENipijPEbw5jGu4maq9srtNAE5gViQyF6bgNaeT9Yph3",
+      "example_slot": 440267327
+    },
+    "1416567bc61cdb84": {
+      "discriminator": "1416567bc61cdb84",
+      "anchor_name": "collect_creator_fee",
+      "kind": "instruction",
+      "observed_count": 831,
+      "sample_data_b58": "4MsYv8onxfd",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "5KyPB3r8g32uks4DFbepCbZnrZNkFhe9d3rNtQiTCKVgk5Mr74pC17SWCxGLjA5XoFD9zvs1BcnAn8Z7H74FmEEV",
+      "example_slot": 440627950
+    },
+    "cf118af204221338": {
+      "discriminator": "cf118af204221338",
+      "anchor_name": "collect_creator_fee_v2",
+      "kind": "instruction",
+      "observed_count": 746,
+      "sample_data_b58": "bdpoExJbbLb",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "3cT7ufh4TvpzXQyruw8X4R9BH9NJZhEMAdR8zQSwyne3Tmt5vFjuoZo6ebLFk59EmnaMpcEAzgCKPrwrE22feHUb",
+      "example_slot": 440627942
+    },
+    "a572670079cef751": {
+      "discriminator": "a572670079cef751",
+      "anchor_name": "distribute_creator_fees",
+      "kind": "instruction",
+      "observed_count": 559,
+      "sample_data_b58": "Ug3SNLp8V8c",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "2zdS5LUaaEJnGEwtetoa5UjQShrYYQ2wnm4eWSTFPqo5nJJ2KS8bUN5iN4zaCMvUhHuP937gzSYkSJMTzoeaAArB",
+      "example_slot": 440627939
+    },
+    "ffcb134ff444089f": {
+      "discriminator": "ffcb134ff444089f",
+      "anchor_name": "distribute_creator_fees_v2",
+      "kind": "instruction",
+      "observed_count": 525,
+      "sample_data_b58": "4FqtrqK5vNWnc",
+      "min_data_len": 9,
+      "max_data_len": 9,
+      "example_signature": "2HJ5WzVGKjnMz4UwSfpFB7DSUZCf7bavszQKCjLguZH6RJ6ZQzxYR82BYLLBmxuw8DbhrPBirwc5yQWMNcBboo8q",
+      "example_slot": 440267335
+    },
+    "577c34bf3426d6e8": {
+      "discriminator": "577c34bf3426d6e8",
+      "anchor_name": null,
+      "kind": "instruction",
+      "observed_count": 277,
+      "sample_data_b58": "FdiX4bwE4K1",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "4z7J1jLmBofQcUwMMSMNz8jSPH7qzgKTJq3WYCPtGQMLfp64U4orjA6wesSmLFq9bW1CiyqGGbFbApcU6jHFRWUz",
+      "example_slot": 440267426
+    },
+    "bbcb121fceedfe29": {
+      "discriminator": "bbcb121fceedfe29",
+      "anchor_name": "migrate_v2",
+      "kind": "instruction",
+      "observed_count": 122,
+      "sample_data_b58": "YQq8B6nbicx",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "5HYSqJvVaZoVEGEZSfVyeCAtJ1g8sRYS2TnPJ19EZNa9S3NAuijo7yJbLoiv8JeVDJ76BWQuiEtdt4hgNP9TjKdo",
+      "example_slot": 440523616
+    },
+    "561fc057a3574fee": {
+      "discriminator": "561fc057a3574fee",
+      "anchor_name": "sync_user_volume_accumulator",
+      "kind": "instruction",
+      "observed_count": 109,
+      "sample_data_b58": "FQWdsh8JfTT",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "5Eqac3oVoG3iGoqvXoPSJjUABivqSrPspB9HhcEVYK11ANoXnjCerm9JVhXqvmcD4HJG2ficLK1wTj7CDbhNsh8k",
+      "example_slot": 440524153
+    },
+    "181ec828051c0777": {
+      "discriminator": "181ec828051c0777",
+      "anchor_name": "create",
+      "kind": "instruction",
+      "observed_count": 42,
+      "sample_data_b58": "5PFXUyLae2q76vhpq3tMQSk3M8y7ujJGtdooepxPMYHzPEvyQjxtAbWKUTcB9CnVc29bjr2Y8bPpCTNrjzPLJ4wdTkBFopPJrSc3Yin9vJiEay7xnawPAwt9TK3bR15QTGSvcBuqFCCKpzX2ewssWetqvtrcKky95msbTe9YTvAedtitK6hDDRwox3C59vBiTZscVBSnfDMCDGYQX",
+      "min_data_len": 106,
+      "max_data_len": 161,
+      "example_signature": "3RRB8ZRQiWTVy1HfE98SejSZDyJaVx6QkUYkWNFZPShYuY3Zwf7MmfxVWaeQaEAVRrcjEQNhkc7hdPdAWBsD3Lgp",
+      "example_slot": 440524063
+    },
+    "9beae792ec9ea21e": {
+      "discriminator": "9beae792ec9ea21e",
+      "anchor_name": "migrate",
+      "kind": "instruction",
+      "observed_count": 15,
+      "sample_data_b58": "T5bZvAk4s5f",
+      "min_data_len": 8,
+      "max_data_len": 8,
+      "example_signature": "c1gg3cMxqntCoSXjsjz2pRd37Shac6F5cBuyXDNJ6XA2AYXLiTD7SFpu4B9AdD1Sudh6PCc3U2MZpC8WQoTQf7P",
+      "example_slot": 440628291
+    },
+    "a9bee3f2670af88e": {
+      "discriminator": "a9bee3f2670af88e",
+      "anchor_name": null,
+      "kind": "instruction",
+      "observed_count": 5,
+      "sample_data_b58": "GUXsiebLnTWw1hNGEm3A13ToZfMVQeLMM",
+      "min_data_len": 24,
+      "max_data_len": 24,
+      "example_signature": "3qFXT3tK2N24rsA3wXn6g7dPPUWXZvrXQSZtYVXJjso9AZN8aUbUWi5SXJ5UjCahCV5gNFQbcszG6UQvYsYgVnsp",
+      "example_slot": 440278194
+    },
+    "4519ab8e39ef0d04": {
+      "discriminator": "4519ab8e39ef0d04",
+      "anchor_name": "admin_set_creator",
+      "kind": "instruction",
+      "observed_count": 1,
+      "sample_data_b58": "4S92BcxaKWK8fBTHwE4unE1RJ1JY13DU3ix4ExmwHXLW5uVNNRQinds",
+      "min_data_len": 40,
+      "max_data_len": 40,
+      "example_signature": "9P5wF8aw8z2LcRXSQpRuEm3GL9zYVTerSxYkPT7Un8noyjU53mdip2TBJAMc21PcWfD7SyAE5fDgN6czrBcw5kU",
+      "example_slot": 440627396
     }
   }
 }

@@ -48,3 +48,25 @@ and leaves the exact length to the library.
 **What catches a recurrence:** the test suite, but only because this one was
 wrong in a direction that failed. An invented assertion that happens to pass is
 invisible.
+
+---
+
+## 3. An exact-match on a name that had been versioned
+
+**Found:** 2026-08-22, probing pump.fun launches on mainnet.
+
+A probe tested for the dev buy with `"Buy" in instruction_names` and reported
+`False` on a launch whose instruction list plainly contained `BuyV2`. The dev buy
+inside the create transaction is the single most load-bearing piece of Tier-A
+coordination evidence, and the check said it was absent when it was present.
+
+**Cost:** would have been a coordination detector calibrated on a base rate of
+roughly zero for its strongest signal. Caught within minutes only because the
+probe printed the raw instruction list next to its verdict.
+
+**What catches a recurrence:** printing the evidence beside the conclusion, which
+is now the house style for probes. Structurally, `radar-decode` must match on
+discriminator bytes rather than log-line names, and must record an unrecognised
+discriminator as unknown rather than guessing — a decoder that silently stops
+understanding a program looks exactly like a program that has gone quiet.
+

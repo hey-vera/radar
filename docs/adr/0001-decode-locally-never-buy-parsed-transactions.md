@@ -1,7 +1,9 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # ADR 0001 — Decode transactions locally; never buy parsed ones
 
-**Status:** accepted, 2026-08-22
+**Status:** accepted, 2026-08-22. Measured against mainnet the same day; see
+*Measured outcome* below, which confirms the decision and adds a constraint the
+original did not anticipate.
 
 ## Context
 
@@ -75,6 +77,49 @@ against programs we have never seen; ours is not. Mitigations:
 heartbeat must alarm on a rising unknown-discriminator rate rather than quietly
 dropping events, because a decoder that has stopped understanding a program looks
 exactly like a program that has gone quiet.
+
+## Measured outcome
+
+Probed against mainnet slots 440972500–440972965 (`scripts/probe/`):
+
+| | |
+|---|---|
+| Mean transactions per block | 1,513 |
+| Mean block size | **6.88 MiB** |
+| pump.fun transactions in 45 slots | 4,173 |
+| Cost as `getBlock` | $0.045 |
+| Cost as parsed transactions | $208.65 |
+| **Measured ratio** | **4,637×** |
+
+The estimate above was 100–300×. The measured figure is an order of magnitude
+better, because a busy slot carries far more pump.fun transactions than assumed.
+
+**But the price is not the only cost, and this is the correction.** At 6.88 MiB
+per block and ~2.5 slots per second, polling every slot would pull **~1,451
+GiB/day**. Nothing in the original decision accounted for bandwidth, and on a
+shared VPS that alone would sink the design.
+
+So the decision is amended: **a full block fetch is for qualified candidates,
+never for discovery.**
+
+1. Discover Creates from a cheap WebSocket `logsSubscribe` — log lines, not blocks.
+2. Tier-0 filter on the create transaction alone (`getTransaction`, ~20 KiB).
+3. Fetch the whole block **only for candidates that survive**, for the same-slot
+   coordination picture.
+
+At the measured 0.24 launches per slot and a 90% Tier-0 kill rate that is roughly
+5,000 block fetches a day, about 35 GiB — carryable. Without the filter it is 1.4 TB
+and it is not.
+
+It also raises the value of clawapis request #3 (a program-filtered slot-range
+endpoint): returning 50–200 KiB instead of 6.88 MiB is a ~40× bandwidth reduction
+on the path that dominates, and it is cheaper for the vendor to serve than shipping
+whole blocks we discard 99% of.
+
+The same probe found pump.fun running at least four buy variants, a
+`BondingCurveV3`, per-user volume accumulators and a cashback mechanism — none of
+which appear in public references. The "decoders are built from the chain, not from
+prose" consequence below is therefore not a precaution; it is already true.
 
 ## Alternatives considered
 

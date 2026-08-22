@@ -13,6 +13,7 @@
 
 use radar_types::Address;
 
+use crate::args::{Layout, Side};
 use crate::discriminator::Discriminator;
 
 /// The pump.fun program address, `6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P`.
@@ -282,6 +283,32 @@ impl Instruction {
     #[must_use]
     pub const fn is_trade(self) -> bool {
         self.is_buy() || self.is_sell()
+    }
+
+    /// Which way this instruction moves tokens, if it is a trade.
+    #[must_use]
+    pub const fn side(self) -> Option<Side> {
+        if self.is_buy() {
+            Some(Side::Buy)
+        } else if self.is_sell() {
+            Some(Side::Sell)
+        } else {
+            None
+        }
+    }
+
+    /// How this instruction orders its two `u64` arguments, if it is a trade.
+    ///
+    /// The order is **not** uniform across variants, and getting it wrong reads
+    /// a token amount as lamports — a six-orders-of-magnitude error that looks
+    /// entirely plausible downstream. See [`crate::args`].
+    #[must_use]
+    pub const fn layout(self) -> Option<Layout> {
+        match self {
+            Self::Buy | Self::BuyV2 | Self::Sell | Self::SellV2 => Some(Layout::TokensThenSolBound),
+            Self::BuyExactSolIn | Self::BuyExactQuoteInV2 => Some(Layout::SolThenTokenBound),
+            _ => None,
+        }
     }
 
     /// Whether this instruction is administrative bookkeeping rather than

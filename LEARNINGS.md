@@ -70,3 +70,35 @@ discriminator bytes rather than log-line names, and must record an unrecognised
 discriminator as unknown rather than guessing — a decoder that silently stops
 understanding a program looks exactly like a program that has gone quiet.
 
+---
+
+## 4. Two `u64`s that swap meaning between instruction variants
+
+**Found:** 2026-08-22, deriving pump.fun argument layouts.
+
+Every pump.fun trade instruction takes two `u64`s, and which one holds lamports
+depends on the variant. `buy` is `(token_amount, max_sol_cost)`; `buy_exact_sol_in`
+is `(sol_amount, min_token_output)`. Same shape, same size, opposite meaning.
+
+**Cost:** would have been catastrophic and invisible. The median `buy_v2` token
+field is 3.6 trillion; read as lamports that is 3,614 SOL against a true spend of
+about 0.007. Every position size, execution cost and P&L figure would have been
+wrong by six orders of magnitude, and none of them would have looked broken --
+memecoin numbers are large and unintuitive, so nothing would have flagged it.
+
+**What catches a recurrence:** the unit now lives in the type
+([`Amount::Tokens`] / [`Amount::Lamports`]), so a token quantity cannot be read
+as lamports at all. `tests/payload_layouts_hold.rs` runs 1,757 real payloads
+through the decoder and asserts the layout is distinguishable from its opposite.
+
+**The part worth remembering** is how long that test took to get right. The first
+version asserted "our SOL field holds plausible values" and passed trivially --
+it only confirmed the implementation. The second asserted the swapped reading
+would be absurd, and failed at 45%, because token and lamport magnitudes overlap
+more than expected. What finally settled it was structural rather than
+statistical: 146 of 250 sells set their minimum output to *exactly zero*, and a
+token amount is never exactly zero, because a trade for nothing is not a trade.
+A field that is often a sentinel is a bound; a field that never is, is an amount.
+
+A test that cannot fail against the plausible wrong answer is not evidence.
+

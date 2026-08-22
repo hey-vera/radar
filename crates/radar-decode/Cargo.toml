@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 radar-types.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 # Test-only. The crate itself computes no hashes: the discriminator table is

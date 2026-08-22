@@ -26,9 +26,11 @@
 
 #![forbid(unsafe_code)]
 
+pub mod args;
 mod discriminator;
 pub mod pumpfun;
 
+pub use args::{Amount, ArgError, Launch, Layout, Side, Trade};
 pub use discriminator::Discriminator;
 
 /// The result of decoding an instruction.
@@ -88,9 +90,47 @@ pub fn decode_pumpfun(data: &[u8]) -> Decoded<pumpfun::Instruction> {
     )
 }
 
+/// Decodes a pump.fun trade instruction, arguments included.
+///
+/// # Errors
+///
+/// Returns `None` if the instruction is not a trade; returns [`ArgError`] if it
+/// is one but its payload is truncated.
+#[must_use]
+pub fn decode_pumpfun_trade(data: &[u8]) -> Option<Result<Trade, ArgError>> {
+    let ix = *decode_pumpfun(data).known()?;
+    let (side, layout) = (ix.side()?, ix.layout()?);
+    Some(args::trade(data, side, layout))
+}
+
+/// Decodes a pump.fun launch instruction, arguments included.
+///
+/// # Errors
+///
+/// Returns `None` if the instruction is not a launch; returns [`ArgError`] if it
+/// is one but its payload is malformed. Launch text is creator-supplied and
+/// arbitrary, so malformed input is expected rather than exceptional.
+#[must_use]
+pub fn decode_pumpfun_launch(data: &[u8]) -> Option<Result<Launch<'_>, ArgError>> {
+    let ix = *decode_pumpfun(data).known()?;
+    ix.is_launch().then(|| args::launch(data))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_non_trade_instruction_yields_no_trade() {
+        // Bookkeeping instructions carry no amounts. Returning a zeroed Trade
+        // would silently add phantom volume to every token that claims cashback.
+        let data = pumpfun::Instruction::ClaimCashback
+            .discriminator()
+            .as_bytes()
+            .to_vec();
+        assert!(decode_pumpfun_trade(&data).is_none());
+        assert!(decode_pumpfun_launch(&data).is_none());
+    }
 
     #[test]
     fn a_known_instruction_decodes() {

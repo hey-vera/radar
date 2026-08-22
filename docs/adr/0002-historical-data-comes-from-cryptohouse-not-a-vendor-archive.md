@@ -71,13 +71,44 @@ exactly `radar-decode`'s table:
 1,714 launches in one hour is **~41,000/day**, consistent with the independent
 mainnet probe. Data is current to today.
 
+### What `solana.instructions` does not carry
+
+Its `accounts` array is **empty for every pump.fun row**, and `parsed`/`params`
+are empty too — CryptoHouse only parses programs it has decoders for. So that
+table alone answers "which instruction, with what arguments" and cannot answer
+"which mint".
+
+`solana.transactions` closes the gap, joined on signature:
+
+```
+accounts            Array(Tuple(pubkey String, signer Bool, writable Bool))
+balance_changes     Array(Tuple(account String, before Decimal, after Decimal))
+pre_token_balances  Array(Tuple(account_index, mint, owner, amount, decimals))
+post_token_balances Array(Tuple(account_index, mint, owner, amount, decimals))
+index               Int64     -- position in the block
+fee, err, status, compute_units_consumed, log_messages
+```
+
+That is more than `getBlock` gives cheaply, and it changes what the recorder can
+know. `balance_changes` and the token-balance pair carry **realised** amounts,
+where the instruction arguments carry only what the trader asked for — a
+`buy(tokens, max_sol_cost)` says nothing about what was actually spent. Fills,
+slippage and effective price come from the deltas; without them the fill model
+would have to be inferred.
+
+`index` gives position in the block, which is the input to same-slot clustering.
+`err` and `status` mean failed transactions are visible — and a failed buy is
+real information about a token, not an absence of one.
+
 ## Decision
 
 **Radar takes its history from CryptoHouse and buys no vendor archive.**
 
-The extraction is a one-time bulk pull of raw pump.fun instructions into Radar's
-own Parquet store, decoded by `radar-decode` — the same decoder the live recorder
-uses. History and live data become one code path over one schema.
+The extraction is a one-time bulk pull into Radar's own Parquet store: raw
+pump.fun instructions from `solana.instructions`, joined to `solana.transactions`
+on signature for the mint, the realised amounts and the block position, and
+decoded by `radar-decode` — the same decoder the live recorder uses. History and
+live data become one code path over one schema.
 
 ## Consequences
 

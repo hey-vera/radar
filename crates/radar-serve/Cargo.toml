@@ -1,0 +1,32 @@
+[package]
+name = "radar-serve"
+description = "Radar's HTTP surface: ops page, JSON API, stateless MCP, and an x402-priced public surface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "radar-serve"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+radar-asof.workspace = true
+radar-instruments.workspace = true
+radar-store.workspace = true
+radar-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "net"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", default-features = false, features = ["util"] }
+http-body-util = "0.1"
+
+[lints]
+workspace = true

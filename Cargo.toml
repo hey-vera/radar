@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli", "crates/radar-instruments"]
+members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli", "crates/radar-instruments", "crates/radar-serve"]
 
 [workspace.package]
 version = "0.0.1"

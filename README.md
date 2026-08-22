@@ -57,9 +57,27 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-asof` | Point-in-time correctness. A watermark that makes look-ahead bias a compile-time concern rather than a discipline. |
 | `radar-provider` | The metered, cached, health-aware data plane. Pure policy — no HTTP, no clock, no async — so spend control is exhaustively testable without a network. |
 | `radar-decode` | Solana program decoders. Matches Anchor discriminator bytes, never logged instruction names; an unrecognised discriminator is a recorded value, never a guess. |
+| `radar-store` | Append-only, slot-partitioned Parquet event log. Nulls mean "not recoverable", never zero; the watermark reaches onto disk. |
+| `radar-backfill` | Bulk historical extraction from CryptoHouse, decoded by the same decoder the live recorder uses. |
+| `radar-instruments` | The instrument registry. One declaration; internal, HTTP, x402 and MCP surfaces derived from it, and every invocation recorded. |
+| `radar-serve` | Ops page, JSON API, stateless MCP (2026-07-28), and the x402-priced public surface. |
+| `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
-Further crates (watch, store, instruments, graph, sim, strategy, risk, exec,
-signer, serve, research) are planned; see the architecture plan.
+Further crates (watch, graph, sim, strategy, risk, exec, signer, research) are
+planned; see the architecture plan.
+
+## Trying it
+
+```bash
+cargo run -p radar-backfill -- --from '2026-08-21 06:00:00' --to '2026-08-21 06:30:00' --store ./data/store
+cargo run -p radar-cli -- creators --store ./data/store
+RADAR_STORE=./data/store cargo run -p radar-serve
+```
+
+The last one serves an ops page at `/`, the instrument catalogue at
+`/v1/instruments`, and a stateless MCP endpoint at `/mcp`. The x402-priced public
+surface appears only when `RADAR_X402_PAY_TO` and `RADAR_X402_FACILITATOR` are
+set — it is never served free as a fallback.
 
 ## Measured, not assumed
 

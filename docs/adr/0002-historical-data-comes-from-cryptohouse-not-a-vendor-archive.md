@@ -45,17 +45,16 @@ free public ClickHouse holding the whole chain:
 | `blocks` | 418.88 million | 32.08 GiB |
 | `tokens` | 30.15 million | 4.53 GiB |
 
-`solana.instructions` carries exactly what Radar needs and nothing it has to
-distrust:
+`solana.instructions` carries raw bytes rather than someone else's parse:
 
 ```
 block_slot Int64      -- the point-in-time key
 block_timestamp       tx_signature String
 index Int64           -- ordering, for same-slot clustering
 parent_index Int64    -- the CPI tree
-accounts Array(String)-- funding-graph inputs
 data String           -- RAW instruction bytes, base58
 program_id String
+accounts Array(String)-- present in the schema, empty in practice; see below
 ```
 
 Verified end to end. One hour of pump.fun instructions, grouped by the first
@@ -119,9 +118,10 @@ live data become one code path over one schema.
 replay test genuinely checks one decoder instead of comparing two.
 
 **We get more than the vendor sold.** `index` and `parent_index` give same-slot
-ordering and the CPI tree — the inputs to coordination analysis. `accounts` gives
-the funding graph. The vendor's pre-computed aggregates were the parts that could
-not be used as features anyway.
+ordering and the CPI tree — the inputs to coordination analysis — and the
+transaction join gives realised amounts, failed transactions and the funding
+graph. The vendor's pre-computed aggregates were the parts that could not be used
+as features anyway.
 
 **It found instructions we were missing.** The same query surfaced six
 discriminators absent from `radar-decode`; three resolved to `extend_account`,

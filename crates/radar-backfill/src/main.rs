@@ -22,17 +22,47 @@ const MIN_WINDOW_SECONDS: i64 = 4;
 /// Deliberate pacing. Radar is a guest on a free public endpoint (ADR 0002).
 const PAUSE_BETWEEN_WINDOWS: Duration = Duration::from_millis(400);
 
+/// How far behind wall-clock time follow mode stays.
+///
+/// Measured: CryptoHouse carries pump.fun instructions within a minute of the
+/// chain. Five minutes is not latency Radar needs -- it explicitly does not
+/// compete on speed -- it is margin against the trailing edge of ingestion being
+/// partial, which would otherwise record a busy minute as a quiet one and never
+/// revisit it.
+const FOLLOW_LAG_SECONDS: i64 = 300;
+
+/// How long follow mode waits when it has caught up.
+const FOLLOW_IDLE: Duration = Duration::from_secs(60);
+
+/// The smallest window follow mode will ask for.
+///
+/// Without this, a caught-up follower walks the horizon in three-second slices,
+/// querying a free public endpoint every few hundred milliseconds for almost
+/// nothing. Radar is a guest there (ADR 0002); waiting until a minute has
+/// accumulated costs nothing it needs and is an order of magnitude fewer
+/// queries.
+const FOLLOW_MIN_WINDOW_SECONDS: i64 = 60;
+
+/// Where the follow cursor lives inside the store.
+const CURSOR_FILE: &str = ".follow-cursor";
+
 struct Args {
     from: String,
     to: String,
     store: String,
     window_minutes: i64,
     scope: Scope,
+    follow: bool,
 }
 
 fn usage() -> &'static str {
     "radar-backfill --from 'YYYY-MM-DD HH:MM:SS' --to 'YYYY-MM-DD HH:MM:SS' \
-     --store <dir> [--window-minutes N] [--scope lifecycle|trades]"
+     --store <dir> [--window-minutes N] [--scope lifecycle|trades]
+   radar-backfill --follow --store <dir> [--window-minutes N]
+
+--follow keeps recording from where the store left off, staying five minutes
+behind the chain and sleeping when caught up. It uses the same extraction path
+as a one-off backfill, so history and live data are one code path."
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -41,6 +71,7 @@ fn parse_args() -> Result<Args, String> {
     let mut store = None;
     let mut window_minutes = DEFAULT_WINDOW_MINUTES;
     let mut scope = Scope::default();
+    let mut follow = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -65,17 +96,53 @@ fn parse_args() -> Result<Args, String> {
                     }
                 };
             }
+            "--follow" => follow = true,
             "-h" | "--help" => return Err(usage().to_owned()),
             other => return Err(format!("unknown flag {other}\n{}", usage())),
         }
     }
 
+    let store = store.ok_or_else(|| {
+        format!(
+            "--store is required
+{}",
+            usage()
+        )
+    })?;
+
+    // Follow mode has no explicit range: it starts from the store's own cursor
+    // and runs until stopped, so requiring --from and --to would be asking for
+    // values it is going to ignore.
+    if follow {
+        return Ok(Args {
+            from: String::new(),
+            to: String::new(),
+            store,
+            window_minutes: window_minutes.max(1),
+            scope,
+            follow,
+        });
+    }
+
     Ok(Args {
-        from: from.ok_or_else(|| format!("--from is required\n{}", usage()))?,
-        to: to.ok_or_else(|| format!("--to is required\n{}", usage()))?,
-        store: store.ok_or_else(|| format!("--store is required\n{}", usage()))?,
+        from: from.ok_or_else(|| {
+            format!(
+                "--from is required
+{}",
+                usage()
+            )
+        })?,
+        to: to.ok_or_else(|| {
+            format!(
+                "--to is required
+{}",
+                usage()
+            )
+        })?,
+        store,
         window_minutes: window_minutes.max(1),
         scope,
+        follow,
     })
 }
 
@@ -239,6 +306,95 @@ fn run(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
+/// Reads the follow cursor, or `None` on a store that has never been followed.
+fn read_cursor(store: &str) -> Option<i64> {
+    let raw = std::fs::read_to_string(std::path::Path::new(store).join(CURSOR_FILE)).ok()?;
+    to_epoch(raw.trim()).ok()
+}
+
+/// Writes the follow cursor.
+///
+/// Written only *after* the window's events are flushed to disk. The other order
+/// would advance past a window whose events were never stored, and the gap would
+/// be silent and permanent -- follow mode never looks backwards.
+fn write_cursor(store: &str, at: i64) -> Result<(), String> {
+    std::fs::create_dir_all(store).map_err(|e| e.to_string())?;
+    std::fs::write(
+        std::path::Path::new(store).join(CURSOR_FILE),
+        from_epoch(at),
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn now_epoch() -> i64 {
+    i64::try_from(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    )
+    .unwrap_or(i64::MAX)
+}
+
+/// Keeps recording from where the store left off.
+fn follow(args: &Args) -> Result<(), String> {
+    let client = Client::default();
+    let step = args.window_minutes * 60;
+
+    // A fresh store starts one window back rather than at the epoch: the
+    // alternative is silently attempting to backfill fifty-six years.
+    let mut cursor =
+        read_cursor(&args.store).unwrap_or_else(|| now_epoch() - FOLLOW_LAG_SECONDS - step);
+
+    println!(
+        "following from {} in {}-minute windows",
+        from_epoch(cursor),
+        args.window_minutes
+    );
+    println!("staying {FOLLOW_LAG_SECONDS}s behind the chain; ctrl-c to stop");
+
+    let mut totals = Stats::default();
+    loop {
+        let horizon = now_epoch() - FOLLOW_LAG_SECONDS;
+        if horizon - cursor < FOLLOW_MIN_WINDOW_SECONDS {
+            std::thread::sleep(FOLLOW_IDLE);
+            continue;
+        }
+        let window_end = (cursor + step).min(horizon);
+
+        let rows =
+            fetch_window(&client, cursor, window_end, 0, args.scope).map_err(|e| e.to_string())?;
+        let (events, stats) = events_from_rows(&rows);
+        let emitted = events.len();
+
+        // Open, write and flush per window. Holding a writer across the whole
+        // loop would buffer events indefinitely on a quiet market, and a process
+        // killed mid-buffer would lose them.
+        {
+            let mut writer = Writer::open(&args.store, 20_000).map_err(|e| e.to_string())?;
+            for e in events {
+                writer.append(e).map_err(|e| e.to_string())?;
+            }
+            writer.flush().map_err(|e| e.to_string())?;
+        }
+        write_cursor(&args.store, window_end)?;
+        merge(&mut totals, &stats);
+
+        println!(
+            "  {} .. {}  rows {:>5}  events {:>5}  skipped {:>4}  (total {})",
+            from_epoch(cursor),
+            from_epoch(window_end),
+            rows.len(),
+            emitted,
+            stats.total_skipped(),
+            totals.emitted
+        );
+
+        cursor = window_end;
+        std::thread::sleep(PAUSE_BETWEEN_WINDOWS);
+    }
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -247,7 +403,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match run(&args) {
+    let result = if args.follow {
+        follow(&args)
+    } else {
+        run(&args)
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
             eprintln!("backfill failed: {msg}");

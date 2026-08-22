@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-follow.service
+#
+# Keeps the store growing. Separate from radar-serve on purpose: the recorder
+# writes and the server reads, and a crash in one should not take the other with
+# it. The store is append-only, so both may hold it at once.
+[Unit]
+Description=Radar recorder — keeps the event store current
+Documentation=https://github.com/hey-vera/radar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+ExecStart=/home/guardian/bin/radar-backfill --follow --store /home/guardian/radar/data/store --window-minutes 5
+Restart=always
+RestartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Smaller than the server's: the recorder holds one window of events at a time.
+MemoryMax=384M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

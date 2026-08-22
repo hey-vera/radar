@@ -94,6 +94,23 @@ thousand queries and several hours. It paces itself deliberately — Radar is a
 guest on a free public endpoint (ADR 0002) — so run it under `tmux` or `nohup`
 rather than a session that will disconnect.
 
+## Keeping it current
+
+`--follow` picks up where the store left off and keeps going, staying five
+minutes behind the chain. It is the same extraction path as a one-off backfill,
+so history and live data remain one code path and a replay still means something.
+
+```bash
+sudo install -D -m644 deploy/radar-follow.service /etc/systemd/system/radar-follow.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-follow
+journalctl -u radar-follow -f
+```
+
+It is a separate unit from `radar-serve` because the recorder writes and the
+server reads, and a crash in one should not take the other down. The store is
+append-only, so both may hold it at once.
+
 ## Disk
 
 Recorded events run about 1 GiB a month. The box had 48 GiB free at the time of

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli"]
+members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli", "crates/radar-instruments"]
 
 [workspace.package]
 version = "0.0.1"
@@ -15,6 +15,7 @@ authors = ["The Radar Authors"]
 radar-types = { path = "crates/radar-types", version = "0.0.1" }
 radar-asof = { path = "crates/radar-asof", version = "0.0.1" }
 radar-decode = { path = "crates/radar-decode", version = "0.0.1" }
+radar-instruments = { path = "crates/radar-instruments", version = "0.0.1" }
 radar-store = { path = "crates/radar-store", version = "0.0.1" }
 
 # Kept deliberately small. Every dependency here is one more thing that can be

@@ -10,6 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 use radar_asof::AsOf;
+use radar_instruments::{Context, CreatorHistory, Registry};
 use radar_store::{Event, Reader, Table};
 use radar_types::Slot;
 
@@ -20,6 +21,9 @@ commands:
   inspect --store <dir>          what the store holds
   launches --store <dir> [-n N]  the most recent launches
   creators --store <dir> [-n N]  creators by launch count
+  tools                          the instrument catalogue, with prices
+  call <name> --store <dir> --args '<json>'
+                                 run an instrument and print its record
 "
 }
 
@@ -213,6 +217,75 @@ fn sanitise(s: &str, width: usize) -> String {
     cleaned
 }
 
+/// Every instrument Radar exposes.
+///
+/// One registry backs the CLI, the HTTP routes, the x402 price list and the MCP
+/// catalogue. A second list maintained anywhere else would drift.
+fn registry() -> Registry {
+    let mut r = Registry::new();
+    r.register(CreatorHistory);
+    r
+}
+
+fn tools() {
+    let registry = registry();
+    println!(
+        "{:<20} {:>5}  {:>6}  {:>9}  SUMMARY",
+        "NAME", "VER", "LATENCY", "PRICE"
+    );
+    for instrument in registry.iter() {
+        let spec = instrument.spec();
+        let price = spec.public_price(radar_instruments::DEFAULT_MARGIN_PERCENT);
+        println!(
+            "{:<20} {:>5}  {:>6?}  {:>9}  {}",
+            spec.name,
+            spec.version.to_string(),
+            spec.latency,
+            price.to_string(),
+            spec.summary
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
+    Ok(())
+}
+
+fn call(args: &[String]) -> Result<(), String> {
+    let name = args
+        .get(1)
+        .filter(|a| !a.starts_with('-'))
+        .ok_or("call needs an instrument name")?;
+    let reader = store_of(args)?;
+    let raw = flag(args, "--args").unwrap_or_else(|| "{}".to_owned());
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| format!("--args is not valid JSON: {e}"))?;
+
+    let watermark = Reader::watermark(&reader)
+        .map_err(|e| e.to_string())?
+        .ok_or("store is empty, so nothing can be answered as of any slot")?;
+    let as_of = flag(args, "--as-of")
+        .and_then(|v| v.parse().ok())
+        .map_or(watermark, radar_types::Slot);
+
+    let ctx = Context {
+        as_of: AsOf::at(as_of),
+        store: &reader,
+    };
+    let record = registry()
+        .invoke(name, parsed, &ctx)
+        .map_err(|e| e.to_string())?;
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&record).map_err(|e| e.to_string())?
+    );
+    if record.error.is_some() {
+        return Err("instrument failed; the record above says why".to_owned());
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -224,6 +297,11 @@ fn main() -> ExitCode {
         "inspect" => inspect(&args),
         "launches" => launches(&args),
         "creators" => creators(&args),
+        "tools" => {
+            tools();
+            Ok(())
+        }
+        "call" => call(&args),
         "-h" | "--help" | "help" => {
             print!("{}", usage());
             return ExitCode::SUCCESS;

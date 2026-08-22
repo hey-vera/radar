@@ -1099,8 +1099,10 @@ name = "radar-cli"
 version = "0.0.1"
 dependencies = [
  "radar-asof",
+ "radar-instruments",
  "radar-store",
  "radar-types",
+ "serde_json",
 ]
 
 [[package]]
@@ -1112,6 +1114,20 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "thiserror",
+]
+
+[[package]]
+name = "radar-instruments"
+version = "0.0.1"
+dependencies = [
+ "radar-asof",
+ "radar-store",
+ "radar-types",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

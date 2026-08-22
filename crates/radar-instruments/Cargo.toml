@@ -1,6 +1,6 @@
 [package]
-name = "radar-cli"
-description = "Radar's operator command line. Reads live state and computes nothing it does not have."
+name = "radar-instruments"
+description = "Radar's instrument registry. One declaration; internal, HTTP, x402 and MCP surfaces derived from it."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,16 +9,17 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "radar"
-path = "src/main.rs"
-
 [dependencies]
 radar-asof.workspace = true
-radar-instruments.workspace = true
 radar-store.workspace = true
 radar-types.workspace = true
+schemars.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

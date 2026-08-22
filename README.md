@@ -56,9 +56,18 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-types` | Domain vocabulary. Slots as the only clock, integer money, mutability classes, provenance and trust tiers. |
 | `radar-asof` | Point-in-time correctness. A watermark that makes look-ahead bias a compile-time concern rather than a discipline. |
 | `radar-provider` | The metered, cached, health-aware data plane. Pure policy — no HTTP, no clock, no async — so spend control is exhaustively testable without a network. |
+| `radar-decode` | Solana program decoders. Matches Anchor discriminator bytes, never logged instruction names; an unrecognised discriminator is a recorded value, never a guess. |
 
-Further crates (decode, watch, store, instruments, graph, sim, strategy, risk,
-exec, signer, serve, research) are planned; see the architecture plan.
+Further crates (watch, store, instruments, graph, sim, strategy, risk, exec,
+signer, serve, research) are planned; see the architecture plan.
+
+## Measured, not assumed
+
+`scripts/probe/` holds the scripts that produced every number in
+[docs/research/](docs/research/), because a figure without the thing that
+produced it is a claim rather than a measurement. Running them before writing
+decoders overturned three assumptions while they were still cheap to change —
+see [0004-measured-launch-base-rates.md](docs/research/0004-measured-launch-base-rates.md).
 
 ## Building
 

@@ -1,0 +1,25 @@
+[package]
+name = "radar-store"
+description = "Radar's append-only, slot-partitioned Parquet event log."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+arrow = { version = "56", default-features = false }
+parquet = { version = "56", default-features = false, features = ["arrow", "zstd"] }
+radar-asof.workspace = true
+radar-types.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+tempfile = "3"
+
+[lints]
+workspace = true

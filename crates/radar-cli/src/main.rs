@@ -1,0 +1,283 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The operator command line.
+//!
+//! Everything here reads live state and computes nothing it does not have. The
+//! point is that `radar-cli` can never be stale: it opens the store and reports
+//! what is actually in it, so a claim about what Radar has recorded is checkable
+//! rather than remembered.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::process::ExitCode;
+
+use radar_asof::AsOf;
+use radar_store::{Event, Reader, Table};
+use radar_types::Slot;
+
+fn usage() -> &'static str {
+    "radar-cli <command>
+
+commands:
+  inspect --store <dir>          what the store holds
+  launches --store <dir> [-n N]  the most recent launches
+  creators --store <dir> [-n N]  creators by launch count
+"
+}
+
+/// Reads every event the store holds.
+fn read_all(reader: &Reader) -> Result<Vec<Event>, String> {
+    let watermark = Reader::watermark(reader).map_err(|e| e.to_string())?;
+    let Some(top) = watermark else {
+        return Ok(Vec::new());
+    };
+    let as_of = AsOf::at(top);
+    let mut all = Vec::new();
+    for table in Table::ALL {
+        all.extend(reader.read(*table, as_of).map_err(|e| e.to_string())?);
+    }
+    Ok(all)
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn store_of(args: &[String]) -> Result<Reader, String> {
+    let dir = flag(args, "--store").ok_or_else(|| format!("--store is required\n\n{}", usage()))?;
+    Ok(Reader::open(dir))
+}
+
+fn limit_of(args: &[String]) -> usize {
+    flag(args, "-n")
+        .or_else(|| flag(args, "--limit"))
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20)
+}
+
+fn inspect(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let events = read_all(&reader)?;
+
+    if events.is_empty() {
+        println!("store is empty");
+        return Ok(());
+    }
+
+    let slots: Vec<Slot> = events.iter().map(Event::slot).collect();
+    let (lo, hi) = (
+        slots.iter().min().copied().unwrap_or_default(),
+        slots.iter().max().copied().unwrap_or_default(),
+    );
+    let span = hi.saturating_since(lo);
+
+    println!("events        : {}", events.len());
+    println!(
+        "slot range    : {lo} .. {hi}  ({span}, ~{:.1} h of chain)",
+        span.approx_duration().as_secs_f64() / 3600.0
+    );
+    println!(
+        "distinct mints: {}",
+        events
+            .iter()
+            .map(Event::mint)
+            .collect::<BTreeSet<_>>()
+            .len()
+    );
+
+    let mut by_table: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut by_instruction: BTreeMap<String, usize> = BTreeMap::new();
+    let mut unknown = 0usize;
+    let mut failed = 0usize;
+    for e in &events {
+        *by_table
+            .entry(match e {
+                Event::Launch(_) => "launches",
+                Event::Trade(_) => "trades",
+                Event::Graduation(_) => "graduations",
+            })
+            .or_default() += 1;
+        let origin = match e {
+            Event::Launch(l) => &l.origin,
+            Event::Trade(t) => &t.origin,
+            Event::Graduation(g) => &g.origin,
+        };
+        *by_instruction
+            .entry(origin.instruction.clone())
+            .or_default() += 1;
+        if !origin.known {
+            unknown += 1;
+        }
+        if !e.envelope().succeeded {
+            failed += 1;
+        }
+    }
+
+    println!("\nby table:");
+    for (t, n) in &by_table {
+        println!("  {t:<14} {n}");
+    }
+    println!("\nby instruction:");
+    for (i, n) in &by_instruction {
+        println!("  {i:<26} {n}");
+    }
+    println!("\nfailed transactions: {failed}");
+    // The program-upgrade alarm. A decoder that has stopped understanding a
+    // program looks exactly like a program that has gone quiet, so this number
+    // climbing is the signal to go and look.
+    println!("unknown instructions: {unknown}");
+    if unknown > 0 {
+        println!("  ^ a rising count means a program upgrade; add the discriminator");
+    }
+
+    for table in Table::ALL {
+        let files = reader.files(*table).map_err(|e| e.to_string())?;
+        if !files.is_empty() {
+            println!("\n{} partition files: {}", table.dir(), files.len());
+        }
+    }
+    Ok(())
+}
+
+fn launches(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let mut events: Vec<Event> = read_all(&reader)?
+        .into_iter()
+        .filter(|e| matches!(e, Event::Launch(_)))
+        .collect();
+    events.sort_by_key(|b| std::cmp::Reverse(b.slot()));
+
+    println!("{:>12}  {:<44}  {:<12}  NAME", "SLOT", "MINT", "SYMBOL");
+    for e in events.iter().take(limit_of(args)) {
+        let Event::Launch(l) = e else { continue };
+        // Creator-supplied text is arbitrary and may contain control characters,
+        // zero-width spaces or right-to-left overrides. Rendering it raw into a
+        // terminal is how a token name rewrites the line above it.
+        println!(
+            "{:>12}  {:<44}  {:<12}  {}",
+            l.envelope.slot,
+            l.mint,
+            sanitise(&l.symbol, 12),
+            sanitise(&l.name, 40)
+        );
+    }
+    Ok(())
+}
+
+fn creators(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for e in read_all(&reader)? {
+        if let Event::Launch(l) = e {
+            *counts.entry(l.creator.to_string()).or_default() += 1;
+        }
+    }
+    let mut ranked: Vec<(String, usize)> = counts.into_iter().collect();
+    ranked.sort_by_key(|(addr, n)| (std::cmp::Reverse(*n), addr.clone()));
+
+    let repeat = ranked.iter().filter(|(_, n)| *n > 1).count();
+    println!(
+        "distinct creators: {}  ({repeat} launched more than once)",
+        ranked.len()
+    );
+    println!(
+        "
+{:>7}  CREATOR",
+        "LAUNCHES"
+    );
+    for (addr, n) in ranked.iter().take(limit_of(args)) {
+        println!("{n:>7}  {addr}");
+    }
+    Ok(())
+}
+
+/// Renders untrusted text safely for a terminal.
+///
+/// Token names and symbols are arbitrary creator-controlled bytes. Printing them
+/// raw lets a launch move the cursor, rewrite earlier output, or hide characters
+/// behind a right-to-left override — which for an operator staring at a list of
+/// candidates is a way to make one token look like another.
+fn sanitise(s: &str, width: usize) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}') {
+                '·'
+            } else {
+                c
+            }
+        })
+        .take(width)
+        .collect();
+    cleaned
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let Some(command) = args.first() else {
+        eprint!("{}", usage());
+        return ExitCode::FAILURE;
+    };
+
+    let result = match command.as_str() {
+        "inspect" => inspect(&args),
+        "launches" => launches(&args),
+        "creators" => creators(&args),
+        "-h" | "--help" | "help" => {
+            print!("{}", usage());
+            return ExitCode::SUCCESS;
+        }
+        other => Err(format!("unknown command {other}\n\n{}", usage())),
+    };
+
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(msg) => {
+            eprintln!("{msg}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_characters_in_a_token_name_cannot_rewrite_the_terminal() {
+        // A name carrying a carriage return would otherwise overwrite the line
+        // above it, which is a cheap way to make one candidate look like another.
+        assert_eq!(sanitise("evil\r\nname", 40), "evil··name");
+        assert_eq!(sanitise("tab\there", 40), "tab·here");
+    }
+
+    #[test]
+    fn zero_width_and_bidi_overrides_are_made_visible() {
+        // Two tokens whose names differ only by an invisible character must not
+        // render identically.
+        assert_eq!(sanitise("A\u{200b}B", 40), "A·B");
+        assert_eq!(sanitise("safe\u{202e}drawkcab", 40), "safe·drawkcab");
+    }
+
+    #[test]
+    fn ordinary_text_including_emoji_survives() {
+        assert_eq!(sanitise("p down 🚀", 40), "p down 🚀");
+    }
+
+    #[test]
+    fn output_is_truncated_to_the_column_width() {
+        assert_eq!(sanitise("0123456789abcdef", 8), "01234567");
+    }
+
+    #[test]
+    fn flags_are_read_positionally() {
+        let args: Vec<String> = ["launches", "--store", "/tmp/s", "-n", "5"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(flag(&args, "--store"), Some("/tmp/s".to_owned()));
+        assert_eq!(limit_of(&args), 5);
+        assert_eq!(limit_of(&args[..1]), 20, "defaults when absent");
+    }
+}

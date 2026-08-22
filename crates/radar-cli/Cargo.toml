@@ -1,0 +1,22 @@
+[package]
+name = "radar-cli"
+description = "Radar's operator command line. Reads live state and computes nothing it does not have."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "radar"
+path = "src/main.rs"
+
+[dependencies]
+radar-asof.workspace = true
+radar-store.workspace = true
+radar-types.workspace = true
+
+[lints]
+workspace = true

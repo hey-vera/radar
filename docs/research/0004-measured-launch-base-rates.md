@@ -130,3 +130,63 @@ about the single most load-bearing piece of coordination evidence.
 Caught only because the raw instruction list was printed next to the verdict. If
 the probe had printed just the verdict, the number would have been wrong and
 believed. Recorded in [LEARNINGS.md](../../LEARNINGS.md).
+
+---
+
+## Addendum, same day: the first real store, and a constraint that reshaped the backfill
+
+Thirty minutes of chain extracted from CryptoHouse into Radar's own Parquet store
+(`radar-backfill`, 27.7s, 87% yield, 376 events).
+
+**The public endpoint caps a result at 1,000 rows** — `max_result_rows = 1000`,
+`max_execution_time = 60`, `readonly = 1`, and a readonly user cannot raise any
+of them. Aggregates are unaffected because they return few rows, which is why
+every earlier research query worked and only bulk extraction hit the wall.
+
+That decides what can be backfilled, by arithmetic rather than preference:
+
+| | Rate | Chain per 1,000 rows | Queries for 6 months |
+|---|---|---|---|
+| Launches + graduations | ~24k/day | ~1 hour | ~4,400 — **a few hours** |
+| Every trade | >1.2M/day | ~20 seconds | ~780,000 — **not a plan** |
+
+So `Scope::Lifecycle` extracts in full and is the default; raw trades are for
+investigating a specific window, and outcome labels will come from per-mint
+aggregates — which is the granularity they need anyway, and which fits both the
+row cap and the 48 GB free on the VPS.
+
+### What thirty minutes already shows
+
+```
+distinct creators: 178  (59 launched more than once)
+
+LAUNCHES  CREATOR
+     42  AeZpHiVXZ62G8qY1g84qVrq2z877RoiUDRq4QsTp2RJj
+     13  HaA8W4e2Y8cqQiH8QiEqkjfRsjQQqKMA1Q4gBLr9TS88
+     10  AZry31LgByHrZ37sdPdH3kPPGM5HzkjhBWcerZxMgX4a
+```
+
+One creator launched **42 tokens in half an hour** — a rate of about 2,000 a day
+from a single address. A third of creators in the window launched more than once.
+
+Two launches landed in the *same slot* with identical names and symbols and
+different mints:
+
+```
+440628931  F3zWWerz2PDesSo82b8hp315k2zsZMMon1vajPnvpump  CHIPS  REALLL CHECK DISCORDDDD
+440628931  796Fqos48pKyadvLoj1nq7V78TiPrrb7kKDWyEimpump  CHIPS  REALLL CHECK DISCORDDDD
+```
+
+Creator launch rate is cheap to compute, needs no paid data, and is already
+discriminating — which is what section 6.1 argued creator intelligence would be,
+now with numbers behind it. Worth measuring against outcomes before it informs
+sizing, like everything else.
+
+**Also learned:** not every pump.fun mint carries the `pump` vanity suffix
+(`2kfy88Bh72LDqkKgdMwFg68RGhf5xHkSp4mPMLRgycRq` in this window did not). Anything
+filtering on that suffix would silently miss real launches.
+
+**Skips were honest**: 36 with no resolvable mint and 20 with more than one
+candidate, refused rather than guessed. An event attributed to the wrong token is
+worse than a missing one.
+

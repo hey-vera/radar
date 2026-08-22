@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Builds the Linux binaries and uploads them as a workflow artifact.
+#
+# Deliberately does NOT push to the server. Shipping from CI would mean giving a
+# workflow an SSH key to a box that runs other people's production services, and
+# the artifact can be downloaded and placed by whoever is already trusted with
+# that access:
+#
+#   gh run download --name radar-linux-x86_64 --dir ./dist
+#   scp ./dist/radar-serve guardian-vps-tail:/tmp/
+#   ssh guardian-vps-tail 'sudo install -m755 /tmp/radar-serve /usr/local/bin/'
+#
+# See deploy/README.md.
+name: release-linux
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release --locked -p radar-serve -p radar-cli -p radar-backfill
+
+      - name: Record what was built
+        run: |
+          {
+            echo "commit: ${GITHUB_SHA}"
+            echo "built:  $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo
+            for b in radar-serve radar radar-backfill; do
+              printf '%s  %s\n' "$(sha256sum "target/release/$b" | cut -d' ' -f1)" "$b"
+            done
+          } > target/release/BUILD-INFO.txt
+          cat target/release/BUILD-INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radar-linux-x86_64
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            target/release/radar-serve
+            target/release/radar
+            target/release/radar-backfill
+            target/release/BUILD-INFO.txt

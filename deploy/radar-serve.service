@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-serve.service
+#
+# Runs as `guardian` alongside cortex and pulse. Nothing here needs root: the
+# service binds a high port and Caddy terminates TLS in front of it.
+[Unit]
+Description=Radar — Solana research intelligence
+Documentation=https://github.com/hey-vera/radar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+ExecStart=/usr/local/bin/radar-serve
+EnvironmentFile=/etc/radar/radar.env
+Restart=always
+RestartSec=5
+
+# The service reads a Parquet store and answers HTTP. It has no reason to write
+# outside its own data directory, load kernel modules, or see other users'
+# processes -- so it is not allowed to.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+# The VPS has 3.8 GiB total and runs cortex and pulse as well. A runaway query
+# must take radar down rather than the box.
+MemoryMax=768M
+TasksMax=256
+
+[Install]
+WantedBy=multi-user.target

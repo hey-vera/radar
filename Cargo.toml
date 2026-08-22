@@ -1,0 +1,43 @@
+[workspace]
+resolver = "3"
+members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.90"
+license = "Apache-2.0"
+repository = "https://github.com/hey-vera/radar"
+homepage = "https://radar.heyvera.org"
+authors = ["The Radar Authors"]
+
+[workspace.dependencies]
+radar-types = { path = "crates/radar-types", version = "0.0.1" }
+radar-asof = { path = "crates/radar-asof", version = "0.0.1" }
+
+# Kept deliberately small. Every dependency here is one more thing that can be
+# compromised into a process that will eventually hold a signing key, so the bar
+# for adding one is "the alternative is writing it ourselves and getting it wrong".
+blake3 = "1.5"
+bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
+schemars = "1.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tracing = "0.1"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Pedantic wants every product name in backticks. Rendering "Radar" as code in
+# prose is worse documentation, not better.
+doc_markdown = "allow"
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

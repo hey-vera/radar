@@ -1,0 +1,17 @@
+[package]
+name = "radar-asof"
+description = "Point-in-time correctness for Radar: a watermark that makes look-ahead bias a compile-time concern rather than a discipline."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+radar-types.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

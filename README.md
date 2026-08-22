@@ -1,0 +1,84 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+# Radar
+
+Solana research and trading infrastructure, and an intelligence layer other
+agents can buy over x402.
+
+**Status: early. Phase 0.** The foundation crates are built and tested; the
+recorder is not yet running. Nothing here trades money.
+
+## What this is for
+
+Radar is built to answer one question honestly: **does a measurable edge exist in
+this market, and if so, where?**
+
+That framing is deliberate, because the base rate is unforgiving. In April 2026 —
+one of the strongest months in two years — roughly 96% of pump.fun wallets either
+lost money or made under $500, and only 5.4% cleared $1,000. Meanwhile the
+lowest-latency public data path shut down, and the firms still winning on speed
+are buying private fiber. Latency is not an edge available here.
+
+What is available is unglamorous and measurable:
+
+- **Avoidance** — not buying the traps. Cheap, deterministic, compounding.
+- **Exit-first sizing** — most losses are inability to exit, not bad entries.
+- **Cost discipline** — fees, tips, slippage and failed transactions are a large
+  share of retail P&L.
+- **Composition** — creator history × funding graph × social/on-chain divergence
+  is hard to compute, which is why it may not be arbitraged away yet.
+
+So the first thing Radar builds is not a strategy. It is a **recorder with a
+point-in-time guarantee**, because every signal has to be validated against
+outcomes, and the dataset only accumulates forward.
+
+## The idea that shapes the architecture
+
+Radar buys its data per call. That turns every design decision into arithmetic,
+and two answers fall straight out:
+
+**Decode locally.** Parsed transactions cost $0.05 each; a launch analysis touches
+50–200 of them. But `getBlock` returns *every* transaction in a slot for $0.001 —
+including the create, the dev buy, and every same-slot coordinated buy. Decoding
+in Rust rather than buying it parsed is worth roughly **100–300×** on the bill,
+and it is the real justification for the Rust layer.
+See [ADR 0001](docs/adr/0001-decode-locally-never-buy-parsed-transactions.md).
+
+**Never pay twice for the same fact.** Every fact carries a *mutability class*.
+A token's structural facts are fixed within seconds of launch and consulted on
+every re-evaluation, so they are fetched once per mint and never again. Authority
+revocations are one-way latches: watched until they close, then never asked about
+again. This needs nothing from any vendor and it is the largest saving available.
+
+## Layout
+
+| Crate | What it does |
+|---|---|
+| `radar-types` | Domain vocabulary. Slots as the only clock, integer money, mutability classes, provenance and trust tiers. |
+| `radar-asof` | Point-in-time correctness. A watermark that makes look-ahead bias a compile-time concern rather than a discipline. |
+| `radar-provider` | The metered, cached, health-aware data plane. Pure policy — no HTTP, no clock, no async — so spend control is exhaustively testable without a network. |
+
+Further crates (decode, watch, store, instruments, graph, sim, strategy, risk,
+exec, signer, serve, research) are planned; see the architecture plan.
+
+## Building
+
+```bash
+just check
+```
+
+Requires the stable Rust toolchain and [`just`](https://just.systems). On Windows
+under Git Bash, `export RADAR_CARGO="cargo +stable-x86_64-pc-windows-gnullvm"`
+first — [AGENTS.md](AGENTS.md) says why.
+
+## Documentation
+
+- [AGENTS.md](AGENTS.md) — how to work here, and the invariants that are not
+  negotiable.
+- [docs/adr/](docs/adr/) — decisions, and what each one costs.
+- [docs/research/](docs/research/) — the data-sourcing landscape, the
+  freshness/caching design, and the vendor feature requests that would change
+  the architecture if granted.
+
+## Licence
+
+Apache-2.0. See [LICENSE](LICENSE).

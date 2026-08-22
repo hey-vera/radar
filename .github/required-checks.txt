@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# The required status checks on the `main` ruleset, and how each one is run.
+#
+# Left of `=` is the status-check context, exactly as the ruleset names it.
+# Right of `=` is the recipe the job runs. The workflow contains no copy of the
+# command, so local and CI cannot diverge.
+#
+# Adding a required check means adding it in three places - the ruleset, a
+# workflow job, and here.
+
+build           = just build
+tests           = just tests
+lint            = just lint
+fmt             = just fmt
+licence-headers = just licence-headers
+cargo-deny      = just cargo-deny
+msrv            = github-only: pinned toolchain, no local recipe (the host may not have 1.90 for its triple)

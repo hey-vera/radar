@@ -13,16 +13,35 @@ all-features = true
 [advisories]
 # Any known vulnerability fails the build. There is no severity threshold.
 yanked = "deny"
-ignore = []
+ignore = [
+    # `paste` is a proc macro that expands identifiers at compile time and ships
+    # no runtime code. It arrives transitively through `parquet`, is unmaintained
+    # rather than vulnerable, and cannot be dropped without dropping Parquet.
+    #
+    # Recorded rather than suppressed silently: the risk is a compile-time
+    # supply-chain one, and the mitigation is that the crate is small, widely
+    # audited, and pinned by the committed lockfile. Revisit when `parquet` drops
+    # it, which upstream has an open issue for.
+    { id = "RUSTSEC-2024-0436", reason = "compile-time-only proc macro pulled in by parquet; unmaintained, not vulnerable" },
+]
 
 [licenses]
 confidence-threshold = 0.93
 # Exactly the licences present in the current tree, and no more. A dependency
 # arriving under a licence not listed here fails the build on purpose: adding one
 # should be a decision someone makes, not a default someone inherits.
+# Every entry here was added because a real dependency needed it, with the
+# reason recorded. The list is not a wish list.
 allow = [
     "Apache-2.0",
+    # rustls and the webpki chain, reached through ureq's TLS. Permissive and
+    # compatible with redistribution under Apache-2.0.
+    "ISC",
+    "BSD-3-Clause",
     "CC0-1.0",
+    # The Community Data License Agreement, on data files shipped inside the
+    # Arrow ecosystem. Permissive; applies to data rather than code.
+    "CDLA-Permissive-2.0",
     "MIT",
     "Unicode-3.0",
 ]

@@ -25,6 +25,10 @@ export RUSTFLAGS := env("RUSTFLAGS", "-D warnings")
 
 cargo := env("RADAR_CARGO", "cargo")
 
+# A floor, not a target. Raise it as the suite grows; lowering it to make a run
+# pass is the failure this guards against.
+export MIN_TESTS := "160"
+
 _default:
     @just --list --unsorted
 
@@ -42,8 +46,24 @@ build:
 
 # Unit tests and doctests. The doctest on radar-provider is the worked example
 # of the cost model, so it is load-bearing documentation as well as a test.
+#
+# The floor is deliberate. A summary that prints nothing when the build fails
+# reads, at a glance, exactly like a summary that prints nothing because
+# everything passed -- and a commit went out that way once already
+# (LEARNINGS entry 5). Asserting a minimum makes absence loud.
 tests:
-    {{ cargo }} test --locked
+    #!/usr/bin/env bash
+    set -euo pipefail
+    output=$({{ cargo }} test --locked 2>&1) || { echo "$output"; exit 1; }
+    echo "$output"
+    passed=$(echo "$output" | awk '/^test result: ok\./ { s += $4 } END { print s + 0 }')
+    echo "--- ${passed:-0} tests passed ---"
+    if [ "${passed:-0}" -lt "$MIN_TESTS" ]; then
+        echo "only ${passed:-0} tests ran; expected at least $MIN_TESTS." >&2
+        echo "Either tests were skipped or the harness is lying. Raise MIN_TESTS in" >&2
+        echo "the justfile when the suite grows; never lower it to make this pass." >&2
+        exit 1
+    fi
 
 # Pedantic clippy, denied. The workspace lint table sets the levels; this runs them.
 lint:

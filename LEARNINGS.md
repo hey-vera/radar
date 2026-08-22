@@ -102,3 +102,30 @@ A field that is often a sentinel is a bound; a field that never is, is an amount
 
 A test that cannot fail against the plausible wrong answer is not evidence.
 
+---
+
+## 5. Reading an empty result as a pass
+
+**Found:** 2026-08-22, immediately after pushing a broken build.
+
+The pre-commit check pipes `cargo test` through `grep "^test result"` and sums
+the counts. When the build fails there are no result lines, so the sum prints as
+empty — and an empty string next to a zero clippy count reads, at a glance, like
+everything passed. It did not; `radar-cli` did not compile, and the commit went
+out anyway.
+
+**Cost:** one broken commit on `main`, fixed in the next. CI would have caught it
+within a minute, so the damage was bounded — but only by a check that runs after
+the push rather than before it.
+
+**What catches a recurrence:** nothing automatic yet. The check should assert a
+minimum test count rather than print a sum, so that "no tests ran" is loud
+instead of blank. Until that exists this entry is the only thing standing between
+the same silence and the same conclusion.
+
+**The general shape** is worth more than the instance: a check that reports
+*absence* the same way it reports *success* is not a check. This is the same
+failure as an empty CryptoHouse result standing in for a timeout, which the
+backfill guards against explicitly — and it was made here anyway, one layer up,
+in the tooling rather than the code.
+

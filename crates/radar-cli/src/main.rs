@@ -248,7 +248,6 @@ fn tools() {
                 .join(" ")
         );
     }
-    Ok(())
 }
 
 fn call(args: &[String]) -> Result<(), String> {

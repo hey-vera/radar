@@ -1293,6 +1293,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-risk"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "radar-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "radar-serve"
 version = "0.0.1"
 dependencies = [

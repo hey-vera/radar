@@ -61,10 +61,28 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-backfill` | Bulk historical extraction from CryptoHouse, decoded by the same decoder the live recorder uses. |
 | `radar-instruments` | The instrument registry. One declaration; internal, HTTP, x402 and MCP surfaces derived from it, and every invocation recorded. |
 | `radar-serve` | Ops page, JSON API, stateless MCP (2026-07-28), and the x402-priced public surface. |
+| `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
-Further crates (watch, graph, sim, strategy, risk, exec, signer, research) are
-planned; see the architecture plan.
+Further crates (graph, sim, strategy, exec, signer, research) are planned; see
+the architecture plan.
+
+## The safety invariant
+
+Borrowed from GitLocus and applied to money: **model judgement never authorises
+capital.**
+
+```
+strategy or model  --emits-->  Proposal       inert data, zero authority
+risk kernel        --emits-->  Authorization  pure fn; nonce, expiry, hard bounds
+signer process     --emits-->  Signature      re-derives the tx, trusts nothing
+```
+
+`radar_risk::evaluate` has no clock, no network and no ambient state — the
+current slot is an argument and so is the portfolio. So every past decision can
+be replayed, every refusal is reproducible from a recording, and any decision can
+be re-judged under a tighter policy without ever having run it that way. The
+default policy refuses everything.
 
 ## Trying it
 

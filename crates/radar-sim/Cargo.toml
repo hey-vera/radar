@@ -1,6 +1,6 @@
 [package]
-name = "radar-cli"
-description = "Radar's operator command line. Reads live state and computes nothing it does not have."
+name = "radar-sim"
+description = "Exit analysis for Radar: mint structure and the sell curve. Can this position actually be closed?"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,17 +9,12 @@ repository.workspace = true
 homepage.workspace = true
 authors.workspace = true
 
-[[bin]]
-name = "radar"
-path = "src/main.rs"
-
 [dependencies]
-radar-asof.workspace = true
-radar-instruments.workspace = true
-radar-sim.workspace = true
-radar-store.workspace = true
 radar-types.workspace = true
+serde.workspace = true
 serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 [lints]
 workspace = true

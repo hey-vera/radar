@@ -1251,6 +1251,7 @@ version = "0.0.1"
 dependencies = [
  "radar-asof",
  "radar-instruments",
+ "radar-sim",
  "radar-store",
  "radar-types",
  "serde_json",
@@ -1318,6 +1319,17 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+]
+
+[[package]]
+name = "radar-sim"
+version = "0.0.1"
+dependencies = [
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
 ]
 
 [[package]]

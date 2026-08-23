@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry};
+use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::{Event, Reader, Table};
 use radar_types::Slot;
 
@@ -24,6 +25,7 @@ commands:
   tools                          the instrument catalogue, with prices
   call <name> --store <dir> --args '<json>'
                                  run an instrument and print its record
+  exit <mint> [--size N]         can this token actually be sold, and at what size
 "
 }
 
@@ -286,6 +288,144 @@ fn call(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Formats lamports as SOL without going through a float.
+///
+/// A lamport count exceeds f64's exact integer range, and this number is read by
+/// someone deciding how much to risk.
+fn sol(lamports: u64) -> String {
+    format!(
+        "{}.{:09}",
+        lamports / 1_000_000_000,
+        lamports % 1_000_000_000
+    )
+}
+
+/// Answers whether a token can actually be sold, and at what size.
+///
+/// The question Radar asks before any other, and the one the risk kernel refuses
+/// a position without.
+fn exit_analysis(args: &[String]) -> Result<(), String> {
+    let mint_arg = args
+        .get(1)
+        .filter(|a| !a.starts_with('-'))
+        .ok_or("exit needs a mint address")?;
+    let mint: radar_types::Address = mint_arg
+        .parse()
+        .map_err(|_| format!("`{mint_arg}` is not a base58 address"))?;
+    let size: u64 = flag(args, "--size")
+        .and_then(|v| v.parse().ok())
+        // A million base units is one token at six decimals, which is the
+        // scale pump.fun mints use.
+        .unwrap_or(1_000_000_000);
+
+    println!("{mint}");
+
+    // Structure first. It is cheaper, and it can rule a token out before any
+    // quote is worth asking for.
+    let structure = match RpcClient::default().mint_structure(&mint) {
+        Ok(s) => {
+            println!(
+                "
+  decimals          : {}",
+                s.decimals
+            );
+            println!("  supply            : {}", s.supply);
+            println!(
+                "  mint authority    : {}",
+                s.mint_authority
+                    .map_or_else(|| "revoked".to_owned(), |a| a.to_string())
+            );
+            println!(
+                "  freeze authority  : {}",
+                s.freeze_authority
+                    .map_or_else(|| "revoked".to_owned(), |a| a.to_string())
+            );
+            println!(
+                "  program           : {}",
+                if s.token_2022 { "Token-2022" } else { "Token" }
+            );
+            if s.extensions.is_empty() {
+                println!("  extensions        : none");
+            } else {
+                println!("  extensions        : {:?}", s.extensions);
+            }
+            Some(s)
+        }
+        Err(e) => {
+            println!(
+                "
+  structure         : UNREADABLE ({e})"
+            );
+            None
+        }
+    };
+
+    let report = radar_sim::probe(&JupiterQuoter::default(), &mint, structure, size);
+
+    println!(
+        "
+  sell curve (from {size} base units):"
+    );
+    if report.curve.is_empty() {
+        println!("    nothing quotable at any size probed");
+    }
+    for point in &report.curve {
+        let impact = if point.impact_bps == u32::MAX {
+            "unknown".to_owned()
+        } else {
+            format!("{:.2}%", f64::from(point.impact_bps) / 100.0)
+        };
+        println!(
+            "    {:>16} units -> {:>12} lamports  ({} SOL, impact {impact})",
+            point.size_tokens,
+            point.out_lamports,
+            sol(point.out_lamports)
+        );
+    }
+    for size in &report.no_route_at {
+        println!("    {size:>16} units -> no route");
+    }
+
+    println!(
+        "
+  capacity within an impact budget:"
+    );
+    for (bps, capacity) in radar_sim::capacity_table(&report) {
+        match capacity {
+            Some(lamports) => {
+                println!(
+                    "    <= {:.2}%  : {} SOL",
+                    f64::from(bps) / 100.0,
+                    sol(lamports)
+                );
+            }
+            None => println!("    <= {:.2}%  : nothing fits", f64::from(bps) / 100.0),
+        }
+    }
+
+    println!(
+        "
+  confidence        : {:?}",
+        report.confidence
+    );
+    if !report.structural_threats.is_empty() {
+        println!("  structural threats: {:?}", report.structural_threats);
+    }
+    println!("  can be stopped    : {}", report.can_be_stopped);
+    println!(
+        "  EXITABLE          : {}",
+        if report.is_exitable() { "yes" } else { "NO" }
+    );
+    if !report.is_exitable() {
+        println!(
+            "
+  The risk kernel refuses a position without a measured exit, so this"
+        );
+        println!("  token cannot be sized at all until that changes.");
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -297,6 +437,7 @@ fn main() -> ExitCode {
         "inspect" => inspect(&args),
         "launches" => launches(&args),
         "creators" => creators(&args),
+        "exit" => exit_analysis(&args),
         "tools" => {
             tools();
             Ok(())

@@ -4,8 +4,11 @@
 Solana research and trading infrastructure, and an intelligence layer other
 agents can buy over x402.
 
-**Status: early. Phase 0.** The foundation crates are built and tested; the
-recorder is not yet running. Nothing here trades money.
+**Status: recording.** The pipeline runs end to end on a live instance —
+recording launches, measuring what became of them, and answering questions about
+both over HTTP and MCP. **Nothing here trades money**, and the trading lane is
+deliberately unbuilt: intelligence first, capital only once recorded data shows
+an edge exists.
 
 ## What this is for
 
@@ -83,6 +86,34 @@ current slot is an argument and so is the portfolio. So every past decision can
 be replayed, every refusal is reproducible from a recording, and any decision can
 be re-judged under a tighter policy without ever having run it that way. The
 default policy refuses everything.
+
+## What it does today
+
+Recording continuously from the chain, measuring each token at roughly one hour,
+six hours and a day after launch, and serving the result:
+
+```
+$ radar creators --store ./data/store -n 3
+distinct creators: 1148  (418 launched more than once)
+
+LAUNCHES  CREATOR
+     88  6LdWMVxj6R7683M9ioAcaFNRfUhcr9v9K2xNjYd9Fnbx
+     44  EH7aHeLEz8wd9wqeMuT364ntXM93j6Mo5cbmjQFhKY9S
+     41  bwamJzztZsepfkteWRChggmXuiiCQvpLqPietdNfSXa
+```
+
+That first address, through `creator_track_record`: 88 launches, 39 of them old
+enough to have been measured, **100% stillborn**, median survival **0 slots**.
+The population rate across all measured tokens is ~35%.
+
+The instrument reports `measured=39` rather than 88 because the other 49 have not
+yet reached their first checkpoint. It says what it knows and no more, which is
+the same reason it will not state a rate below five measured launches.
+
+Whether creator history *predicts returns* is a different and larger question,
+and nobody has measured it yet. What exists is the machinery to ask: signals
+computed at a watermark, outcomes measured later, and a replay that must
+reproduce both.
 
 ## Trying it
 

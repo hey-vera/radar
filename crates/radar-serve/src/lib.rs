@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod facilitator;
 pub mod mcp;
 mod ops;
 pub mod x402;
@@ -18,7 +19,7 @@ pub mod x402;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -154,18 +155,18 @@ async fn call_instrument(
 
 /// The paid surface.
 ///
-/// Challenges with `402` when no payment is presented. A payment that *is*
-/// presented is not honoured yet — verification needs a facilitator round trip,
-/// and until that is wired an unverified payment must be refused rather than
-/// trusted. Serving the response on the strength of a header nobody checked
-/// would be worse than not offering the route.
+/// Challenges with `402` when no payment is presented, then verifies and settles
+/// through the configured facilitator before the answer leaves the process.
+///
+/// The order is deliberate. The instrument runs *before* settlement, so a caller
+/// is never charged for a call that was going to fail — and the response is held
+/// until settlement succeeds, so a caller who disconnects has not been given the
+/// answer for free. Every failure in between refuses; see [`facilitator`].
 async fn paid_instrument(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
     headers: HeaderMap,
-    // Deliberately unread. The arguments are only worth parsing once a payment
-    // has been verified, and verification is not wired yet.
-    _body: Option<Json<Value>>,
+    body: Option<Json<Value>>,
 ) -> Response {
     let Some(config) = state.x402.as_ref() else {
         return (
@@ -186,7 +187,7 @@ async fn paid_instrument(
     let price = spec.public_price(config.margin_percent);
     let resource = format!("/x402/v1/instruments/{name}");
 
-    let Some(_payment) = x402::payment_header(&headers) else {
+    let Some(payment) = x402::payment_header(&headers) else {
         return (
             StatusCode::PAYMENT_REQUIRED,
             Json(config.challenge(&resource, spec.summary, price)),
@@ -194,13 +195,64 @@ async fn paid_instrument(
             .into_response();
     };
 
+    // Verification first, before any work. Otherwise an unpaid caller could use
+    // the paid route as a free health check: the status alone would say whether
+    // the instrument was going to answer.
+    //
+    // Blocking, because the facilitator client is synchronous and holding an
+    // executor thread through a network round trip would stall every other
+    // request this process is serving.
+    let owned = config.clone();
+    let summary = spec.summary.to_owned();
+    let for_verify = resource.clone();
+    let verified = match tokio::task::spawn_blocking(move || {
+        facilitator::verify(&owned, &payment, &for_verify, &summary, price.get())
+    })
+    .await
+    {
+        Ok(Ok(v)) => v,
+        Ok(Err(rejected)) => return refused(&rejected),
+        // A panic in the blocking task. The payment state is unknown, and
+        // serving on an unknown is serving free.
+        Err(e) => return refused(&facilitator::Rejected::Unreachable(e.to_string())),
+    };
+
+    // Only now is the work done, and only a successful answer is charged for.
+    let args = body.map_or_else(|| json!({}), |Json(v)| v);
+    let answer = invoke(&state, &name, args);
+    if !answer.status().is_success() {
+        return answer;
+    }
+
+    let owned = config.clone();
+    let settled = tokio::task::spawn_blocking(move || facilitator::settle(&owned, &verified)).await;
+
+    match settled {
+        Ok(Ok(receipt)) => {
+            let mut response = answer;
+            // The receipt names the transaction that paid for this, so a dispute
+            // is settled by looking at the chain rather than by trusting either
+            // party's log.
+            if let Ok(value) = HeaderValue::from_str(&receipt.transaction) {
+                response.headers_mut().insert("x-payment-response", value);
+            }
+            if let Ok(value) = HeaderValue::from_str(&receipt.payer) {
+                response.headers_mut().insert("x-payment-payer", value);
+            }
+            response
+        }
+        Ok(Err(rejected)) => refused(&rejected),
+        Err(e) => refused(&facilitator::Rejected::Unreachable(e.to_string())),
+    }
+}
+
+/// The body for a payment that was not accepted.
+fn refused(rejected: &facilitator::Rejected) -> Response {
     (
-        StatusCode::NOT_IMPLEMENTED,
+        StatusCode::PAYMENT_REQUIRED,
         Json(json!({
-            "error": "payment verification is not wired to a facilitator yet",
-            "detail": "Radar will not serve a paid response on the strength of an \
-                       unverified header. Configure a facilitator that can verify and \
-                       settle, or use the internal surface.",
+            "error": rejected.reason(),
+            "retryable": rejected.is_retryable(),
         })),
     )
         .into_response()

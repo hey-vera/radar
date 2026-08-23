@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 use radar_asof::AsOf;
-use radar_instruments::{Context, CreatorHistory, Registry};
+use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry};
 use radar_store::{Event, Reader, Table};
 use radar_types::Slot;
 
@@ -224,6 +224,7 @@ fn sanitise(s: &str, width: usize) -> String {
 fn registry() -> Registry {
     let mut r = Registry::new();
     r.register(CreatorHistory);
+    r.register(CreatorTrackRecord);
     r
 }
 

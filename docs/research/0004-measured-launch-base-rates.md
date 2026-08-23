@@ -190,3 +190,39 @@ filtering on that suffix would silently miss real launches.
 candidate, refused rather than guessed. An event attributed to the wrong token is
 worse than a missing one.
 
+---
+
+## Addendum: outcome labels, and the first signal validated against them
+
+Outcomes measured for all 371 tokens recorded in the thirty-minute window, as of
+slot 441,039,371. **32.6% were apparently stillborn** — five or fewer transfers
+inside 300 slots of launch.
+
+That number is the population base rate, and it is what makes the next table mean
+anything. `creator_track_record` against the three most prolific creators in the
+same window:
+
+| Creator | Launches | Stillborn | Median survival |
+|---|---|---|---|
+| `AeZpHiVXZ62G8qY1g84qVrq2z877RoiUDRq4QsTp2RJj` | 42 | **98%** | **2 slots** (~0.8s) |
+| `AZry31LgByHrZ37sdPdH3kPPGM5HzkjhBWcerZxMgX4a` | 10 | 70% | 6 slots |
+| `HaA8W4e2Y8cqQiH8QiEqkjfRsjQQqKMA1Q4gBLr9TS88` | 13 | 31% | **1,208 slots** (~8 min) |
+
+Against a 32.6% base rate, the first is an extreme outlier and the third is
+ordinary. The separation costs nothing to compute — no paid data, no pricing, no
+model — and it is exactly the kind of cheap structural signal section 1 argued
+would be where any real edge lives.
+
+**What this is not.** It is one thirty-minute window, and the creators were
+selected for being prolific, which is not a random sample. It shows the
+*machinery* works — a signal computed at a watermark, validated against outcomes
+measured later, with the sample size stated. Whether creator history predicts
+returns is a different and larger question, and the honest answer is still that
+nobody has measured it yet.
+
+**Deliberate limits in the instrument.** No rate is reported below five measured
+launches: a percentage from three tokens reads exactly like one from three
+hundred once it is a number, and nothing downstream can tell them apart. And
+`appears_stillborn` is a description, not a verdict — calling it "rug" would be
+assuming the answer to the question the labels exist to ask.
+

@@ -34,10 +34,12 @@
 #![forbid(unsafe_code)]
 
 mod creator_history;
+mod creator_track_record;
 mod registry;
 mod spec;
 
 pub use creator_history::CreatorHistory;
+pub use creator_track_record::CreatorTrackRecord;
 pub use registry::{
     Context, DEFAULT_MARGIN_PERCENT, Erased, Instrument, InstrumentError, Invocation, Registry,
 };

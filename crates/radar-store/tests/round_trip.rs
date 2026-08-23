@@ -393,3 +393,43 @@ fn outcomes_count_toward_the_store_watermark() {
         Some(Slot(777_777))
     );
 }
+
+#[test]
+fn reading_outcomes_as_events_fails_with_the_reason() {
+    // Iterating Table::ALL and calling read() on each compiles and breaks at
+    // runtime. It broke the CLI once, and the error was "stored file has no
+    // `slot` column" -- true, and useless for working out what to do instead.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1).expect("open");
+    w.append_outcome(outcome(1, 500_000, 400_000, Some(450_000), 12))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let err = Reader::open(dir.path())
+        .read(Table::Outcomes, AsOf::at(Slot(999_999)))
+        .expect_err("must refuse");
+    let message = err.to_string();
+    assert!(
+        message.contains("read_outcomes"),
+        "the error must name the way out: {message}"
+    );
+    assert!(
+        !message.contains("slot` column"),
+        "and must not blame a column: {message}"
+    );
+}
+
+#[test]
+fn every_event_table_can_actually_be_read_as_events() {
+    // The other half: EVENT_TABLES must not drift into listing something that
+    // read() then refuses.
+    let dir = tempfile::tempdir().expect("tempdir");
+    Writer::open(dir.path(), 1).expect("open");
+    let r = Reader::open(dir.path());
+    for table in Table::EVENT_TABLES {
+        assert!(
+            r.read(*table, AsOf::at(Slot(1))).is_ok(),
+            "{table:?} should be readable"
+        );
+    }
+}

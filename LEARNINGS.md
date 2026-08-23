@@ -129,3 +129,31 @@ failure as an empty CryptoHouse result standing in for a timeout, which the
 backfill guards against explicitly — and it was made here anyway, one layer up,
 in the tooling rather than the code.
 
+---
+
+## 6. A constant that grew a member the callers could not handle
+
+**Found:** 2026-08-23, on the deployed instance, by running the CLI.
+
+Adding an `Outcomes` variant to `Table` and putting it in `Table::ALL` broke
+every caller that iterated `ALL` and called `Reader::read` on each entry.
+Outcomes are measurements, not chain events — no signature, no transaction
+position, and `measured_at` where events have `slot` — so the read failed with
+`stored file has no \`slot\` column`.
+
+**Cost:** the `creators` command was broken on the deployed instance for about
+twenty minutes. No data was lost or corrupted; the store is append-only and the
+failure was on a read path. The unit tests all passed, because none of them
+iterated `ALL` and read.
+
+**What catches a recurrence:** `Table::EVENT_TABLES` now exists alongside `ALL`,
+`Reader::read` refuses a measurement table by name rather than failing on a
+missing column, and two tests hold both halves — one asserting the constants
+differ by exactly the outcomes table, one asserting every table in
+`EVENT_TABLES` is actually readable so the list cannot drift the other way.
+
+**The general shape:** a constant named `ALL` invites `for x in ALL`, and every
+member has to survive whatever that loop does. Widening one is an API change to
+every loop over it, and the compiler cannot see it. The fix was not a better
+comment; it was a second constant that means "the ones this loop can handle".
+

@@ -84,6 +84,12 @@ impl Reader {
     ///
     /// Returns [`StoreError`] if a file cannot be read or a row is malformed.
     pub fn read(&self, table: Table, as_of: AsOf) -> Result<Vec<Event>, StoreError> {
+        // Fail with the reason rather than with "no `slot` column", which is
+        // what the caller actually sees otherwise and which says nothing about
+        // what to do instead.
+        if !table.holds_events() {
+            return Err(StoreError::NotAnEventTable { table: table.dir() });
+        }
         let mut out = Vec::new();
         for path in self.files(table)? {
             // Files are slot-ranged, so whole files past the watermark are

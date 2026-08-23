@@ -244,12 +244,30 @@ pub enum Table {
 
 impl Table {
     /// Every table, for iteration.
+    /// Every table, including outcomes. For directory setup and file listings —
+    /// **not** for read loops. See [`EVENT_TABLES`](Self::EVENT_TABLES).
     pub const ALL: &'static [Self] = &[
         Self::Launches,
         Self::Trades,
         Self::Graduations,
         Self::Outcomes,
     ];
+
+    /// The tables that hold chain events, which is what
+    /// [`Reader::read`](crate::Reader::read) understands.
+    ///
+    /// Outcomes are deliberately absent: they are measurements with no signature
+    /// and no transaction position, and they are read by
+    /// [`Reader::read_outcomes`](crate::Reader::read_outcomes). Iterating `ALL`
+    /// and calling `read` on each compiles and then fails at runtime — it broke
+    /// the CLI once — so the distinction is a constant rather than a comment.
+    pub const EVENT_TABLES: &'static [Self] = &[Self::Launches, Self::Trades, Self::Graduations];
+
+    /// Whether this table holds chain events rather than measurements.
+    #[must_use]
+    pub const fn holds_events(self) -> bool {
+        !matches!(self, Self::Outcomes)
+    }
 
     /// The directory name under the store root.
     #[must_use]
@@ -311,6 +329,19 @@ mod tests {
         assert_eq!(trade(1).table(), Table::Trades);
         assert_eq!(Table::Trades.dir(), "trades");
         assert_eq!(Table::ALL.len(), 4);
+    }
+
+    #[test]
+    fn the_event_tables_are_exactly_the_ones_read_as_events() {
+        // Iterating ALL and calling read() on each compiles and fails at
+        // runtime, because outcomes have no slot column. The separate constant
+        // is what stops that being a comment nobody reads.
+        assert_eq!(Table::EVENT_TABLES.len(), Table::ALL.len() - 1);
+        assert!(!Table::EVENT_TABLES.contains(&Table::Outcomes));
+        for t in Table::EVENT_TABLES {
+            assert!(t.holds_events(), "{t:?}");
+        }
+        assert!(!Table::Outcomes.holds_events());
     }
 
     #[test]

@@ -35,7 +35,7 @@ fn read_all(reader: &Reader) -> Result<Vec<Event>, String> {
     };
     let as_of = AsOf::at(top);
     let mut all = Vec::new();
-    for table in Table::ALL {
+    for table in Table::EVENT_TABLES {
         all.extend(reader.read(*table, as_of).map_err(|e| e.to_string())?);
     }
     Ok(all)

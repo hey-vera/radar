@@ -37,6 +37,12 @@ pub enum StoreError {
         /// What was stored.
         value: String,
     },
+    /// A measurement table was read as if it held chain events.
+    #[error("`{table}` holds measurements, not events; read it with read_outcomes")]
+    NotAnEventTable {
+        /// The table asked for.
+        table: &'static str,
+    },
     /// The store holds nothing, so it cannot answer as of any slot.
     #[error("store is empty and cannot answer as of any slot")]
     Empty,

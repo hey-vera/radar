@@ -1359,6 +1359,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-exec"
+version = "0.0.1"
+dependencies = [
+ "radar-risk",
+ "radar-signer",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
 name = "radar-instruments"
 version = "0.0.1"
 dependencies = [

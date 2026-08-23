@@ -1,0 +1,51 @@
+# One signer, one connection.
+#
+# The key file is readable by radar-signer and by nobody else. That is the
+# property the separation rests on, and it is why the executor does not spawn
+# this process: a child would inherit the executor's user, and the key would have
+# to be readable by it.
+#
+# Deliberately absent: any network access at all. `ss -tlnp` must never list
+# this binary. If it does, something has been added that should not have been.
+[Unit]
+Description=Radar signer (connection %i)
+Documentation=https://github.com/hey-vera/radar
+
+[Service]
+Type=simple
+User=radar-signer
+Group=radar-signer
+ExecStart=/usr/local/bin/radar-signer
+StandardInput=socket
+StandardOutput=socket
+# Decisions go to the journal. A signature that reached the chain with no line
+# here would mean this unit was not the process that made it.
+StandardError=journal
+
+# The key never appears in the environment, only its path. Environment variables
+# leak into process listings, crash dumps and child processes; a file has an
+# owner and a mode.
+Environment=RADAR_SIGNER_KEY=/etc/radar/signer.json
+EnvironmentFile=/etc/radar/signer.env
+
+# Everything below is defence in depth. None of it is the reason the design is
+# safe — the re-decoding is — but a process holding a key should be able to do
+# as little as possible.
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+ReadWritePaths=

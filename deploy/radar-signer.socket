@@ -1,0 +1,26 @@
+# The signer's front door.
+#
+# systemd owns the socket, so the access control is the kernel's rather than the
+# signer's: SocketUser/SocketGroup/SocketMode decide who may connect, and the
+# signer never has to authenticate anyone.
+#
+# Accept=yes hands each accepted connection to a fresh radar-signer instance on
+# stdin and stdout, which is exactly the interface the binary already speaks. The
+# signer contains no socket code at all.
+[Unit]
+Description=Radar signer socket
+Documentation=https://github.com/hey-vera/radar
+
+[Socket]
+ListenStream=/run/radar/signer.sock
+# One instance per connection. Nothing is shared between requests, so a request
+# that corrupts state corrupts only its own.
+Accept=yes
+SocketUser=radar-signer
+# The executor's user is the only other member of this group. This line is the
+# whole access-control policy.
+SocketGroup=radar
+SocketMode=0660
+
+[Install]
+WantedBy=sockets.target

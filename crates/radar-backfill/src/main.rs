@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use radar_asof::AsOf;
+use radar_backfill::checkpoints;
 use radar_backfill::extract::{Row, Skipped, Stats};
 use radar_backfill::outcomes::{self, AggregateRow, HeadRow, TimeRow};
 use radar_backfill::{Client, QueryError, Scope, events_from_rows, query_for_window};
@@ -410,18 +411,14 @@ fn follow(args: &Args) -> Result<(), String> {
     }
 }
 
-/// Measures what became of every token already in the store.
-fn measure(args: &Args) -> Result<(), String> {
-    let client = Client::default();
-    let reader = Reader::open(&args.store);
+/// Every token the store knows about, and which of them graduated.
+type Universe = (
+    Vec<(radar_types::Address, radar_types::Slot)>,
+    Vec<radar_types::Address>,
+);
 
-    let watermark = Reader::watermark(&reader)
-        .map_err(|e| e.to_string())?
-        .ok_or("store is empty; nothing to measure")?;
-    let as_of = AsOf::at(watermark);
-
-    // Every launch the store knows about, and every graduation, so an outcome
-    // can say whether the token reached an AMM.
+/// Reads the token universe from the store, deduplicated by mint.
+fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, String> {
     let mut launches: Vec<(radar_types::Address, radar_types::Slot)> = reader
         .read(Table::Launches, as_of)
         .map_err(|e| e.to_string())?
@@ -431,6 +428,8 @@ fn measure(args: &Args) -> Result<(), String> {
             _ => None,
         })
         .collect();
+    // A mint can appear twice if a partition was written more than once. The
+    // launch slot is the same either way, so the first wins.
     launches.sort_unstable();
     launches.dedup_by_key(|(mint, _)| *mint);
 
@@ -441,9 +440,63 @@ fn measure(args: &Args) -> Result<(), String> {
         .map(radar_store::Event::mint)
         .collect();
 
+    Ok((launches, graduated))
+}
+
+/// Which tokens have crossed a checkpoint their last measurement predates.
+///
+/// Measuring everything on every pass would re-measure a month of history a
+/// million times over, almost all of it long settled. Measuring once would be
+/// worse: a token seen an hour after launch and the same token seen a day later
+/// are different observations, and the second is the one that says whether the
+/// first meant anything.
+fn due_for_measurement(
+    launches: &[(radar_types::Address, radar_types::Slot)],
+    already: &[radar_store::Outcome],
+    head: radar_types::Slot,
+) -> Vec<(radar_types::Address, radar_types::Slot)> {
+    let mut newest_age: std::collections::BTreeMap<radar_types::Address, radar_types::SlotDelta> =
+        std::collections::BTreeMap::new();
+    for outcome in already {
+        let age = checkpoints::age_of(outcome.launch_slot, outcome.measured_at);
+        newest_age
+            .entry(outcome.mint)
+            .and_modify(|held| {
+                if age > *held {
+                    *held = age;
+                }
+            })
+            .or_insert(age);
+    }
+
+    launches
+        .iter()
+        .copied()
+        .filter(|(mint, launch_slot)| {
+            checkpoints::needs_measuring(
+                checkpoints::age_of(*launch_slot, head),
+                newest_age.get(mint).copied(),
+            )
+        })
+        .collect()
+}
+
+/// Measures what became of every token already in the store.
+fn measure(args: &Args) -> Result<(), String> {
+    let client = Client::default();
+    let reader = Reader::open(&args.store);
+
+    let watermark = Reader::watermark(&reader)
+        .map_err(|e| e.to_string())?
+        .ok_or("store is empty; nothing to measure")?;
+    let as_of = AsOf::at(watermark);
+
+    let (launches, graduated) = universe(&reader, as_of)?;
+
     if launches.is_empty() {
         return Err("store holds no launches to measure".to_owned());
     }
+    let already = reader.read_outcomes(as_of).map_err(|e| e.to_string())?;
 
     // The head is the honest measurement slot: an outcome is a statement about
     // what had happened by a moment, and that moment is when it was asked.
@@ -472,8 +525,19 @@ fn measure(args: &Args) -> Result<(), String> {
         .filter(|t| !t.is_empty() && !t.starts_with("1970"))
         .ok_or("could not resolve a timestamp for the earliest launch slot")?;
 
+    let total_known = launches.len();
+    let due = due_for_measurement(&launches, &already, measured_at);
+
+    if due.is_empty() {
+        println!(
+            "{total_known} tokens known, none due for measurement --              all are either too young for the first checkpoint or already settled"
+        );
+        return Ok(());
+    }
+    let launches = due;
+
     println!(
-        "measuring {} tokens as of slot {measured_at}, transfers since {since}, batches of {}",
+        "{total_known} tokens known, {} due; measuring as of slot {measured_at},          transfers since {since}, batches of {}",
         launches.len(),
         outcomes::MINTS_PER_BATCH
     );

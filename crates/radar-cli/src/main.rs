@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::process::ExitCode;
 
 use radar_asof::AsOf;
-use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry};
+use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 mod consider;
 
 use radar_sim::{JupiterQuoter, RpcClient};
@@ -232,6 +232,7 @@ fn registry() -> Registry {
     let mut r = Registry::new();
     r.register(CreatorHistory);
     r.register(CreatorTrackRecord);
+    r.register(SimulateExit::default());
     r
 }
 

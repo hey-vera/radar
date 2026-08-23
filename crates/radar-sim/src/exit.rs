@@ -186,7 +186,7 @@ pub const PROBE_MULTIPLES: &[u64] = &[1, 2, 5];
 /// finding about the token, not a failure of the analysis, and a report that
 /// gave up at the first missing route would hide the sizes that *did* work.
 #[must_use]
-pub fn probe<Q: Quoter>(
+pub fn probe<Q: Quoter + ?Sized>(
     quoter: &Q,
     mint: &Address,
     structure: Option<MintStructure>,

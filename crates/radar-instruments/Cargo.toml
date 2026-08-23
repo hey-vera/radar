@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 radar-asof.workspace = true
+radar-sim.workspace = true
 radar-store.workspace = true
 radar-types.workspace = true
 schemars.workspace = true

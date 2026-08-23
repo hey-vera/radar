@@ -1378,6 +1378,7 @@ name = "radar-instruments"
 version = "0.0.1"
 dependencies = [
  "radar-asof",
+ "radar-sim",
  "radar-store",
  "radar-types",
  "schemars",

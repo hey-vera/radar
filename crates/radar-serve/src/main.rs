@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use radar_instruments::{CreatorHistory, CreatorTrackRecord, Registry};
+use radar_instruments::{CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 use radar_serve::{AppState, app, x402};
 use radar_store::Reader;
 
@@ -14,6 +14,7 @@ fn registry() -> Registry {
     let mut r = Registry::new();
     r.register(CreatorHistory);
     r.register(CreatorTrackRecord);
+    r.register(SimulateExit::default());
     r
 }
 

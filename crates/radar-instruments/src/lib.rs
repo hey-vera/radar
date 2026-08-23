@@ -36,6 +36,7 @@
 mod creator_history;
 mod creator_track_record;
 mod registry;
+pub mod simulate_exit;
 mod spec;
 
 pub use creator_history::CreatorHistory;
@@ -43,4 +44,5 @@ pub use creator_track_record::CreatorTrackRecord;
 pub use registry::{
     Context, DEFAULT_MARGIN_PERCENT, Erased, Instrument, InstrumentError, Invocation, Registry,
 };
+pub use simulate_exit::SimulateExit;
 pub use spec::{Cost, Determinism, Latency, MIN_PUBLIC_PRICE, Spec, Version};

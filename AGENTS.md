@@ -25,6 +25,12 @@ Two facts set the tone, and both are load-bearing:
 So the first deliverable is not a trade. It is a **recorder with a point-in-time
 guarantee**, because the dataset only accumulates forward.
 
+The trading lane exists and is shut. `radar-strategy`, `radar-risk`,
+`radar-signer` and `radar-exec` are built and tested end to end; the shipped
+policy is `Policy::CLOSED`, which refuses every proposal. Nothing is missing and
+nothing is armed. If you are changing that value, you are making a decision about
+money — make it deliberately, and not as a side effect of something else.
+
 ## Build and test
 
 ```bash
@@ -51,6 +57,13 @@ compiles and the tests pass — in which case the tests are also wrong.
    an authorization into a signature — after re-decoding the transaction to check
    it against the authorization's bounds. If you find yourself adding a path from
    a reasoning layer to a signer, stop.
+
+   The signer's guarantee is absolute and stated as such: *every account it
+   authorises is one it read in the bytes it signed.* This is why it refuses
+   address lookup tables ([ADR 0003](docs/adr/0003-legacy-transactions-because-the-signer-must-be-able-to-read-them.md))
+   and why it has no network, no listener and no method that signs arbitrary
+   bytes. Anything that would let it sign something it has not fully read breaks
+   the guarantee, however convenient.
 
 2. **The risk kernel is pure.** No clock, no network, no ambient state, and no
    dependence on the order of its inputs. Purity is what makes a verdict
@@ -83,13 +96,27 @@ compiles and the tests pass — in which case the tests are also wrong.
    always go to a direct RPC endpoint.
 
 8. **Deny by default when config is missing.** A spend meter with no budget
-   loaded refuses everything. Spending nothing is always recoverable.
+   loaded refuses everything, a signer with no allowlist refuses everything, and
+   a paywall with no facilitator serves nothing rather than serving free.
+   Spending nothing is always recoverable.
+
+9. **Absent is not zero, and unknown is not safe.** A missing price impact is
+   `u32::MAX`, not `0`. A capacity that could not be measured is `None`, and
+   `None` means "cannot exit", never "no limit found". A creator with no measured
+   launches has no rate rather than a rate of zero. Every one of these is a place
+   where the convenient default is the one that loses money.
 
 ## Verify before you claim
 
 Every claim in this repository should be backed by something that runs. Run it,
 read the output, quote it. Under-claiming costs nothing; over-claiming costs the
 benefit of the doubt on everything else.
+
+`repo-conformance` enforces the mechanical half of this: every crate directory
+is a workspace member, every member has source, every relative link in the
+documentation resolves, every ADR cited by number exists, and the README's crate
+table matches the workspace. It caught three empty crate directories on its first
+run, one of which was itself.
 
 This is not hypothetical. The caching design Radar's provider layer is modelled
 on was documented as canonical in a sibling repository, citing functions in a

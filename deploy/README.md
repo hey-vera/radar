@@ -160,3 +160,83 @@ added, and columns are only ever added.
 ```bash
 ssh guardian-vps-tail 'sudo install -m755 /tmp/radar-serve.previous /usr/local/bin/radar-serve && sudo systemctl restart radar-serve'
 ```
+
+
+## The signer — only when capital is actually going to be deployed
+
+**Do not install this until Josh decides to trade.** Radar ships with
+`Policy::CLOSED`, the risk kernel refuses every proposal, and a signer with no
+policy to serve is a key on a box for no reason. Installing it early buys
+nothing and adds a secret to defend.
+
+When that changes, the property to preserve is the one the whole design rests on:
+**the executor cannot read the key file.** That is why the executor does not spawn
+the signer — a child process would inherit the executor's user, and the key would
+have to be readable by it.
+
+### 1. A user of its own
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin radar-signer
+sudo groupadd -f radar
+sudo usermod -a -G radar guardian
+```
+
+`radar` is the group the socket is shared through, and `guardian` — which runs
+the executor — is the only other member. That group membership is the entire
+access-control policy.
+
+### 2. The key, readable by nobody else
+
+Generate it **off this box**, on a machine that is not running other people's
+production services, and move it in. A key generated on the host it will run on
+has already touched that host's shell history, page cache and any backup that ran
+in between.
+
+```bash
+scp signer.json guardian-vps-tail:/tmp/signer.json
+ssh guardian-vps-tail '
+  sudo install -D -m600 -o radar-signer -g radar-signer /tmp/signer.json /etc/radar/signer.json &&
+  shred -u /tmp/signer.json'
+```
+
+Check it: `sudo -u guardian cat /etc/radar/signer.json` must fail. If it
+succeeds, stop — the separation is decorative and the rest of this is theatre.
+
+### 3. The units
+
+```bash
+sudo install -D -m644 deploy/radar-signer.socket /etc/systemd/system/radar-signer.socket
+sudo install -D -m644 deploy/radar-signer@.service /etc/systemd/system/radar-signer@.service
+sudo install -m640 -o radar-signer -g radar-signer deploy/signer.env.example /etc/radar/signer.env
+sudo install -m755 dist/radar-signer /usr/local/bin/radar-signer
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-signer.socket
+```
+
+Fill in `RADAR_SIGNER_PROGRAMS` before enabling. An empty allowlist refuses
+everything, which is safe but useless; there is deliberately no permissive
+default, because that is the one misconfiguration here with no upper bound on
+its cost.
+
+### 4. Verify it refuses
+
+The signer is worth having only if it says no. Ask it to sign something it
+should not:
+
+```bash
+printf '%s\n' '{"authorization":{"nonce":"probe","mint":"So11111111111111111111111111111111111111112","action":"buy","max_notional":1,"expires_after":0,"needs_operator_signature":false},"transaction":"AAAA","now_slot":999999999}' \
+  | sudo -u guardian nc -U /run/radar/signer.sock
+```
+
+Expect `{"outcome":"refused",...}`. A `signed` here means the binary on the box
+is not the one in this repository.
+
+Then confirm it has no network at all:
+
+```bash
+ssh guardian-vps-tail 'sudo ss -tlnp | grep radar-signer'
+```
+
+That must print nothing. If it prints anything, something was added that should
+not have been.

@@ -4,11 +4,22 @@
 Solana research and trading infrastructure, and an intelligence layer other
 agents can buy over x402.
 
-**Status: recording.** The pipeline runs end to end on a live instance —
-recording launches, measuring what became of them, and answering questions about
-both over HTTP and MCP. **Nothing here trades money**, and the trading lane is
-deliberately unbuilt: intelligence first, capital only once recorded data shows
-an edge exists.
+**Status: recording, and refusing to trade.** The pipeline runs end to end on a
+live instance — recording launches, measuring what became of them, answering
+questions about both over HTTP and MCP, and running the full decision lane over
+what it has recorded.
+
+The trading lane is **built and shut**. Strategy, risk kernel, signer and
+executor all exist and are tested end to end; the policy that ships is
+`Policy::CLOSED`, which refuses every proposal. That is the distinction that
+matters: nothing is missing, and nothing is armed. Turning it on is a deliberate
+change to one value, made by a person, once recorded data shows an edge exists.
+
+`radar consider` prints exactly what the system would have done and why it did
+not do it. On the first live run it considered 3,924 recorded launches, spent
+nothing on paid analysis because no paid call could have changed an answer, and
+proposed nothing — see
+[docs/research/0005](docs/research/0005-first-end-to-end-decision-pass.md).
 
 ## What this is for
 
@@ -64,7 +75,11 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-backfill` | Bulk historical extraction from CryptoHouse, decoded by the same decoder the live recorder uses. |
 | `radar-instruments` | The instrument registry. One declaration; internal, HTTP, x402 and MCP surfaces derived from it, and every invocation recorded. |
 | `radar-serve` | Ops page, JSON API, stateless MCP (2026-07-28), and the x402-priced public surface. |
+| `radar-sim` | Exit analysis. Structural disqualification from the mint account, then a measured sell curve — never a single liquidity number. |
 | `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
+| `radar-strategy` | Deterministic strategies. They emit proposals, which are inert data, and assemble candidates in one place so look-ahead is prevented once rather than per strategy. |
+| `radar-signer` | A separate process holding the key. Re-decodes every transaction and trusts nothing the caller said about it. |
+| `radar-exec` | Route, gate, sign, submit, reconcile. The last stage, and the one holding the least authority. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
 Further crates (graph, sim, strategy, exec, signer, research) are planned; see

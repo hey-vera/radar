@@ -12,6 +12,7 @@ use std::process::ExitCode;
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 mod consider;
+mod graduations;
 
 use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::{Event, Reader, Table};
@@ -28,6 +29,9 @@ commands:
   call <name> --store <dir> --args '<json>'
                                  run an instrument and print its record
   exit <mint> [--size N]         can this token actually be sold, and at what size
+  graduations --store <dir> [-n N]
+                                 every graduation recorded, and the population
+                                 rate the creator signal is measured against
   consider --store <dir> [--window N] [--cap N]
                                  run the whole decision lane over recorded
                                  tokens; commits nothing
@@ -440,6 +444,11 @@ fn report_exit(report: &radar_sim::ExitReport, size: u64) {
     }
 }
 
+/// Reports every graduation the store holds.
+fn graduation_report(args: &[String]) -> Result<(), String> {
+    graduations::run(&store_of(args)?, limit_of(args))
+}
+
 /// Runs the whole decision lane over recorded tokens.
 fn decision_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -466,6 +475,7 @@ fn main() -> ExitCode {
         "launches" => launches(&args),
         "creators" => creators(&args),
         "exit" => exit_analysis(&args),
+        "graduations" => graduation_report(&args),
         "consider" => decision_lane(&args),
         "tools" => {
             tools();

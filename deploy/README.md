@@ -20,6 +20,7 @@ artifact is downloaded and placed by whoever already has that access.
 ## First install
 
 Three steps need a human, because each one changes something Radar does not own.
+**Do them in this order**, and do not reorder them — see the warning under step 3.
 
 ### 1. DNS — `radar.heyvera.org`
 
@@ -48,7 +49,7 @@ guardian ALL=(root) NOPASSWD: /usr/bin/systemctl restart radar-serve, \
     /usr/bin/systemctl status radar-serve, /usr/bin/install -m755 /tmp/radar-serve /usr/local/bin/radar-serve
 ```
 
-### 3. The web route
+### 3. The web route — only after DNS resolves
 
 ```bash
 cat deploy/radar.heyvera.org.caddy >> /home/guardian/claw-net/Caddyfile
@@ -56,7 +57,19 @@ sudo cp /home/guardian/claw-net/Caddyfile /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
-Both sudo commands are already in the NOPASSWD list.
+Both sudo commands are already in the NOPASSWD list, so this step is the one an
+agent *can* do unattended — and should not, before DNS exists.
+
+**Why the order matters.** Adding the site block makes Caddy immediately try to
+obtain a certificate for `radar.heyvera.org`. If the name does not resolve, ACME
+fails and retries, and those failures count against the rate limits of the
+**same Let's Encrypt account that holds the certificates for `heyvera.org`,
+`cortex.heyvera.org` and `api.heyvera.org`**. A route that does nothing is not
+worth putting a shared certificate account near a rate limit for.
+
+The reload itself is safe in isolation: Caddy validates the new config and keeps
+the running one if it does not parse, so a malformed block costs a failed reload
+rather than an outage. The certificate account is the part that is shared.
 
 ## Every deploy after that
 
@@ -93,6 +106,22 @@ At roughly 24,000 launches a day and a thousand-row cap per query this is a few
 thousand queries and several hours. It paces itself deliberately — Radar is a
 guest on a free public endpoint (ADR 0002) — so run it under `tmux` or `nohup`
 rather than a session that will disconnect.
+
+## Running without the units
+
+Both binaries run fine under `setsid nohup` before the systemd units are
+installed, which is how the first deployment was done:
+
+```bash
+cd ~/radar
+setsid nohup ~/bin/radar-backfill --follow --store ~/radar/data/store     --window-minutes 5 > ~/radar/follow.log 2>&1 < /dev/null &
+RADAR_STORE=~/radar/data/store RADAR_BIND=127.0.0.1:8402     setsid nohup ~/bin/radar-serve > ~/radar/serve.log 2>&1 < /dev/null &
+```
+
+Measured on `clawguard`: the recorder holds ~10 MB and the server ~7 MB, both at
+roughly 0% CPU — neither appears in the top consumers on a box also running
+Cortex and Pulse. The systemd units are for restart-on-failure and boot
+persistence, not for resource containment.
 
 ## Keeping it current
 

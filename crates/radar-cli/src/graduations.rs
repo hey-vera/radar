@@ -110,12 +110,15 @@ fn report(
         return;
     }
 
-    let (mint, hours) = ("MINT", "HOURS");
-    println!("\n{mint:<46}  {hours:>9}  CREATOR (their launches)");
+    let (mint, took) = ("MINT", "TOOK");
+    println!("\n{mint:<46}  {took:>16}  CREATOR (their launches)");
     for g in graduations.iter().take(limit) {
+        // Slots as well as hours. Every graduation measured so far completed in
+        // under an hour, and an hours column alone renders all of them as "0.0"
+        // — hiding the one number that separates "fast" from "same block".
         let hours = g.slots_to_graduate().map_or_else(
-            || "  before".to_owned(),
-            |slots| format!("{:>9.1}", as_hours(slots)),
+            || "  launch unknown".to_owned(),
+            |slots| format!("{slots:>7} sl {:>5.1}h", as_hours(slots)),
         );
         let creator = g.creator.map_or_else(
             // Not "unknown creator" — a creator we did not record the launch

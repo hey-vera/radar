@@ -27,12 +27,14 @@
 
 mod error;
 pub mod event;
+mod outcome;
 mod reader;
 mod schema;
 mod writer;
 
 pub use error::StoreError;
 pub use event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
+pub use outcome::Outcome;
 pub use reader::Reader;
 pub use schema::schema_for;
 pub use writer::{SLOTS_PER_PARTITION, Writer, partition_of};

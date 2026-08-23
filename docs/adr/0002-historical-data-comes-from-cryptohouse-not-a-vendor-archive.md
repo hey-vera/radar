@@ -109,6 +109,27 @@ on signature for the mint, the realised amounts and the block position, and
 decoded by `radar-decode` — the same decoder the live recorder uses. History and
 live data become one code path over one schema.
 
+### Two limits that decide what a query may look like
+
+Both were found the hard way and neither is documented anywhere obvious.
+
+**`max_result_rows = 1000`, `readonly = 1`.** Raising it is refused. Aggregates
+are unaffected because they return one row per group however much they scan,
+which is why every research query worked and only bulk extraction hit it — and
+why outcomes are extracted as per-mint aggregates while raw trades are not.
+
+**`max_rows_to_read = 10 billion`.** `token_transfers` is partitioned by
+`block_timestamp`, so that is the only bound that prunes. A `block_slot >= N`
+filter reads perfectly naturally, prunes nothing, and fails at the ceiling *even
+for a single mint*. With a timestamp bound the same query over 376 mints returns
+in 8.5 seconds.
+
+The failure gives no hint of this: the server answers a bad column with a bare
+`404` and an over-large scan with a `500`, and both arrive with the explanation
+in the response body that a client is likely to discard. Radar's client now
+reports the body and the first hundred characters of the offending query,
+because "HTTP 404" on its own cost a debugging round trip.
+
 ## Consequences
 
 **Cost goes from $200/month, or an unquoted lump sum, to zero.**

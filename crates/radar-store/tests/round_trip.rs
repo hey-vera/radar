@@ -3,8 +3,8 @@
 
 use radar_asof::{AsOf, PointInTime};
 use radar_store::{
-    Envelope, Event, Graduation, Launch, Origin, Reader, SLOTS_PER_PARTITION, Side, Table, Trade,
-    Writer,
+    Envelope, Event, Graduation, Launch, Origin, Outcome, Reader, SLOTS_PER_PARTITION, Side, Table,
+    Trade, Writer,
 };
 use radar_types::{Address, Signature, Slot};
 
@@ -300,4 +300,96 @@ fn unknown_instructions_are_stored_and_stay_queryable() {
     };
     assert!(!t.origin.known);
     assert_eq!(t.origin.instruction, "577c34bf3426d6e8");
+}
+
+// --- outcomes ----------------------------------------------------------------
+
+fn outcome(mint_id: u8, measured: u64, launch: u64, last: Option<u64>, transfers: u64) -> Outcome {
+    Outcome {
+        mint: mint(mint_id),
+        measured_at: Slot(measured),
+        launch_slot: Slot(launch),
+        first_transfer_slot: last.map(|_| Slot(launch)),
+        last_transfer_slot: last.map(Slot),
+        transfers,
+        unique_senders: 7,
+        unique_receivers: 5,
+        graduated: false,
+    }
+}
+
+#[test]
+fn outcomes_round_trip_through_parquet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    let written = vec![
+        outcome(1, 500_000, 440_623_612, Some(440_998_194), 1_535),
+        outcome(2, 500_000, 440_624_864, Some(440_624_868), 3),
+        // Never traded: both transfer slots absent, which must not read as zero.
+        outcome(3, 500_000, 440_624_900, None, 0),
+    ];
+    for o in &written {
+        w.append_outcome(o.clone()).expect("append");
+    }
+    w.flush().expect("flush");
+
+    let read = Reader::open(dir.path())
+        .read_outcomes(AsOf::at(Slot(999_999)))
+        .expect("read");
+    assert_eq!(read.len(), 3);
+    for o in &written {
+        assert!(
+            read.contains(o),
+            "outcome did not survive the round trip: {o:?}"
+        );
+    }
+    let never_traded = read
+        .iter()
+        .find(|o| o.transfers == 0)
+        .expect("the untraded one");
+    assert_eq!(never_traded.last_transfer_slot, None, "absent, not zero");
+}
+
+#[test]
+fn a_later_measurement_is_a_new_row_rather_than_an_update() {
+    // An outcome is an observation, not a fact. Overwriting would destroy the
+    // ability to ask what a token looked like at the moment a decision was made,
+    // which is the only question a backtest is allowed to ask.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_outcome(outcome(1, 100_000, 90_000, Some(95_000), 10))
+        .expect("append");
+    w.append_outcome(outcome(1, 900_000, 90_000, Some(880_000), 4_000))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let r = Reader::open(dir.path());
+    assert_eq!(
+        r.read_outcomes(AsOf::at(Slot(999_999)))
+            .expect("read")
+            .len(),
+        2
+    );
+
+    // As of the earlier slot, only the earlier measurement exists -- the token
+    // had ten transfers, and the four thousand it eventually saw are the future.
+    let early = r.read_outcomes(AsOf::at(Slot(100_000))).expect("read");
+    assert_eq!(early.len(), 1);
+    assert_eq!(early[0].transfers, 10);
+}
+
+#[test]
+fn outcomes_count_toward_the_store_watermark() {
+    // They are stamped with `measured_at` rather than `slot`, so a watermark
+    // that only looked at the event tables would under-report what the store
+    // can answer.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_outcome(outcome(1, 777_777, 700_000, Some(770_000), 42))
+        .expect("append");
+    w.flush().expect("flush");
+    assert_eq!(
+        Reader::watermark(&Reader::open(dir.path())).expect("watermark"),
+        Some(Slot(777_777))
+    );
 }

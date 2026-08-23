@@ -9,9 +9,11 @@
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
+use radar_asof::AsOf;
 use radar_backfill::extract::{Row, Skipped, Stats};
+use radar_backfill::outcomes::{self, AggregateRow, HeadRow, TimeRow};
 use radar_backfill::{Client, QueryError, Scope, events_from_rows, query_for_window};
-use radar_store::Writer;
+use radar_store::{Event, Reader, Table, Writer};
 
 /// Narrower than the server's sixty-second cap allows, because a window that
 /// fits at three in the morning may not fit at peak.
@@ -53,12 +55,21 @@ struct Args {
     window_minutes: i64,
     scope: Scope,
     follow: bool,
+    outcomes: bool,
 }
 
 fn usage() -> &'static str {
     "radar-backfill --from 'YYYY-MM-DD HH:MM:SS' --to 'YYYY-MM-DD HH:MM:SS' \
      --store <dir> [--window-minutes N] [--scope lifecycle|trades]
    radar-backfill --follow --store <dir> [--window-minutes N]
+
+   radar-backfill --outcomes --store <dir>
+
+--outcomes measures what became of every token already in the store: how long it
+kept trading, how many transfers, how many distinct accounts. Those are the
+labels every signal has to be validated against, and they are the one extraction
+the thousand-row cap does not obstruct, because an aggregate returns one row per
+mint however much it scans.
 
 --follow keeps recording from where the store left off, staying five minutes
 behind the chain and sleeping when caught up. It uses the same extraction path
@@ -72,6 +83,7 @@ fn parse_args() -> Result<Args, String> {
     let mut window_minutes = DEFAULT_WINDOW_MINUTES;
     let mut scope = Scope::default();
     let mut follow = false;
+    let mut measure_outcomes = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -97,6 +109,7 @@ fn parse_args() -> Result<Args, String> {
                 };
             }
             "--follow" => follow = true,
+            "--outcomes" => measure_outcomes = true,
             "-h" | "--help" => return Err(usage().to_owned()),
             other => return Err(format!("unknown flag {other}\n{}", usage())),
         }
@@ -113,7 +126,7 @@ fn parse_args() -> Result<Args, String> {
     // Follow mode has no explicit range: it starts from the store's own cursor
     // and runs until stopped, so requiring --from and --to would be asking for
     // values it is going to ignore.
-    if follow {
+    if follow || measure_outcomes {
         return Ok(Args {
             from: String::new(),
             to: String::new(),
@@ -121,6 +134,7 @@ fn parse_args() -> Result<Args, String> {
             window_minutes: window_minutes.max(1),
             scope,
             follow,
+            outcomes: measure_outcomes,
         });
     }
 
@@ -143,6 +157,7 @@ fn parse_args() -> Result<Args, String> {
         window_minutes: window_minutes.max(1),
         scope,
         follow,
+        outcomes: measure_outcomes,
     })
 }
 
@@ -395,6 +410,118 @@ fn follow(args: &Args) -> Result<(), String> {
     }
 }
 
+/// Measures what became of every token already in the store.
+fn measure(args: &Args) -> Result<(), String> {
+    let client = Client::default();
+    let reader = Reader::open(&args.store);
+
+    let watermark = Reader::watermark(&reader)
+        .map_err(|e| e.to_string())?
+        .ok_or("store is empty; nothing to measure")?;
+    let as_of = AsOf::at(watermark);
+
+    // Every launch the store knows about, and every graduation, so an outcome
+    // can say whether the token reached an AMM.
+    let mut launches: Vec<(radar_types::Address, radar_types::Slot)> = reader
+        .read(Table::Launches, as_of)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .filter_map(|e| match e {
+            Event::Launch(l) => Some((l.mint, l.envelope.slot)),
+            _ => None,
+        })
+        .collect();
+    launches.sort_unstable();
+    launches.dedup_by_key(|(mint, _)| *mint);
+
+    let graduated: Vec<radar_types::Address> = reader
+        .read(Table::Graduations, as_of)
+        .map_err(|e| e.to_string())?
+        .iter()
+        .map(radar_store::Event::mint)
+        .collect();
+
+    if launches.is_empty() {
+        return Err("store holds no launches to measure".to_owned());
+    }
+
+    // The head is the honest measurement slot: an outcome is a statement about
+    // what had happened by a moment, and that moment is when it was asked.
+    let head: Vec<HeadRow> = client
+        .query(&outcomes::query_for_head())
+        .map_err(|e| e.to_string())?;
+    let measured_at = radar_types::Slot(
+        head.first()
+            .and_then(|h| h.head.parse().ok())
+            .ok_or("could not read the chain head")?,
+    );
+
+    // The transfer table prunes by timestamp, not slot, so the earliest launch
+    // slot is converted once and the whole run is bounded by it.
+    let earliest_slot = launches
+        .iter()
+        .map(|(_, slot)| *slot)
+        .min()
+        .unwrap_or(radar_types::Slot(0));
+    let times: Vec<TimeRow> = client
+        .query(&outcomes::query_for_slot_time(earliest_slot))
+        .map_err(|e| e.to_string())?;
+    let since = times
+        .first()
+        .map(|t| t.at.clone())
+        .filter(|t| !t.is_empty() && !t.starts_with("1970"))
+        .ok_or("could not resolve a timestamp for the earliest launch slot")?;
+
+    println!(
+        "measuring {} tokens as of slot {measured_at}, transfers since {since}, batches of {}",
+        launches.len(),
+        outcomes::MINTS_PER_BATCH
+    );
+
+    let mut writer = Writer::open(&args.store, 20_000).map_err(|e| e.to_string())?;
+    let (mut written, mut stillborn, mut with_activity) = (0u64, 0u64, 0u64);
+
+    for batch in launches.chunks(outcomes::MINTS_PER_BATCH) {
+        let mints: Vec<String> = batch.iter().map(|(m, _)| m.to_string()).collect();
+        let rows: Vec<AggregateRow> = client
+            .query(&outcomes::query_for_mints(&mints, &since))
+            .map_err(|e| e.to_string())?;
+
+        let measured = outcomes::outcomes_from_rows(&rows, batch, measured_at, &graduated);
+        for outcome in measured {
+            if outcome.appears_stillborn() {
+                stillborn += 1;
+            }
+            if outcome.transfers > 0 {
+                with_activity += 1;
+            }
+            writer.append_outcome(outcome).map_err(|e| e.to_string())?;
+            written += 1;
+        }
+        println!("  {written}/{} measured", launches.len());
+        std::thread::sleep(PAUSE_BETWEEN_WINDOWS);
+    }
+    writer.flush().map_err(|e| e.to_string())?;
+
+    println!(
+        "
+--- measured {written} tokens as of slot {measured_at} ---"
+    );
+    println!("  with any transfer     : {with_activity}");
+    println!("  apparently stillborn  : {stillborn}");
+    if written > 0 {
+        #[expect(clippy::cast_precision_loss, reason = "a display ratio")]
+        let share = stillborn as f64 / written as f64 * 100.0;
+        println!("  stillborn share       : {share:.1}%");
+    }
+    println!(
+        "
+These are labels, not verdicts. Whether any of them predicts anything"
+    );
+    println!("is a question for the research store to answer against them.");
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args = match parse_args() {
         Ok(a) => a,
@@ -403,7 +530,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let result = if args.follow {
+    let result = if args.outcomes {
+        measure(&args)
+    } else if args.follow {
         follow(&args)
     } else {
         run(&args)

@@ -15,6 +15,7 @@ use radar_types::Slot;
 
 use crate::error::StoreError;
 use crate::event::{Event, Table};
+use crate::outcome::Outcome;
 use crate::schema::schema_for;
 
 /// How many slots go in one file.
@@ -42,6 +43,12 @@ pub struct Writer {
     root: PathBuf,
     /// Buffered events, keyed by table and partition.
     pending: BTreeMap<(Table, u64), Vec<Event>>,
+    /// Buffered outcome measurements, keyed by partition.
+    ///
+    /// Separate because an outcome is not a chain event: it has no signature and
+    /// no transaction position, and putting it through the same buffer would
+    /// mean inventing both.
+    pending_outcomes: BTreeMap<u64, Vec<Outcome>>,
     buffered: usize,
     flush_at: usize,
     written_rows: u64,
@@ -63,6 +70,7 @@ impl Writer {
         Ok(Self {
             root,
             pending: BTreeMap::new(),
+            pending_outcomes: BTreeMap::new(),
             buffered: 0,
             flush_at: flush_at.max(1),
             written_rows: 0,
@@ -83,6 +91,29 @@ impl Writer {
             .entry((event.table(), partition_of(slot)))
             .or_default()
             .push(event);
+        self.buffered += 1;
+        if self.buffered >= self.flush_at {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Buffers an outcome measurement.
+    ///
+    /// Partitioned by the slot it was *measured* at, not the launch slot: a
+    /// measurement is a fact about the moment it was taken, and a replay asking
+    /// what was known at slot N wants the measurements that existed by then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a flush fails.
+    pub fn append_outcome(&mut self, outcome: Outcome) -> Result<(), StoreError> {
+        let slot = outcome.measured_at;
+        self.highest_slot = Some(self.highest_slot.map_or(slot, |h| h.max(slot)));
+        self.pending_outcomes
+            .entry(partition_of(slot))
+            .or_default()
+            .push(outcome);
         self.buffered += 1;
         if self.buffered >= self.flush_at {
             self.flush()?;
@@ -121,6 +152,18 @@ impl Writer {
     /// Returns [`StoreError`] if a file cannot be written or a batch cannot be
     /// built.
     pub fn flush(&mut self) -> Result<(), StoreError> {
+        for (partition, outcomes) in std::mem::take(&mut self.pending_outcomes) {
+            if outcomes.is_empty() {
+                continue;
+            }
+            let rows = outcomes.len() as u64;
+            let batch = build_outcome_batch(&outcomes)?;
+            let path = self.next_path(Table::Outcomes, partition);
+            write_parquet(&path, &batch)?;
+            self.written_rows += rows;
+            self.written_files += 1;
+        }
+
         let pending = std::mem::take(&mut self.pending);
         for ((table, partition), events) in pending {
             if events.is_empty() {
@@ -238,6 +281,43 @@ impl EnvelopeCols {
     }
 }
 
+fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> {
+    let mut mint = StringBuilder::new();
+    let (mut measured, mut launch) = (UInt64Builder::new(), UInt64Builder::new());
+    let (mut first, mut last) = (UInt64Builder::new(), UInt64Builder::new());
+    let mut transfers = UInt64Builder::new();
+    let (mut senders, mut receivers) = (UInt64Builder::new(), UInt64Builder::new());
+    let mut graduated = BooleanBuilder::new();
+
+    for o in outcomes {
+        mint.append_value(o.mint.to_string());
+        measured.append_value(o.measured_at.get());
+        launch.append_value(o.launch_slot.get());
+        first.append_option(o.first_transfer_slot.map(radar_types::Slot::get));
+        last.append_option(o.last_transfer_slot.map(radar_types::Slot::get));
+        transfers.append_value(o.transfers);
+        senders.append_value(o.unique_senders);
+        receivers.append_value(o.unique_receivers);
+        graduated.append_value(o.graduated);
+    }
+
+    RecordBatch::try_new(
+        schema_for(Table::Outcomes),
+        vec![
+            Arc::new(mint.finish()) as ArrayRef,
+            Arc::new(measured.finish()),
+            Arc::new(launch.finish()),
+            Arc::new(first.finish()),
+            Arc::new(last.finish()),
+            Arc::new(transfers.finish()),
+            Arc::new(senders.finish()),
+            Arc::new(receivers.finish()),
+            Arc::new(graduated.finish()),
+        ],
+    )
+    .map_err(StoreError::from)
+}
+
 fn build_batch(table: Table, events: &[Event]) -> Result<RecordBatch, StoreError> {
     let mut env = EnvelopeCols::new();
     for e in events {
@@ -316,6 +396,7 @@ fn build_batch(table: Table, events: &[Event]) -> Result<RecordBatch, StoreError
             }
             cols.push(Arc::new(mint.finish()));
         }
+        Table::Outcomes => unreachable!("outcomes are not events; see build_outcome_batch"),
     }
 
     RecordBatch::try_new(schema_for(table), cols).map_err(StoreError::from)

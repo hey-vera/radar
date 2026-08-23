@@ -11,6 +11,7 @@ use radar_types::{Address, Signature, Slot};
 
 use crate::error::StoreError;
 use crate::event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
+use crate::outcome::Outcome;
 use crate::writer::SLOTS_PER_PARTITION;
 
 /// Reads events written by [`crate::Writer`].
@@ -57,8 +58,15 @@ impl Reader {
     pub fn watermark(&self) -> Result<Option<Slot>, StoreError> {
         let mut highest: Option<Slot> = None;
         for table in Table::ALL {
+            // Outcomes name their slot column `measured_at`, because a
+            // measurement is a fact about when it was taken.
+            let column = if *table == Table::Outcomes {
+                "measured_at"
+            } else {
+                "slot"
+            };
             for path in self.files(*table)? {
-                for slot in slots_in(&path)? {
+                for slot in slots_in(&path, column)? {
                     highest = Some(highest.map_or(slot, |h| h.max(slot)));
                 }
             }
@@ -95,6 +103,58 @@ impl Reader {
         });
         Ok(out)
     }
+
+    /// Reads outcome measurements taken at or before `as_of`.
+    ///
+    /// A mint can appear more than once: each row is a measurement at a
+    /// different slot, and a later one does not replace an earlier one. Callers
+    /// wanting "the latest as of N" take the last by `measured_at`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a file cannot be read or a row is malformed.
+    pub fn read_outcomes(&self, as_of: AsOf) -> Result<Vec<Outcome>, StoreError> {
+        let mut out = Vec::new();
+        for path in self.files(Table::Outcomes)? {
+            if start_slot_of(&path).is_some_and(|start| start > as_of.slot().get()) {
+                continue;
+            }
+            let file = fs::File::open(&path)?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+            for batch in reader {
+                let batch = batch?;
+                let mint = str_col(&batch, "mint")?;
+                let measured = u64_col(&batch, "measured_at")?;
+                let launch = u64_col(&batch, "launch_slot")?;
+                let first = u64_col(&batch, "first_transfer_slot")?;
+                let last = u64_col(&batch, "last_transfer_slot")?;
+                let transfers = u64_col(&batch, "transfers")?;
+                let senders = u64_col(&batch, "unique_senders")?;
+                let receivers = u64_col(&batch, "unique_receivers")?;
+                let graduated = bool_col(&batch, "graduated")?;
+
+                for i in 0..batch.num_rows() {
+                    let measured_at = Slot(measured.value(i));
+                    if !as_of.admits(measured_at) {
+                        continue;
+                    }
+                    out.push(Outcome {
+                        mint: parse(mint.value(i), "mint")?,
+                        measured_at,
+                        launch_slot: Slot(launch.value(i)),
+                        first_transfer_slot: first.is_valid(i).then(|| Slot(first.value(i))),
+                        last_transfer_slot: last.is_valid(i).then(|| Slot(last.value(i))),
+                        transfers: transfers.value(i),
+                        unique_senders: senders.value(i),
+                        unique_receivers: receivers.value(i),
+                        graduated: graduated.value(i),
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|o| (o.measured_at.get(), o.mint));
+        Ok(out)
+    }
 }
 
 impl PointInTime for Reader {
@@ -112,13 +172,13 @@ fn start_slot_of(path: &Path) -> Option<u64> {
 }
 
 /// Every slot present in a file, read from the slot column alone.
-fn slots_in(path: &Path) -> Result<Vec<Slot>, StoreError> {
+fn slots_in(path: &Path, column: &'static str) -> Result<Vec<Slot>, StoreError> {
     let file = fs::File::open(path)?;
     let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
     let mut out = Vec::new();
     for batch in reader {
         let batch = batch?;
-        let col = u64_col(&batch, "slot")?;
+        let col = u64_col(&batch, column)?;
         for i in 0..col.len() {
             out.push(Slot(col.value(i)));
         }
@@ -206,6 +266,9 @@ fn read_file(path: &Path, table: Table) -> Result<Vec<Event>, StoreError> {
                     origin,
                     mint,
                 })),
+                Table::Outcomes => {
+                    unreachable!("outcomes are read by read_outcomes, not read_file")
+                }
             });
         }
     }

@@ -37,6 +37,23 @@ fn envelope_fields() -> Vec<Field> {
 /// The Arrow schema for a table.
 #[must_use]
 pub fn schema_for(table: Table) -> Arc<Schema> {
+    // Outcomes are measurements rather than chain events: no signature, no
+    // transaction position, and `measured_at` in place of the envelope's slot.
+    // Forcing them through the envelope would mean inventing a signature.
+    if table == Table::Outcomes {
+        return Arc::new(Schema::new(vec![
+            Field::new("mint", DataType::Utf8, false),
+            Field::new("measured_at", DataType::UInt64, false),
+            Field::new("launch_slot", DataType::UInt64, false),
+            Field::new("first_transfer_slot", DataType::UInt64, true),
+            Field::new("last_transfer_slot", DataType::UInt64, true),
+            Field::new("transfers", DataType::UInt64, false),
+            Field::new("unique_senders", DataType::UInt64, false),
+            Field::new("unique_receivers", DataType::UInt64, false),
+            Field::new("graduated", DataType::Boolean, false),
+        ]));
+    }
+
     let mut fields = envelope_fields();
     match table {
         Table::Launches => fields.extend([
@@ -60,6 +77,7 @@ pub fn schema_for(table: Table) -> Arc<Schema> {
             Field::new("accepted_any_price", DataType::Boolean, false),
         ]),
         Table::Graduations => fields.push(Field::new("mint", DataType::Utf8, false)),
+        Table::Outcomes => unreachable!("handled above"),
     }
     Arc::new(Schema::new(fields))
 }
@@ -70,7 +88,7 @@ mod tests {
 
     #[test]
     fn every_table_has_a_schema_starting_with_the_envelope() {
-        for t in Table::ALL {
+        for t in Table::ALL.iter().filter(|t| **t != Table::Outcomes) {
             let s = schema_for(*t);
             let names: Vec<&str> = s
                 .fields()
@@ -90,11 +108,19 @@ mod tests {
     #[test]
     fn slot_is_never_nullable_because_it_is_the_point_in_time_key() {
         // A row that cannot say when it was true cannot be admitted through a
-        // watermark, so it must never be storable in the first place.
+        // watermark, so it must never be storable in the first place. Outcomes
+        // carry `measured_at` instead, for the same reason.
         for t in Table::ALL {
-            let s = schema_for(*t);
-            let slot = s.field_with_name("slot").expect("slot column");
-            assert!(!slot.is_nullable(), "{t:?}");
+            let schema = schema_for(*t);
+            let column = if *t == Table::Outcomes {
+                "measured_at"
+            } else {
+                "slot"
+            };
+            assert!(
+                !schema.field_with_name(column).expect(column).is_nullable(),
+                "{t:?}"
+            );
         }
     }
 

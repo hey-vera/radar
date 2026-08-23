@@ -16,6 +16,8 @@
 
 pub mod cryptohouse;
 pub mod extract;
+pub mod outcomes;
 
 pub use cryptohouse::{Client, QueryError};
 pub use extract::{Row, Scope, Skipped, Stats, events_from_rows, query_for_window};
+pub use outcomes::{MINTS_PER_BATCH, outcomes_from_rows};

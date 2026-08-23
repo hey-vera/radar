@@ -91,13 +91,36 @@ impl Client {
     /// Returns [`QueryError`] if the request fails, the server rejects the query,
     /// or a row does not deserialise.
     pub fn query<T: DeserializeOwned>(&self, sql: &str) -> Result<Vec<T>, QueryError> {
-        let body = self
+        // POST with the SQL in the body rather than GET with it in the URL.
+        // An outcome batch names four hundred mints, which is roughly 18 KB of
+        // query -- well past the URL length most proxies accept, and the failure
+        // arrives as a bare 404 that looks like a missing endpoint rather than an
+        // oversized request.
+        let mut response = match self
             .agent
-            .get(&self.endpoint)
+            .post(&self.endpoint)
             .query("user", USER)
-            .query("query", format!("{sql} FORMAT JSONEachRow"))
-            .call()
-            .map_err(|e| QueryError::Transport(e.to_string()))?
+            .content_type("text/plain; charset=utf-8")
+            .send(format!("{sql} FORMAT JSONEachRow"))
+        {
+            Ok(r) => r,
+            // ClickHouse answers a bad query with a non-2xx whose *body* holds
+            // the explanation and whose status holds nothing useful -- an unknown
+            // column comes back as a bare 404. Reporting only the status once
+            // cost a debugging round trip, so the body is read out here.
+            Err(ureq::Error::StatusCode(code)) => {
+                // Name the query that failed. An error that says only "404"
+                // could be any of several queries in a batch run, and finding
+                // out which cost a round trip once already.
+                let head: String = sql.chars().take(100).collect();
+                return Err(QueryError::Server(format!(
+                    "HTTP {code} rejecting: {head}..."
+                )));
+            }
+            Err(e) => return Err(QueryError::Transport(e.to_string())),
+        };
+
+        let body = response
             .body_mut()
             .read_to_string()
             .map_err(|e| QueryError::Transport(e.to_string()))?;

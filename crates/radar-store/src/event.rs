@@ -237,11 +237,19 @@ pub enum Table {
     Trades,
     /// Bonding-curve graduations.
     Graduations,
+    /// Outcome measurements. Not chain events but derived observations, each
+    /// stamped with the slot it was taken at.
+    Outcomes,
 }
 
 impl Table {
     /// Every table, for iteration.
-    pub const ALL: &'static [Self] = &[Self::Launches, Self::Trades, Self::Graduations];
+    pub const ALL: &'static [Self] = &[
+        Self::Launches,
+        Self::Trades,
+        Self::Graduations,
+        Self::Outcomes,
+    ];
 
     /// The directory name under the store root.
     #[must_use]
@@ -250,6 +258,7 @@ impl Table {
             Self::Launches => "launches",
             Self::Trades => "trades",
             Self::Graduations => "graduations",
+            Self::Outcomes => "outcomes",
         }
     }
 }
@@ -301,7 +310,7 @@ mod tests {
     fn events_route_to_their_own_table() {
         assert_eq!(trade(1).table(), Table::Trades);
         assert_eq!(Table::Trades.dir(), "trades");
-        assert_eq!(Table::ALL.len(), 3);
+        assert_eq!(Table::ALL.len(), 4);
     }
 
     #[test]

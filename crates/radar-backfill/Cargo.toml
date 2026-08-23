@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 bs58.workspace = true
+radar-asof.workspace = true
 radar-decode.workspace = true
 radar-store.workspace = true
 radar-types.workspace = true

@@ -31,6 +31,34 @@ struct QuoteResponse {
     price_impact_pct: Option<String>,
 }
 
+/// USDC, the mint SOL is priced against.
+pub const USDC: &str = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+/// Asks what one SOL is worth, in micro-USD.
+///
+/// A quote rather than an oracle: the price that matters for sizing is the one
+/// a trade would actually get, and a mid-price from an index is not that.
+///
+/// Returns `None` if the quote cannot be read. Absent rather than a fallback —
+/// a wrong SOL price silently rescales every position in the system, so the
+/// callers treat a missing one as a refusal to size.
+#[must_use]
+pub fn sol_price_micro_usd(quoter: &JupiterQuoter) -> Option<radar_types::MicroUsd> {
+    let mut response = quoter
+        .agent
+        .get(&quoter.endpoint)
+        .query("inputMint", WSOL)
+        .query("outputMint", USDC)
+        .query("amount", "1000000000")
+        .query("slippageBps", "50")
+        .call()
+        .ok()?;
+    let body = response.body_mut().read_to_string().ok()?;
+    let quote: QuoteResponse = serde_json::from_str(&body).ok()?;
+    // USDC has six decimals, which is exactly micro-USD.
+    Some(radar_types::MicroUsd(quote.out_amount.parse().ok()?))
+}
+
 /// Quotes sells through Jupiter.
 pub struct JupiterQuoter {
     endpoint: String,

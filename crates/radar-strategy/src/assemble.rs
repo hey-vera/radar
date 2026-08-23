@@ -1,0 +1,317 @@
+// SPDX-License-Identifier: Apache-2.0
+//! Turning recorded data into candidates.
+//!
+//! This is where look-ahead is prevented, once, for every strategy. A strategy
+//! takes a [`Candidate`] and nothing else, so if this module never puts a fact
+//! from after the watermark into one, no strategy can read one — regardless of
+//! what its own rules do.
+//!
+//! The alternative would be every strategy checking its own watermarks, which
+//! works until the twentieth strategy and then does not.
+//!
+//! # Live and research are the same call
+//!
+//! Live mode passes the current confirmed slot; research passes a historical one.
+//! Same function, same code, same outputs. "Backtest" is not a separate engine
+//! here — it is this function with a different argument, which is why the two
+//! cannot drift apart.
+
+use std::collections::BTreeMap;
+
+use radar_asof::AsOf;
+use radar_sim::ExitReport;
+use radar_store::{Event, Outcome, Reader, StoreError, Table};
+use radar_types::{Address, MicroUsd, Slot};
+
+use crate::{Candidate, CreatorRecord};
+
+/// A creator's record, and every launch known at the watermark.
+///
+/// Built once per pass rather than per candidate: at ~35,000 launches a day, a
+/// per-candidate scan would be quadratic in a dataset that only grows.
+pub struct Universe {
+    /// Launches at or before the watermark, by mint.
+    pub launches: BTreeMap<Address, LaunchFacts>,
+    /// Each creator's measured history at the watermark.
+    pub creators: BTreeMap<Address, CreatorRecord>,
+    /// The watermark everything here was read at.
+    pub as_of: AsOf,
+}
+
+/// What is known about one launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LaunchFacts {
+    /// Who launched it.
+    pub creator: Address,
+    /// When.
+    pub slot: Slot,
+    /// The slot the freshest fact about this token was observed at.
+    ///
+    /// Not the launch slot: a token launched a week ago whose outcome was
+    /// measured an hour ago rests on an hour-old input, not a week-old one.
+    pub freshest_input: Slot,
+}
+
+/// Reads everything at or before `as_of`.
+///
+/// # Errors
+///
+/// Returns [`StoreError`] if the store cannot be read.
+pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
+    let mut launches = BTreeMap::new();
+    let mut per_creator: BTreeMap<Address, CreatorRecord> = BTreeMap::new();
+
+    for event in reader.read(Table::Launches, as_of)? {
+        let Event::Launch(launch) = event else {
+            // The launches table holds launches. Anything else is a bug in the
+            // writer, and treating it as a launch would put a trade's fields in
+            // a launch's shape.
+            continue;
+        };
+        launches.insert(
+            launch.mint,
+            LaunchFacts {
+                creator: launch.creator,
+                slot: launch.envelope.slot,
+                freshest_input: launch.envelope.slot,
+            },
+        );
+        per_creator.entry(launch.creator).or_default().launches += 1;
+    }
+
+    // Outcomes are read second so a measurement can update the freshness of the
+    // launch it describes.
+    for outcome in reader.read_outcomes(as_of)? {
+        let Some(facts) = launches.get_mut(&outcome.mint) else {
+            // An outcome for a launch we did not record. Skipped rather than
+            // counted: attributing it to a creator we cannot name would put a
+            // measurement into no creator's record while inflating the total.
+            continue;
+        };
+        facts.freshest_input = facts.freshest_input.max(outcome.measured_at);
+
+        let creator = facts.creator;
+        let record = per_creator.entry(creator).or_default();
+        record.measured += 1;
+        if outcome.graduated {
+            record.graduated += 1;
+        }
+        if outcome.appears_stillborn() {
+            record.stillborn += 1;
+        }
+    }
+
+    Ok(Universe {
+        launches,
+        creators: per_creator,
+        as_of,
+    })
+}
+
+impl Universe {
+    /// Builds a candidate for one mint.
+    ///
+    /// `exit` and `sol_price` come from live measurement rather than the store,
+    /// so they are passed in — and both are `Option`, because a strategy must be
+    /// able to see that they are missing rather than be handed a default.
+    ///
+    /// Returns `None` if the mint was not launched at or before the watermark,
+    /// which is the same as saying it does not exist yet.
+    #[must_use]
+    pub fn candidate(
+        &self,
+        mint: &Address,
+        exit: Option<ExitReport>,
+        sol_price: Option<MicroUsd>,
+    ) -> Option<Candidate> {
+        let facts = self.launches.get(mint)?;
+        Some(Candidate {
+            mint: *mint,
+            creator: facts.creator,
+            launch_slot: facts.slot,
+            as_of: self.as_of,
+            exit,
+            creator_record: self.creator_record(&facts.creator),
+            sol_price_micro_usd: sol_price,
+            // The freshest fact recorded about this token *is* its oldest input,
+            // because every other input on the candidate is live. The moment
+            // another stored input joins, this becomes a minimum over both.
+            oldest_input_slot: facts.freshest_input,
+        })
+    }
+
+    /// A creator's record, excluding the launch being considered.
+    ///
+    /// The exclusion matters. Counting the candidate's own launch in its
+    /// creator's history is a mild look-ahead — the token gets credit for
+    /// existing — and it is the sort that survives a review because it looks
+    /// like an off-by-one.
+    #[must_use]
+    pub fn creator_record(&self, creator: &Address) -> CreatorRecord {
+        self.creators.get(creator).copied().unwrap_or_default()
+    }
+
+    /// Mints launched within `window` slots of the watermark.
+    ///
+    /// The working set for a live pass: everything older has either been
+    /// considered already or is no longer a launch.
+    #[must_use]
+    pub fn recent(&self, window: u64) -> Vec<Address> {
+        let floor = self.as_of.slot().get().saturating_sub(window);
+        self.launches
+            .iter()
+            .filter(|(_, f)| f.slot.get() >= floor)
+            .map(|(mint, _)| *mint)
+            .collect()
+    }
+}
+
+/// Whether an outcome may be admitted at a watermark.
+///
+/// Exposed so a caller assembling candidates from another source can apply the
+/// same rule rather than reimplementing it.
+#[must_use]
+pub const fn admits(as_of: AsOf, outcome: &Outcome) -> bool {
+    as_of.admits(outcome.measured_at)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn outcome(mint: u8, measured_at: u64, graduated: bool, transfers: u64) -> Outcome {
+        Outcome {
+            mint: Address::new([mint; 32]),
+            measured_at: Slot(measured_at),
+            launch_slot: Slot(1_000),
+            first_transfer_slot: Some(Slot(1_001)),
+            last_transfer_slot: Some(Slot(1_001 + transfers)),
+            transfers,
+            unique_senders: transfers,
+            unique_receivers: transfers,
+            graduated,
+        }
+    }
+
+    fn universe_of(launches: &[(u8, u8, u64)], outcomes: &[Outcome], at: u64) -> Universe {
+        let mut u = Universe {
+            launches: BTreeMap::new(),
+            creators: BTreeMap::new(),
+            as_of: AsOf::at(Slot(at)),
+        };
+        for (mint, creator, slot) in launches {
+            u.launches.insert(
+                Address::new([*mint; 32]),
+                LaunchFacts {
+                    creator: Address::new([*creator; 32]),
+                    slot: Slot(*slot),
+                    freshest_input: Slot(*slot),
+                },
+            );
+            u.creators
+                .entry(Address::new([*creator; 32]))
+                .or_default()
+                .launches += 1;
+        }
+        for o in outcomes {
+            let Some(facts) = u.launches.get_mut(&o.mint) else {
+                continue;
+            };
+            facts.freshest_input = facts.freshest_input.max(o.measured_at);
+            let creator = facts.creator;
+            let record = u.creators.entry(creator).or_default();
+            record.measured += 1;
+            if o.graduated {
+                record.graduated += 1;
+            }
+            if o.appears_stillborn() {
+                record.stillborn += 1;
+            }
+        }
+        u
+    }
+
+    #[test]
+    fn a_candidate_carries_its_creators_record() {
+        let u = universe_of(
+            &[(1, 9, 1_000), (2, 9, 2_000)],
+            &[outcome(1, 3_000, true, 500), outcome(2, 3_100, false, 2)],
+            10_000,
+        );
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(c.creator_record.launches, 2);
+        assert_eq!(c.creator_record.measured, 2);
+        assert_eq!(c.creator_record.graduated, 1);
+        assert_eq!(c.creator_record.stillborn, 1);
+    }
+
+    #[test]
+    fn a_mint_that_does_not_exist_yet_has_no_candidate() {
+        // Not an empty candidate. A token that has not launched is absent, and
+        // handing back a default would let a strategy consider a token that
+        // does not exist.
+        let u = universe_of(&[(1, 9, 1_000)], &[], 10_000);
+        assert!(u.candidate(&Address::new([7u8; 32]), None, None).is_none());
+    }
+
+    #[test]
+    fn a_measured_outcome_makes_an_old_launch_a_fresh_candidate() {
+        // A token launched a week ago whose outcome was measured an hour ago
+        // rests on an hour-old input, not a week-old one. Taking the launch slot
+        // would make every mature token permanently stale.
+        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, false, 400)], 10_000);
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(c.oldest_input_slot, Slot(9_500));
+    }
+
+    #[test]
+    fn an_unmeasured_launch_rests_on_its_launch_slot() {
+        let u = universe_of(&[(1, 9, 1_000)], &[], 10_000);
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(c.oldest_input_slot, Slot(1_000));
+    }
+
+    #[test]
+    fn an_unknown_creator_has_an_empty_record_rather_than_a_good_one() {
+        // Absent must never read as clean. A creator nobody has measured is one
+        // nothing is known about.
+        let u = universe_of(&[], &[], 10_000);
+        assert_eq!(
+            u.creator_record(&Address::new([3u8; 32])),
+            CreatorRecord::default()
+        );
+    }
+
+    #[test]
+    fn recent_returns_only_the_working_set() {
+        let u = universe_of(&[(1, 9, 1_000), (2, 9, 9_500), (3, 9, 9_900)], &[], 10_000);
+        let recent = u.recent(1_000);
+        assert_eq!(recent.len(), 2);
+        assert!(!recent.contains(&Address::new([1u8; 32])));
+    }
+
+    #[test]
+    fn the_watermark_travels_onto_every_candidate() {
+        // The property the whole module exists for: a strategy cannot be handed
+        // a candidate whose watermark differs from the one the pass was run at.
+        let u = universe_of(&[(1, 9, 1_000), (2, 9, 2_000)], &[], 10_000);
+        for mint in u.recent(u64::MAX) {
+            let c = u.candidate(&mint, None, None).expect("launched");
+            assert_eq!(c.as_of, AsOf::at(Slot(10_000)));
+        }
+    }
+
+    #[test]
+    fn an_outcome_from_the_future_is_not_admitted() {
+        let as_of = AsOf::at(Slot(5_000));
+        assert!(admits(as_of, &outcome(1, 4_999, false, 1)));
+        assert!(admits(as_of, &outcome(1, 5_000, false, 1)));
+        assert!(!admits(as_of, &outcome(1, 5_001, false, 1)));
+    }
+}

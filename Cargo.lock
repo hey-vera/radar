@@ -1340,8 +1340,10 @@ version = "0.0.1"
 dependencies = [
  "radar-asof",
  "radar-instruments",
+ "radar-risk",
  "radar-sim",
  "radar-store",
+ "radar-strategy",
  "radar-types",
  "serde_json",
 ]
@@ -1467,6 +1469,7 @@ dependencies = [
  "radar-asof",
  "radar-risk",
  "radar-sim",
+ "radar-store",
  "radar-types",
  "serde",
 ]

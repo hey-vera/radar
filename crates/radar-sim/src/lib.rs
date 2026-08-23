@@ -27,6 +27,6 @@ pub mod mint;
 pub mod rpc;
 
 pub use exit::{Confidence, ExitReport, QuoteError, QuotePoint, Quoter, capacity_table, probe};
-pub use jupiter::JupiterQuoter;
+pub use jupiter::{JupiterQuoter, sol_price_micro_usd};
 pub use mint::{Extension, MintError, MintStructure};
 pub use rpc::{FetchError, RpcClient};

@@ -19,9 +19,11 @@
 //! money" — which is the only way to find out whether a rule is an edge or a
 //! superstition.
 
+pub mod assemble;
 pub mod avoidance;
 pub mod creator_edge;
 
+pub use assemble::{Universe, universe};
 pub use avoidance::{PassReason, disqualify};
 pub use creator_edge::CreatorEdge;
 

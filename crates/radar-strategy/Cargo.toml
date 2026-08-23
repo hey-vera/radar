@@ -16,5 +16,6 @@ workspace = true
 radar-asof.workspace = true
 radar-risk.workspace = true
 radar-sim.workspace = true
+radar-store.workspace = true
 radar-types.workspace = true
 serde.workspace = true

@@ -11,6 +11,8 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry};
+mod consider;
+
 use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::{Event, Reader, Table};
 use radar_types::Slot;
@@ -26,6 +28,9 @@ commands:
   call <name> --store <dir> --args '<json>'
                                  run an instrument and print its record
   exit <mint> [--size N]         can this token actually be sold, and at what size
+  consider --store <dir> [--window N] [--cap N]
+                                 run the whole decision lane over recorded
+                                 tokens; commits nothing
 "
 }
 
@@ -434,6 +439,20 @@ fn report_exit(report: &radar_sim::ExitReport, size: u64) {
     }
 }
 
+/// Runs the whole decision lane over recorded tokens.
+fn decision_lane(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let window = flag(args, "--window")
+        .and_then(|v| v.parse().ok())
+        // ~24 hours at 2.5 slots a second. A token older than this has either
+        // been considered already or is no longer a launch.
+        .unwrap_or(216_000);
+    let cap = flag(args, "--cap")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(consider::default_cap);
+    consider::run(&reader, window, cap)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -446,6 +465,7 @@ fn main() -> ExitCode {
         "launches" => launches(&args),
         "creators" => creators(&args),
         "exit" => exit_analysis(&args),
+        "consider" => decision_lane(&args),
         "tools" => {
             tools();
             Ok(())

@@ -1,0 +1,470 @@
+// SPDX-License-Identifier: Apache-2.0
+//! The first strategy: creator track record, sized off the measured exit.
+//!
+//! It is first because creator identity is the one attribution in this market
+//! that is **structurally verifiable on-chain**. Wallet reputation is inference;
+//! the create instruction names the creator. That makes creator history the only
+//! signal here whose *inputs* need no trust, whatever turns out to be true of its
+//! predictive value.
+//!
+//! Whether it has predictive value is an open question, and this crate is how it
+//! gets answered rather than assumed. Every decision records the thresholds that
+//! produced it, so the research store can replay the same candidates at other
+//! thresholds and report what the rule actually bought.
+//!
+//! # Sizing
+//!
+//! Notional is a fraction of *measured exit capacity*, never a fixed figure and
+//! never a fraction of the portfolio. This is the plan's exit-first principle
+//! made mechanical: the position a token can support is a property of the token,
+//! not of how much capital happens to be available. The risk kernel then applies
+//! the portfolio limits on top, and the smaller of the two wins — as it must,
+//! since the kernel is the only thing with authority.
+
+use radar_risk::{Action, Proposal};
+use radar_types::MicroUsd;
+
+use crate::avoidance::{PassReason, disqualify};
+use crate::{Candidate, Decision, Strategy, lamports_to_micro_usd};
+
+/// Thresholds, held as data so they can be varied in research.
+///
+/// Every field is an integer. A threshold expressed as a float is a threshold
+/// that compares differently on a replay, and a replay that disagrees with the
+/// recording is indistinguishable from a leak.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Thresholds {
+    /// Measured launches below which a creator says nothing.
+    ///
+    /// One graduation out of one launch is not a 100% rate, it is one event.
+    pub min_measured_launches: u64,
+    /// Graduations per ten thousand measured launches, at minimum.
+    pub min_graduation_bps: u64,
+    /// Stillbirths per ten thousand above which a creator is refused.
+    pub max_stillborn_bps: u64,
+    /// Impact budget the exit capacity is measured at.
+    pub capacity_impact_bps: u32,
+    /// Share of measured capacity to take, per ten thousand.
+    ///
+    /// Well under half. Capacity is what the book showed at one moment, and the
+    /// book is the first thing to leave.
+    pub capacity_share_bps: u64,
+    /// Notional below which a round trip is not worth its costs.
+    pub min_notional: MicroUsd,
+    /// Slots of staleness beyond which the candidate is refused.
+    pub max_input_age: u64,
+    /// Round-trip cost assumed when proposing, per ten thousand of notional.
+    ///
+    /// A placeholder until [`radar_exec`] can measure it — and deliberately
+    /// pessimistic, because the kernel refuses on cost and an optimistic
+    /// estimate here would launder a bad trade past it.
+    ///
+    /// [`radar_exec`]: https://github.com/hey-vera/radar
+    pub assumed_round_trip_bps: u64,
+}
+
+impl Thresholds {
+    /// The starting values.
+    ///
+    /// Not tuned. Tuning them against data that has not been collected yet is
+    /// how a backtest gets fitted to noise; these are placed where they are
+    /// defensible from first principles and left there until the research store
+    /// can argue otherwise.
+    pub const DEFAULT: Self = Self {
+        // Five is the same floor the creator_track_record instrument uses.
+        min_measured_launches: 5,
+        // 5%. The population base rate is roughly 1%, so this asks for several
+        // times better than average rather than for excellence.
+        min_graduation_bps: 500,
+        // 90%. Almost every creator is above this; it catches the spammers.
+        max_stillborn_bps: 9_000,
+        // 1%. Tighter than the exit report's widest probe.
+        capacity_impact_bps: 100,
+        // A fifth of what the book showed.
+        capacity_share_bps: 2_000,
+        min_notional: MicroUsd::DOLLAR,
+        // ~40 minutes at 2.5 slots a second.
+        max_input_age: 6_000,
+        // 2%. Fees, tip, spread and slippage on both legs.
+        assumed_round_trip_bps: 200,
+    };
+}
+
+/// Proposes on creators with a measured record, sized off the measured exit.
+#[derive(Clone, Copy, Debug)]
+pub struct CreatorEdge {
+    /// The thresholds in force.
+    pub thresholds: Thresholds,
+}
+
+impl Default for CreatorEdge {
+    fn default() -> Self {
+        Self {
+            thresholds: Thresholds::DEFAULT,
+        }
+    }
+}
+
+impl Strategy for CreatorEdge {
+    fn name(&self) -> &'static str {
+        "creator_edge"
+    }
+
+    fn version(&self) -> &'static str {
+        "0.1.0"
+    }
+
+    fn consider(&self, candidate: &Candidate) -> Decision {
+        let t = &self.thresholds;
+        let mut reasons = disqualify(candidate);
+
+        let record = &candidate.creator_record;
+        if record.measured < t.min_measured_launches {
+            reasons.push(PassReason::CreatorUnproven);
+        } else {
+            // Only meaningful above the sample floor. Below it these rates are
+            // arithmetic on noise, and reporting them as findings would give a
+            // creator with one launch a verdict.
+            match record.graduation_bps() {
+                // Distinguished, because they are different findings. Never is
+                // a fact about the creator; rarely is a fact about where this
+                // threshold happens to sit, and research will want to move it.
+                Some(0) => reasons.push(PassReason::CreatorNeverGraduated),
+                Some(bps) if bps < t.min_graduation_bps => {
+                    reasons.push(PassReason::CreatorGraduatesTooRarely);
+                }
+                _ => {}
+            }
+            if record
+                .stillborn_bps()
+                .is_some_and(|bps| bps > t.max_stillborn_bps)
+            {
+                reasons.push(PassReason::CreatorMostlyStillborn);
+            }
+        }
+
+        if candidate
+            .as_of
+            .slot()
+            .saturating_since(candidate.oldest_input_slot)
+            .get()
+            > t.max_input_age
+        {
+            reasons.push(PassReason::InputsTooStale);
+        }
+
+        // Sizing runs even when reasons exist, because a candidate that fails
+        // only on capacity should say so rather than be hidden behind an
+        // earlier failure. The research store wants the complete list.
+        let notional = size(candidate, t);
+        match notional {
+            None => {
+                // Absent only when the inputs sizing needs are missing, and
+                // whichever one is missing already pushed its own reason.
+                debug_assert!(
+                    !reasons.is_empty(),
+                    "sizing failed with nothing to explain it"
+                );
+            }
+            Some(n) if n < t.min_notional => reasons.push(PassReason::CapacityBelowFloor),
+            Some(_) => {}
+        }
+
+        if !reasons.is_empty() {
+            return Decision::pass(reasons);
+        }
+
+        let Some(notional) = notional else {
+            return Decision::pass(vec![PassReason::CapacityBelowFloor]);
+        };
+
+        Decision::Propose(Box::new(Proposal {
+            mint: candidate.mint,
+            creator: candidate.creator,
+            action: Action::Buy,
+            notional,
+            estimated_round_trip_cost: MicroUsd(
+                notional.get().saturating_mul(t.assumed_round_trip_bps) / 10_000,
+            ),
+            oldest_input_slot: candidate.oldest_input_slot,
+            simulated_exit_capacity: capacity(candidate, t),
+        }))
+    }
+}
+
+/// The measured exit capacity as a notional, or `None` if it cannot be computed.
+fn capacity(candidate: &Candidate, t: &Thresholds) -> Option<MicroUsd> {
+    let lamports = candidate
+        .exit
+        .as_ref()?
+        .capacity_lamports(t.capacity_impact_bps)?;
+    let price = candidate.sol_price_micro_usd?;
+    Some(lamports_to_micro_usd(lamports, price))
+}
+
+/// The notional to propose: a share of measured capacity.
+fn size(candidate: &Candidate, t: &Thresholds) -> Option<MicroUsd> {
+    let capacity = capacity(candidate, t)?;
+    Some(MicroUsd(
+        capacity.get().saturating_mul(t.capacity_share_bps) / 10_000,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use radar_asof::AsOf;
+    use radar_sim::ExitReport;
+    use radar_sim::exit::{Confidence, QuotePoint};
+    use radar_types::{Address, Slot};
+
+    use super::*;
+    use crate::CreatorRecord;
+
+    /// A candidate that passes everything, for tests to spoil one field at a time.
+    fn good() -> Candidate {
+        Candidate {
+            mint: Address::new([7u8; 32]),
+            creator: Address::new([8u8; 32]),
+            launch_slot: Slot(1_000),
+            as_of: AsOf::at(Slot(10_000)),
+            exit: Some(ExitReport {
+                mint: Address::new([7u8; 32]),
+                structure: None,
+                curve: vec![
+                    QuotePoint {
+                        size_tokens: 1_000_000,
+                        out_lamports: 500_000_000,
+                        impact_bps: 30,
+                    },
+                    QuotePoint {
+                        size_tokens: 5_000_000,
+                        out_lamports: 2_400_000_000,
+                        impact_bps: 80,
+                    },
+                    // Past the impact budget: must not be counted as capacity.
+                    QuotePoint {
+                        size_tokens: 20_000_000,
+                        out_lamports: 8_000_000_000,
+                        impact_bps: 900,
+                    },
+                ],
+                no_route_at: Vec::new(),
+                structural_threats: Vec::new(),
+                can_be_stopped: false,
+                confidence: Confidence::Measured,
+            }),
+            creator_record: CreatorRecord {
+                launches: 20,
+                measured: 20,
+                stillborn: 10,
+                graduated: 3,
+            },
+            sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
+            oldest_input_slot: Slot(9_000),
+        }
+    }
+
+    #[test]
+    fn a_qualified_candidate_produces_a_proposal() {
+        let d = CreatorEdge::default().consider(&good());
+        let Decision::Propose(p) = d else {
+            panic!("expected a proposal, got {d:?}");
+        };
+        assert_eq!(p.action, Action::Buy);
+        assert_eq!(p.mint, Address::new([7u8; 32]));
+    }
+
+    #[test]
+    fn capacity_stops_at_the_impact_budget() {
+        // 2.4 SOL at 80bps qualifies; 8 SOL at 900bps does not. At $200 that is
+        // $480 of capacity, and the proposal takes a fifth.
+        let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
+            panic!("expected a proposal");
+        };
+        assert_eq!(
+            p.simulated_exit_capacity,
+            Some(MicroUsd::from_dollars(480.0))
+        );
+        assert_eq!(p.notional, MicroUsd::from_dollars(96.0));
+    }
+
+    #[test]
+    fn the_proposal_never_claims_the_whole_book() {
+        // Capacity is what the book showed at one moment, and the book is the
+        // first thing to leave. Sizing at capacity would assume it stays.
+        let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
+            panic!("expected a proposal");
+        };
+        let capacity = p.simulated_exit_capacity.expect("qualified");
+        assert!(p.notional.get() * 2 < capacity.get());
+    }
+
+    #[test]
+    fn an_unproven_creator_is_passed_over() {
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 3,
+            measured: 3,
+            stillborn: 0,
+            graduated: 3,
+        };
+        // A perfect record over three launches is three events, not a rate.
+        let d = CreatorEdge::default().consider(&c);
+        assert_eq!(d.reasons(), [PassReason::CreatorUnproven]);
+    }
+
+    #[test]
+    fn a_creator_who_never_graduates_is_passed_over() {
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 40,
+            measured: 40,
+            stillborn: 20,
+            graduated: 0,
+        };
+        assert!(
+            CreatorEdge::default()
+                .consider(&c)
+                .reasons()
+                .contains(&PassReason::CreatorNeverGraduated)
+        );
+    }
+
+    #[test]
+    fn graduating_rarely_is_a_different_finding_from_never_graduating() {
+        // One is a fact about the creator, the other about the threshold. A
+        // research pass that moves the threshold needs to tell them apart.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 60,
+            measured: 60,
+            stillborn: 30,
+            graduated: 1,
+        };
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(reasons.contains(&PassReason::CreatorGraduatesTooRarely));
+        assert!(!reasons.contains(&PassReason::CreatorNeverGraduated));
+    }
+
+    #[test]
+    fn a_spammer_is_passed_over_even_with_graduations() {
+        // 500 launches, 495 stillborn, 5 graduated: above the graduation floor
+        // on the count but the record is a shotgun, not a skill.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 500,
+            measured: 500,
+            stillborn: 495,
+            graduated: 5,
+        };
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(reasons.contains(&PassReason::CreatorMostlyStillborn));
+    }
+
+    #[test]
+    fn a_stale_candidate_is_passed_over() {
+        let mut c = good();
+        c.oldest_input_slot = Slot(1_000);
+        assert!(
+            CreatorEdge::default()
+                .consider(&c)
+                .reasons()
+                .contains(&PassReason::InputsTooStale)
+        );
+    }
+
+    #[test]
+    fn a_position_too_small_to_pay_its_costs_is_passed_over() {
+        let mut c = good();
+        // A curve that only supports dust.
+        c.exit.as_mut().expect("has exit").curve = vec![QuotePoint {
+            size_tokens: 1_000,
+            out_lamports: 1_000,
+            impact_bps: 10,
+        }];
+        assert!(
+            CreatorEdge::default()
+                .consider(&c)
+                .reasons()
+                .contains(&PassReason::CapacityBelowFloor)
+        );
+    }
+
+    #[test]
+    fn a_candidate_with_no_exit_never_proposes() {
+        // The invariant the risk kernel also enforces, held here too so a
+        // proposal with no exit cannot even be constructed for it to refuse.
+        let mut c = good();
+        c.exit = None;
+        assert!(!CreatorEdge::default().consider(&c).is_proposal());
+    }
+
+    #[test]
+    fn every_proposal_carries_a_simulated_exit_capacity() {
+        // The kernel refuses None. A strategy that emitted one would be
+        // generating guaranteed refusals, which reads as a broken pipeline
+        // rather than as a strategy declining to trade.
+        let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
+            panic!("expected a proposal");
+        };
+        assert!(p.simulated_exit_capacity.is_some());
+    }
+
+    #[test]
+    fn the_strategy_is_pure() {
+        // Same candidate, same decision, however many times and in whatever
+        // order. This is what makes a recorded decision replayable, and the
+        // property that would silently rot if anything here read a clock.
+        let c = good();
+        let s = CreatorEdge::default();
+        let first = s.consider(&c);
+        for _ in 0..64 {
+            assert_eq!(s.consider(&c), first);
+        }
+    }
+
+    #[test]
+    fn a_candidate_failing_several_ways_reports_all_of_them() {
+        let mut c = good();
+        c.creator_record = CreatorRecord::default();
+        c.exit = None;
+        c.oldest_input_slot = Slot(0);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(reasons.contains(&PassReason::NoExitSimulated));
+        assert!(reasons.contains(&PassReason::CreatorUnproven));
+        assert!(reasons.contains(&PassReason::InputsTooStale));
+    }
+
+    #[test]
+    fn thresholds_are_data_so_research_can_vary_them() {
+        // The reason the rule is falsifiable rather than a belief: the same
+        // candidates can be re-run at other thresholds and compared.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 6,
+            measured: 6,
+            stillborn: 2,
+            graduated: 1,
+        };
+        let strict = CreatorEdge {
+            thresholds: Thresholds {
+                min_measured_launches: 50,
+                ..Thresholds::DEFAULT
+            },
+        };
+        assert!(!strict.consider(&c).is_proposal());
+        assert!(CreatorEdge::default().consider(&c).is_proposal());
+    }
+
+    #[test]
+    fn the_assumed_cost_is_pessimistic_enough_to_reach_the_kernel() {
+        // The kernel refuses on round-trip cost as a share of notional. An
+        // optimistic estimate here would launder a bad trade past that check,
+        // so the estimate must be present and non-trivial.
+        let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
+            panic!("expected a proposal");
+        };
+        assert!(p.estimated_round_trip_cost > MicroUsd::ZERO);
+        assert_eq!(p.estimated_round_trip_cost, MicroUsd::from_dollars(1.92));
+    }
+}

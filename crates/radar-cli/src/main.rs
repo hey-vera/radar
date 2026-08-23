@@ -319,10 +319,18 @@ fn exit_analysis(args: &[String]) -> Result<(), String> {
         .unwrap_or(1_000_000_000);
 
     println!("{mint}");
+    let structure = report_structure(&mint);
+    let report = radar_sim::probe(&JupiterQuoter::default(), &mint, structure, size);
+    report_exit(&report, size);
+    Ok(())
+}
 
-    // Structure first. It is cheaper, and it can rule a token out before any
-    // quote is worth asking for.
-    let structure = match RpcClient::default().mint_structure(&mint) {
+/// Reads the mint account and prints what it says.
+///
+/// Structure first: it is free, and it can rule a token out before any quote is
+/// worth asking for.
+fn report_structure(mint: &radar_types::Address) -> Option<radar_sim::MintStructure> {
+    match RpcClient::default().mint_structure(mint) {
         Ok(s) => {
             println!(
                 "
@@ -358,10 +366,11 @@ fn exit_analysis(args: &[String]) -> Result<(), String> {
             );
             None
         }
-    };
+    }
+}
 
-    let report = radar_sim::probe(&JupiterQuoter::default(), &mint, structure, size);
-
+/// Prints the sell curve and what it implies.
+fn report_exit(report: &radar_sim::ExitReport, size: u64) {
     println!(
         "
   sell curve (from {size} base units):"
@@ -390,7 +399,7 @@ fn exit_analysis(args: &[String]) -> Result<(), String> {
         "
   capacity within an impact budget:"
     );
-    for (bps, capacity) in radar_sim::capacity_table(&report) {
+    for (bps, capacity) in radar_sim::capacity_table(report) {
         match capacity {
             Some(lamports) => {
                 println!(
@@ -423,7 +432,6 @@ fn exit_analysis(args: &[String]) -> Result<(), String> {
         );
         println!("  token cannot be sized at all until that changes.");
     }
-    Ok(())
 }
 
 fn main() -> ExitCode {

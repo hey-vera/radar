@@ -1347,6 +1347,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-strategy"
+version = "0.0.1"
+dependencies = [
+ "radar-asof",
+ "radar-risk",
+ "radar-sim",
+ "radar-types",
+ "serde",
+]
+
+[[package]]
 name = "radar-types"
 version = "0.0.1"
 dependencies = [

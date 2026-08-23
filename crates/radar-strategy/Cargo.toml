@@ -1,0 +1,20 @@
+[package]
+name = "radar-strategy"
+description = "Deterministic strategies. They propose; they never authorise."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+radar-asof.workspace = true
+radar-risk.workspace = true
+radar-sim.workspace = true
+radar-types.workspace = true
+serde.workspace = true

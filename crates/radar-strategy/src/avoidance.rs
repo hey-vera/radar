@@ -56,8 +56,17 @@ pub enum PassReason {
     NoPrice,
     /// Capacity is real but too small to be worth a round trip's costs.
     CapacityBelowFloor,
-    /// The candidate rests on an input older than the strategy accepts.
-    InputsTooStale,
+    /// The token's own reading is older than the strategy accepts.
+    ///
+    /// Liquidity and activity move by the minute, so this budget is tight.
+    TokenReadingTooOld,
+    /// The creator's record is older than the strategy accepts.
+    ///
+    /// Separate from [`Self::TokenReadingTooOld`] and far more generous. A
+    /// creator's history is a count over months, and holding it to the token's
+    /// budget refuses candidates for a reason that is about Radar's measurement
+    /// cadence rather than about the creator.
+    CreatorRecordTooOld,
 }
 
 impl PassReason {
@@ -148,7 +157,8 @@ mod tests {
             exit,
             creator_record: CreatorRecord::default(),
             sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
-            oldest_input_slot: Slot(9_900),
+            token_observed_at: Slot(9_900),
+            creator_observed_at: Slot(9_900),
         }
     }
 

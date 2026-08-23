@@ -43,7 +43,8 @@ fn candidate() -> Candidate {
             graduated: 3,
         },
         sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
-        oldest_input_slot: Slot(9_000),
+        token_observed_at: Slot(9_000),
+        creator_observed_at: Slot(9_000),
     }
 }
 

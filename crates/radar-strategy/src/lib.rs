@@ -57,12 +57,37 @@ pub struct Candidate {
     /// The SOL price used to convert exit capacity into notional, or `None` if
     /// unknown.
     pub sol_price_micro_usd: Option<MicroUsd>,
-    /// The oldest slot any input above was observed at.
+    /// When this token's own mutable facts were last observed.
     ///
-    /// Carried onto the proposal so the kernel can refuse stale decisions. The
-    /// oldest, not the newest: a decision is only as current as its stalest
-    /// ingredient.
-    pub oldest_input_slot: Slot,
+    /// Its outcome measurement, or the launch slot if it has never been measured
+    /// — "nothing has been measured" is itself a fact as of the launch.
+    ///
+    /// Fast-moving. A token's liquidity and activity change by the minute, so a
+    /// reading an hour old describes a market that may no longer exist.
+    pub token_observed_at: Slot,
+    /// When this creator's record was last updated.
+    ///
+    /// Slow-moving, and deliberately budgeted separately. A creator's history is
+    /// a count over months; it does not go stale in an hour, and holding it to a
+    /// fast budget would refuse every candidate for a reason that is about the
+    /// measurement cadence rather than about the creator.
+    ///
+    /// This distinction is the plan's mutability classes applied where they
+    /// actually bite. A single budget across both made 88% of live candidates
+    /// read as stale — see `docs/research/0006`.
+    pub creator_observed_at: Slot,
+}
+
+impl Candidate {
+    /// The oldest mutable input this candidate rests on.
+    ///
+    /// What goes on the proposal, because the risk kernel's staleness check is
+    /// about the decision as a whole: a decision is only as current as its
+    /// stalest ingredient, whatever the strategy's own per-class budgets said.
+    #[must_use]
+    pub fn oldest_input_slot(&self) -> Slot {
+        self.token_observed_at.min(self.creator_observed_at)
+    }
 }
 
 /// A creator's measured history, as of the watermark.

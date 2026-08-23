@@ -51,8 +51,17 @@ pub struct Thresholds {
     pub capacity_share_bps: u64,
     /// Notional below which a round trip is not worth its costs.
     pub min_notional: MicroUsd,
-    /// Slots of staleness beyond which the candidate is refused.
-    pub max_input_age: u64,
+    /// Slots beyond which a token's own reading is too old to act on.
+    ///
+    /// Fast-moving: liquidity and activity change by the minute.
+    pub max_token_age: u64,
+    /// Slots beyond which a creator's record is too old to act on.
+    ///
+    /// Slow-moving, and far more generous. A creator's history is a count over
+    /// months. Holding it to the token budget refuses candidates for a reason
+    /// that is about Radar's measurement cadence rather than about the creator —
+    /// which is what a single shared budget did to 88% of live candidates.
+    pub max_creator_age: u64,
     /// Round-trip cost assumed when proposing, per ten thousand of notional.
     ///
     /// A placeholder until [`radar_exec`] can measure it — and deliberately
@@ -84,7 +93,11 @@ impl Thresholds {
         capacity_share_bps: 2_000,
         min_notional: MicroUsd::DOLLAR,
         // ~40 minutes at 2.5 slots a second.
-        max_input_age: 6_000,
+        max_token_age: 6_000,
+        // ~24 hours. Deliberately wider than the outcome pass's largest
+        // checkpoint gap, so a creator's record is never stale merely because
+        // the next scheduled measurement has not come round yet.
+        max_creator_age: 216_000,
         // 2%. Fees, tip, spread and slippage on both legs.
         assumed_round_trip_bps: 200,
     };
@@ -143,14 +156,12 @@ impl Strategy for CreatorEdge {
             }
         }
 
-        if candidate
-            .as_of
-            .slot()
-            .saturating_since(candidate.oldest_input_slot)
-            .get()
-            > t.max_input_age
-        {
-            reasons.push(PassReason::InputsTooStale);
+        let age_of = |observed| candidate.as_of.slot().saturating_since(observed).get();
+        if age_of(candidate.token_observed_at) > t.max_token_age {
+            reasons.push(PassReason::TokenReadingTooOld);
+        }
+        if age_of(candidate.creator_observed_at) > t.max_creator_age {
+            reasons.push(PassReason::CreatorRecordTooOld);
         }
 
         // Sizing runs even when reasons exist, because a candidate that fails
@@ -186,7 +197,7 @@ impl Strategy for CreatorEdge {
             estimated_round_trip_cost: MicroUsd(
                 notional.get().saturating_mul(t.assumed_round_trip_bps) / 10_000,
             ),
-            oldest_input_slot: candidate.oldest_input_slot,
+            oldest_input_slot: candidate.oldest_input_slot(),
             simulated_exit_capacity: capacity(candidate, t),
         }))
     }
@@ -225,8 +236,8 @@ mod tests {
         Candidate {
             mint: Address::new([7u8; 32]),
             creator: Address::new([8u8; 32]),
-            launch_slot: Slot(1_000),
-            as_of: AsOf::at(Slot(10_000)),
+            launch_slot: Slot(400_000),
+            as_of: AsOf::at(Slot(500_000)),
             exit: Some(ExitReport {
                 mint: Address::new([7u8; 32]),
                 structure: None,
@@ -260,7 +271,8 @@ mod tests {
                 graduated: 3,
             },
             sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
-            oldest_input_slot: Slot(9_000),
+            token_observed_at: Slot(499_000),
+            creator_observed_at: Slot(499_000),
         }
     }
 
@@ -362,15 +374,57 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_candidate_is_passed_over() {
+    fn a_token_whose_reading_is_old_is_passed_over() {
         let mut c = good();
-        c.oldest_input_slot = Slot(1_000);
+        c.token_observed_at = Slot(400_000);
         assert!(
             CreatorEdge::default()
                 .consider(&c)
                 .reasons()
-                .contains(&PassReason::InputsTooStale)
+                .contains(&PassReason::TokenReadingTooOld)
         );
+    }
+
+    #[test]
+    fn a_creator_record_measured_hours_ago_is_still_good_enough() {
+        // The bug this split fixes. Outcomes are measured at checkpoints one
+        // hour, six hours and a day after launch, so between checkpoints every
+        // creator record is hours old — and under one shared budget that read as
+        // "too stale to act on" for 88% of live candidates. A creator's history
+        // is a count over months; six hours does not move it.
+        let mut c = good();
+        c.creator_observed_at = Slot(c.as_of.slot().get() - 54_000);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            !reasons.contains(&PassReason::CreatorRecordTooOld),
+            "got {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_creator_record_from_last_week_is_too_old() {
+        // The budget is generous, not absent.
+        let mut c = good();
+        c.creator_observed_at = Slot(1);
+        assert!(
+            CreatorEdge::default()
+                .consider(&c)
+                .reasons()
+                .contains(&PassReason::CreatorRecordTooOld)
+        );
+    }
+
+    #[test]
+    fn the_proposal_carries_the_stalest_ingredient_not_the_freshest() {
+        // The strategy budgets the two classes separately; the kernel checks the
+        // decision as a whole, and a decision is only as current as its oldest
+        // mutable input.
+        let mut c = good();
+        c.creator_observed_at = Slot(c.as_of.slot().get() - 50_000);
+        let Decision::Propose(p) = CreatorEdge::default().consider(&c) else {
+            panic!("expected a proposal");
+        };
+        assert_eq!(p.oldest_input_slot, c.creator_observed_at);
     }
 
     #[test]
@@ -428,11 +482,13 @@ mod tests {
         let mut c = good();
         c.creator_record = CreatorRecord::default();
         c.exit = None;
-        c.oldest_input_slot = Slot(0);
+        c.token_observed_at = Slot(0);
+        c.creator_observed_at = Slot(0);
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::NoExitSimulated));
         assert!(reasons.contains(&PassReason::CreatorUnproven));
-        assert!(reasons.contains(&PassReason::InputsTooStale));
+        assert!(reasons.contains(&PassReason::TokenReadingTooOld));
+        assert!(reasons.contains(&PassReason::CreatorRecordTooOld));
     }
 
     #[test]

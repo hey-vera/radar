@@ -34,6 +34,13 @@ pub struct Universe {
     pub launches: BTreeMap<Address, LaunchFacts>,
     /// Each creator's measured history at the watermark.
     pub creators: BTreeMap<Address, CreatorRecord>,
+    /// When each creator's record last changed.
+    ///
+    /// Tracked separately from the record itself because staleness is a
+    /// different question from content: a creator with twenty measured launches
+    /// and a creator with twenty measured launches whose last measurement was a
+    /// week ago are the same record and different evidence.
+    pub creators_observed_at: BTreeMap<Address, Slot>,
     /// The watermark everything here was read at.
     pub as_of: AsOf,
 }
@@ -45,11 +52,11 @@ pub struct LaunchFacts {
     pub creator: Address,
     /// When.
     pub slot: Slot,
-    /// The slot the freshest fact about this token was observed at.
+    /// When this token's mutable facts were last observed.
     ///
     /// Not the launch slot: a token launched a week ago whose outcome was
-    /// measured an hour ago rests on an hour-old input, not a week-old one.
-    pub freshest_input: Slot,
+    /// measured an hour ago rests on an hour-old reading, not a week-old one.
+    pub observed_at: Slot,
 }
 
 /// Reads everything at or before `as_of`.
@@ -60,6 +67,7 @@ pub struct LaunchFacts {
 pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
     let mut launches = BTreeMap::new();
     let mut per_creator: BTreeMap<Address, CreatorRecord> = BTreeMap::new();
+    let mut creator_observed: BTreeMap<Address, Slot> = BTreeMap::new();
 
     for event in reader.read(Table::Launches, as_of)? {
         let Event::Launch(launch) = event else {
@@ -73,10 +81,16 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
             LaunchFacts {
                 creator: launch.creator,
                 slot: launch.envelope.slot,
-                freshest_input: launch.envelope.slot,
+                observed_at: launch.envelope.slot,
             },
         );
         per_creator.entry(launch.creator).or_default().launches += 1;
+        // A launch is itself an observation of the creator: it is the moment
+        // Radar last learned anything about them.
+        let seen = creator_observed
+            .entry(launch.creator)
+            .or_insert(launch.envelope.slot);
+        *seen = (*seen).max(launch.envelope.slot);
     }
 
     // Outcomes are read second so a measurement can update the freshness of the
@@ -88,7 +102,7 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
             // measurement into no creator's record while inflating the total.
             continue;
         };
-        facts.freshest_input = facts.freshest_input.max(outcome.measured_at);
+        facts.observed_at = facts.observed_at.max(outcome.measured_at);
 
         let creator = facts.creator;
         let record = per_creator.entry(creator).or_default();
@@ -99,11 +113,16 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
         if outcome.appears_stillborn() {
             record.stillborn += 1;
         }
+        let seen = creator_observed
+            .entry(creator)
+            .or_insert(outcome.measured_at);
+        *seen = (*seen).max(outcome.measured_at);
     }
 
     Ok(Universe {
         launches,
         creators: per_creator,
+        creators_observed_at: creator_observed,
         as_of,
     })
 }
@@ -133,10 +152,8 @@ impl Universe {
             exit,
             creator_record: self.creator_record(&facts.creator),
             sol_price_micro_usd: sol_price,
-            // The freshest fact recorded about this token *is* its oldest input,
-            // because every other input on the candidate is live. The moment
-            // another stored input joins, this becomes a minimum over both.
-            oldest_input_slot: facts.freshest_input,
+            token_observed_at: facts.observed_at,
+            creator_observed_at: self.creator_observed_at(&facts.creator, facts.slot),
         })
     }
 
@@ -149,6 +166,19 @@ impl Universe {
     #[must_use]
     pub fn creator_record(&self, creator: &Address) -> CreatorRecord {
         self.creators.get(creator).copied().unwrap_or_default()
+    }
+
+    /// When a creator's record was last updated.
+    ///
+    /// Falls back to `default_to` — the token's own launch slot — for a creator
+    /// nothing else is known about, because that launch *is* the last time
+    /// anything was learned about them.
+    #[must_use]
+    pub fn creator_observed_at(&self, creator: &Address, default_to: Slot) -> Slot {
+        self.creators_observed_at
+            .get(creator)
+            .copied()
+            .unwrap_or(default_to)
     }
 
     /// Mints launched within `window` slots of the watermark.
@@ -197,6 +227,7 @@ mod tests {
         let mut u = Universe {
             launches: BTreeMap::new(),
             creators: BTreeMap::new(),
+            creators_observed_at: BTreeMap::new(),
             as_of: AsOf::at(Slot(at)),
         };
         for (mint, creator, slot) in launches {
@@ -205,19 +236,24 @@ mod tests {
                 LaunchFacts {
                     creator: Address::new([*creator; 32]),
                     slot: Slot(*slot),
-                    freshest_input: Slot(*slot),
+                    observed_at: Slot(*slot),
                 },
             );
             u.creators
                 .entry(Address::new([*creator; 32]))
                 .or_default()
                 .launches += 1;
+            let seen = u
+                .creators_observed_at
+                .entry(Address::new([*creator; 32]))
+                .or_insert(Slot(*slot));
+            *seen = (*seen).max(Slot(*slot));
         }
         for o in outcomes {
             let Some(facts) = u.launches.get_mut(&o.mint) else {
                 continue;
             };
-            facts.freshest_input = facts.freshest_input.max(o.measured_at);
+            facts.observed_at = facts.observed_at.max(o.measured_at);
             let creator = facts.creator;
             let record = u.creators.entry(creator).or_default();
             record.measured += 1;
@@ -227,6 +263,11 @@ mod tests {
             if o.appears_stillborn() {
                 record.stillborn += 1;
             }
+            let seen = u
+                .creators_observed_at
+                .entry(creator)
+                .or_insert(o.measured_at);
+            *seen = (*seen).max(o.measured_at);
         }
         u
     }
@@ -265,7 +306,7 @@ mod tests {
         let c = u
             .candidate(&Address::new([1u8; 32]), None, None)
             .expect("launched");
-        assert_eq!(c.oldest_input_slot, Slot(9_500));
+        assert_eq!(c.token_observed_at, Slot(9_500));
     }
 
     #[test]
@@ -274,7 +315,40 @@ mod tests {
         let c = u
             .candidate(&Address::new([1u8; 32]), None, None)
             .expect("launched");
-        assert_eq!(c.oldest_input_slot, Slot(1_000));
+        assert_eq!(c.token_observed_at, Slot(1_000));
+    }
+
+    #[test]
+    fn a_creators_freshness_follows_their_most_recent_measurement() {
+        // Not the token's. A creator measured an hour ago through a *different*
+        // launch is an hour-fresh creator, whatever this particular token's own
+        // reading says.
+        let u = universe_of(
+            &[(1, 9, 1_000), (2, 9, 2_000)],
+            &[outcome(2, 9_800, true, 500)],
+            10_000,
+        );
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(
+            c.token_observed_at,
+            Slot(1_000),
+            "this token was never measured"
+        );
+        assert_eq!(c.creator_observed_at, Slot(9_800), "but its creator was");
+    }
+
+    #[test]
+    fn the_stalest_ingredient_is_what_a_proposal_would_carry() {
+        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, false, 400)], 10_000);
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(
+            c.oldest_input_slot(),
+            c.token_observed_at.min(c.creator_observed_at)
+        );
     }
 
     #[test]

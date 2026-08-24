@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
+mod brief;
 mod consider;
 mod graduations;
 mod replay;
@@ -23,6 +24,8 @@ fn usage() -> &'static str {
     "radar-cli <command>
 
 commands:
+  brief --store <dir>            is the system healthy right now; exits
+                                 non-zero when something is out of bounds
   inspect --store <dir>          what the store holds
   launches --store <dir> [-n N]  the most recent launches
   creators --store <dir> [-n N]  creators by launch count
@@ -486,6 +489,20 @@ fn replay_lane(args: &[String]) -> Result<(), String> {
     replay::record_to(&reader, std::path::Path::new(&path), window, cohort)
 }
 
+/// Prints the operational brief. Exits non-zero when something is wrong, so a
+/// cron line can alarm on it without parsing the output.
+fn brief_report(args: &[String]) -> Result<(), String> {
+    let store = flag(args, "--store").ok_or("brief needs --store <dir>")?;
+    if brief::run(std::path::Path::new(&store)) {
+        Ok(())
+    } else {
+        // A distinct message from an error: the brief worked, the system is not
+        // well. Conflating them would make a broken monitor and a broken
+        // recorder look identical to whatever is watching.
+        Err("unhealthy".to_owned())
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -494,6 +511,7 @@ fn main() -> ExitCode {
     };
 
     let result = match command.as_str() {
+        "brief" => brief_report(&args),
         "inspect" => inspect(&args),
         "launches" => launches(&args),
         "creators" => creators(&args),

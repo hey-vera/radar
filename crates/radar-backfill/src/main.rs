@@ -15,7 +15,7 @@ use radar_backfill::checkpoints;
 use radar_backfill::extract::{Row, Skipped, Stats};
 use radar_backfill::outcomes::{self, AggregateRow, HeadRow, TimeRow};
 use radar_backfill::{Client, QueryError, Scope, events_from_rows, query_for_window};
-use radar_store::{Event, Reader, Table, Writer};
+use radar_store::{Event, Reader, Table, Writer, from_epoch, now_epoch, to_epoch};
 
 /// Narrower than the server's sixty-second cap allows, because a window that
 /// fits at three in the morning may not fit at peak.
@@ -46,9 +46,6 @@ const FOLLOW_IDLE: Duration = Duration::from_secs(60);
 /// accumulated costs nothing it needs and is an order of magnitude fewer
 /// queries.
 const FOLLOW_MIN_WINDOW_SECONDS: i64 = 60;
-
-/// Where the follow cursor lives inside the store.
-const CURSOR_FILE: &str = ".follow-cursor";
 
 /// How long follow mode waits after a window fails, and how far that grows.
 ///
@@ -236,55 +233,6 @@ fn parse_args() -> Result<Args, String> {
     })
 }
 
-/// Seconds since the epoch for a `YYYY-MM-DD HH:MM:SS` timestamp, treated as UTC.
-///
-/// A hand-rolled conversion rather than a date crate: this is the only date
-/// arithmetic in the workspace, and it is not worth a dependency that would
-/// then be in the tree of every process that links the store.
-fn to_epoch(stamp: &str) -> Result<i64, String> {
-    let bad = || format!("expected 'YYYY-MM-DD HH:MM:SS', got '{stamp}'");
-    let (date, clock) = stamp.split_once(' ').ok_or_else(bad)?;
-    let ymd: Vec<i64> = date.split('-').map(|p| p.parse().unwrap_or(-1)).collect();
-    let hms: Vec<i64> = clock.split(':').map(|p| p.parse().unwrap_or(-1)).collect();
-    if ymd.len() != 3 || hms.len() != 3 || ymd.iter().chain(&hms).any(|v| *v < 0) {
-        return Err(bad());
-    }
-    let (year, month, day) = (ymd[0], ymd[1], ymd[2]);
-    // Days from civil, per Howard Hinnant's algorithm: March-based years, so
-    // the leap day lands at the end and needs no special case.
-    let shifted_year = year - i64::from(month <= 2);
-    let era = if shifted_year >= 0 {
-        shifted_year
-    } else {
-        shifted_year - 399
-    } / 400;
-    let year_of_era = shifted_year - era * 400;
-    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-    let days = era * 146_097 + day_of_era - 719_468;
-    Ok(days * 86_400 + hms[0] * 3_600 + hms[1] * 60 + hms[2])
-}
-
-fn from_epoch(mut secs: i64) -> String {
-    let days = secs.div_euclid(86_400);
-    secs = secs.rem_euclid(86_400);
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = yoe + era * 400 + i64::from(month <= 2);
-    format!(
-        "{year:04}-{month:02}-{day:02} {:02}:{:02}:{:02}",
-        secs / 3_600,
-        (secs / 60) % 60,
-        secs % 60
-    )
-}
-
 fn merge(into: &mut Stats, from: &Stats) {
     into.emitted += from.emitted;
     for (k, v) in &from.skipped {
@@ -396,36 +344,6 @@ fn run(args: &Args) -> Result<(), String> {
     Ok(())
 }
 
-/// Reads the follow cursor, or `None` on a store that has never been followed.
-fn read_cursor(store: &str) -> Option<i64> {
-    let raw = std::fs::read_to_string(std::path::Path::new(store).join(CURSOR_FILE)).ok()?;
-    to_epoch(raw.trim()).ok()
-}
-
-/// Writes the follow cursor.
-///
-/// Written only *after* the window's events are flushed to disk. The other order
-/// would advance past a window whose events were never stored, and the gap would
-/// be silent and permanent -- follow mode never looks backwards.
-fn write_cursor(store: &str, at: i64) -> Result<(), String> {
-    std::fs::create_dir_all(store).map_err(|e| e.to_string())?;
-    std::fs::write(
-        std::path::Path::new(store).join(CURSOR_FILE),
-        from_epoch(at),
-    )
-    .map_err(|e| e.to_string())
-}
-
-fn now_epoch() -> i64 {
-    i64::try_from(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-    )
-    .unwrap_or(i64::MAX)
-}
-
 /// Keeps recording from where the store left off.
 fn follow(args: &Args) -> Result<(), String> {
     let client = Client::default();
@@ -433,8 +351,8 @@ fn follow(args: &Args) -> Result<(), String> {
 
     // A fresh store starts one window back rather than at the epoch: the
     // alternative is silently attempting to backfill fifty-six years.
-    let mut cursor =
-        read_cursor(&args.store).unwrap_or_else(|| now_epoch() - FOLLOW_LAG_SECONDS - step);
+    let mut cursor = radar_store::read_cursor(std::path::Path::new(&args.store))
+        .unwrap_or_else(|| now_epoch() - FOLLOW_LAG_SECONDS - step);
 
     println!(
         "following from {} in {}-minute windows",
@@ -501,7 +419,7 @@ fn follow(args: &Args) -> Result<(), String> {
             }
             writer.flush().map_err(|e| e.to_string())?;
         }
-        write_cursor(&args.store, window_end)?;
+        radar_store::write_cursor(std::path::Path::new(&args.store), window_end)?;
         merge(&mut totals, &stats);
 
         println!(

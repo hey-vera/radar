@@ -1316,6 +1316,7 @@ name = "radar-asof"
 version = "0.0.1"
 dependencies = [
  "radar-types",
+ "serde",
  "thiserror",
 ]
 
@@ -1340,6 +1341,7 @@ version = "0.0.1"
 dependencies = [
  "radar-asof",
  "radar-instruments",
+ "radar-research",
  "radar-risk",
  "radar-sim",
  "radar-store",
@@ -1396,6 +1398,22 @@ dependencies = [
  "radar-asof",
  "radar-types",
  "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "radar-research"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "radar-asof",
+ "radar-risk",
+ "radar-store",
+ "radar-strategy",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

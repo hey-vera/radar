@@ -13,6 +13,7 @@ use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 mod consider;
 mod graduations;
+mod replay;
 
 use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::{Event, Reader, Table};
@@ -35,6 +36,10 @@ commands:
   consider --store <dir> [--window N] [--cap N]
                                  run the whole decision lane over recorded
                                  tokens; commits nothing
+  replay --store <dir> --record <file> [--window N] [--cohort N]
+                                 record what the strategy decides now
+  replay --store <dir> --check <file>
+                                 re-derive those decisions and report what moved
 "
 }
 
@@ -463,6 +468,24 @@ fn decision_lane(args: &[String]) -> Result<(), String> {
     consider::run(&reader, window, cap)
 }
 
+/// Records or re-checks decisions, proving they reproduce.
+fn replay_lane(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    if let Some(path) = flag(args, "--check") {
+        return replay::check(&reader, std::path::Path::new(&path));
+    }
+    let Some(path) = flag(args, "--record") else {
+        return Err("replay needs --record <file> or --check <file>".to_owned());
+    };
+    let window = flag(args, "--window")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(216_000);
+    let cohort = flag(args, "--cohort")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(replay::DEFAULT_COHORT);
+    replay::record_to(&reader, std::path::Path::new(&path), window, cohort)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -477,6 +500,7 @@ fn main() -> ExitCode {
         "exit" => exit_analysis(&args),
         "graduations" => graduation_report(&args),
         "consider" => decision_lane(&args),
+        "replay" => replay_lane(&args),
         "tools" => {
             tools();
             Ok(())

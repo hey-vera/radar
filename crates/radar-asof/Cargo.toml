@@ -11,6 +11,7 @@ authors.workspace = true
 
 [dependencies]
 radar-types.workspace = true
+serde.workspace = true
 thiserror.workspace = true
 
 [lints]

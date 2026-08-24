@@ -42,7 +42,10 @@ use radar_types::{Slot, SlotDelta};
 /// over the same gate, so a divergence between a recorded live output and its
 /// replay is a leak or a non-determinism bug, never an artefact of running in
 /// "backtest mode".
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(transparent)]
 pub struct AsOf(Slot);
 
 /// A value together with the slot it was observed at.

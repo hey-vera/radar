@@ -248,3 +248,24 @@ watching that one.
 **The general shape:** a check that is right for a foreground tool is wrong for
 a daemon. `?` on an error is a decision to stop, and stopping is only safe when
 something is watching. Nothing was.
+
+**The first fix was not enough, and the deploy proved it.** Retrying kept the
+process alive, and it then stalled for twenty minutes on a second, larger burst
+— 10,674 migrations across three minutes — retrying the same five-minute window
+and failing the same way each time. Retrying an operation unchanged is only
+useful when the failure was transient; this one was a property of the window's
+size. A five-minute window in a burst is thousands of rows, which `fetch_window`
+has to split into dozens of sub-queries that must *all* succeed together, and one
+HTTP 500 near the end discards every one that worked.
+
+So the window now **shrinks on failure** and recovers on success, which turns
+all-or-nothing into incremental progress. Verified against the exact window that
+stalled in production: it crawled the burst and then advanced two hours of chain
+in seven minutes.
+
+Worth noting what did *not* fix it. The obvious suspect was the extraction
+query, which had been changed the day before to group every token transfer in the
+window rather than only the non-quote ones. Filtering it back down to the
+pump.fun transactions measured **slower** — 6.1s against 3.3s, because the
+subquery re-scans — so the tempting fix was the wrong one, and only measuring
+said so.

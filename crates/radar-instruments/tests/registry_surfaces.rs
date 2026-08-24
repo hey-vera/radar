@@ -254,3 +254,93 @@ fn a_pure_instrument_replays_identically() {
         .output;
     assert_eq!(first, second);
 }
+
+/// A creator whose tokens all reached an AMM, six of them inside their own
+/// launch block and one over an hour.
+///
+/// The shape that motivated the split: on the undifferentiated count this
+/// creator is flawless, and flawless is exactly what a bundler looks like.
+fn store_with_one_bundler() -> (tempfile::TempDir, Reader) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+
+    let mints: Vec<radar_types::Address> = (0..7u8).map(|i| Address::new([i + 40; 32])).collect();
+    for (i, mint) in mints.iter().enumerate() {
+        let n = u8::try_from(i).expect("seven tokens");
+        let slot = 10_000 + u64::from(n) * 100;
+        w.append(Event::Launch(Box::new(Launch {
+            envelope: Envelope {
+                slot: Slot(slot),
+                signature: Signature::new([n + 40; 64]),
+                tx_index: 1,
+                instruction_index: 0,
+                parent_index: None,
+                succeeded: true,
+            },
+            origin: Origin::known(Address::new([9; 32]), "create_v2"),
+            mint: *mint,
+            creator: creator(7),
+            name: format!("Bundle{i}"),
+            symbol: "BND".to_owned(),
+            uri: String::new(),
+            dev_buy_lamports: None,
+        })))
+        .expect("append");
+
+        // Six graduate in the same slot they launched; the seventh takes an hour.
+        let after = if n == 6 { 9_000 } else { 0 };
+        w.append_outcome(radar_store::Outcome {
+            mint: *mint,
+            measured_at: Slot(500_000),
+            launch_slot: Slot(slot),
+            first_transfer_slot: Some(Slot(slot)),
+            last_transfer_slot: Some(Slot(slot + after + 500)),
+            transfers: 900,
+            unique_senders: 40,
+            unique_receivers: 40,
+            graduated_at: Some(Slot(slot + after)),
+        })
+        .expect("append outcome");
+    }
+    w.flush().expect("flush");
+    let reader = Reader::open(dir.path());
+    (dir, reader)
+}
+
+#[test]
+fn the_instrument_separates_a_bundler_from_a_builder() {
+    // A 100% graduation rate that is 86% instant is the exact record the old
+    // undifferentiated count would have ranked top. The instrument has to expose
+    // both numbers, because the JSON and MCP surfaces are what other agents rank
+    // on and they cannot recover the split from a single total.
+    let (_dir, reader) = store_with_one_bundler();
+    let ctx = Context {
+        as_of: AsOf::at(Slot(500_000)),
+        store: &reader,
+    };
+    // A registry of its own: the shared one holds only `creator_history`, and
+    // widening it would move counts other tests assert on.
+    let mut r = Registry::new();
+    r.register(radar_instruments::CreatorTrackRecord);
+    let record = r
+        .invoke(
+            "creator_track_record",
+            json!({ "creator": creator(7).to_string() }),
+            &ctx,
+        )
+        .expect("instrument exists");
+    let o = record.output.expect("succeeded");
+
+    assert_eq!(o["measured"], 7);
+    assert_eq!(o["graduated"], 7, "flawless, on the old metric");
+    assert_eq!(o["graduated_instant"], 6);
+    assert_eq!(o["graduated_organic"], 1);
+
+    // Above the five-sample floor, so both rates are stated rather than withheld.
+    assert_eq!(o["graduation_rate"], 1.0);
+    let organic = o["organic_graduation_rate"].as_f64().expect("a rate");
+    assert!(
+        (organic - 1.0 / 7.0).abs() < 1e-9,
+        "organic rate must reflect the one real graduation, got {organic}"
+    );
+}

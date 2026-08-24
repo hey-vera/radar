@@ -8,10 +8,24 @@
 //! case: a token that died in ten minutes leaves no trace unless something
 //! recorded it at the time.
 //!
-//! Discipline does not prevent this. A structure does. Every read in Radar is
-//! gated by an [`AsOf`] watermark, and a value observed after that watermark
-//! cannot be unwrapped — not "should not", cannot, because the only way to get
-//! at the inner value is through [`AsOf::accept`], which checks.
+//! Discipline does not prevent this. A gate does. Every read in Radar goes
+//! through an [`AsOf`] watermark, and this crate provides the two shapes that
+//! gate takes — which are different, and the difference is load-bearing.
+//!
+//! [`AsOf::admits`] answers yes or no, and is what a **scan** uses. A partition
+//! file legitimately holds slots either side of a watermark, so a read filters
+//! rows as it goes; refusing the whole read would turn a normal query into an
+//! error. This is the path the store uses, at four call sites, held up by
+//! `radar-store/tests/watermark_holds.rs`.
+//!
+//! [`AsOf::accept`] refuses instead of filtering: it consumes an [`Observed<T>`]
+//! and yields either the value or [`LookAhead`]. That is the right shape for a
+//! **single value arriving from outside the store** — a provider response, a
+//! quote, anything carrying its own observation slot. Nothing inside Radar needs
+//! it today, and it is kept because the situation it is for is one the system
+//! will meet as soon as a live provider feeds a decision, not because it is
+//! currently load-bearing. Said plainly here so that no document elsewhere has to
+//! imply it is doing work it is not.
 //!
 //! ```
 //! use radar_asof::{AsOf, Observed};

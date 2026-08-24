@@ -314,7 +314,7 @@ fn outcome(mint_id: u8, measured: u64, launch: u64, last: Option<u64>, transfers
         transfers,
         unique_senders: 7,
         unique_receivers: 5,
-        graduated: false,
+        graduated_at: None,
     }
 }
 
@@ -327,6 +327,17 @@ fn outcomes_round_trip_through_parquet() {
         outcome(2, 500_000, 440_624_864, Some(440_624_868), 3),
         // Never traded: both transfer slots absent, which must not read as zero.
         outcome(3, 500_000, 440_624_900, None, 0),
+        // Graduated in its own launch block, and graduated five minutes later.
+        // Both must survive as slots: collapsed to a boolean they are the same
+        // row, and that collapse is what the split exists to undo.
+        Outcome {
+            graduated_at: Some(Slot(440_624_864)),
+            ..outcome(4, 500_000, 440_624_864, Some(440_624_870), 210)
+        },
+        Outcome {
+            graduated_at: Some(Slot(440_625_700)),
+            ..outcome(5, 500_000, 440_624_864, Some(440_700_000), 980)
+        },
     ];
     for o in &written {
         w.append_outcome(o.clone()).expect("append");
@@ -336,7 +347,7 @@ fn outcomes_round_trip_through_parquet() {
     let read = Reader::open(dir.path())
         .read_outcomes(AsOf::at(Slot(999_999)))
         .expect("read");
-    assert_eq!(read.len(), 3);
+    assert_eq!(read.len(), 5);
     for o in &written {
         assert!(
             read.contains(o),

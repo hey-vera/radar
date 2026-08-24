@@ -137,7 +137,7 @@ impl Reader {
                 let transfers = u64_col(&batch, "transfers")?;
                 let senders = u64_col(&batch, "unique_senders")?;
                 let receivers = u64_col(&batch, "unique_receivers")?;
-                let graduated = bool_col(&batch, "graduated")?;
+                let graduated_at = u64_col(&batch, "graduated_at")?;
 
                 for i in 0..batch.num_rows() {
                     let measured_at = Slot(measured.value(i));
@@ -153,7 +153,9 @@ impl Reader {
                         transfers: transfers.value(i),
                         unique_senders: senders.value(i),
                         unique_receivers: receivers.value(i),
-                        graduated: graduated.value(i),
+                        graduated_at: graduated_at
+                            .is_valid(i)
+                            .then(|| Slot(graduated_at.value(i))),
                     });
                 }
             }

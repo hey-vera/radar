@@ -138,7 +138,11 @@ impl Strategy for CreatorEdge {
             // Only meaningful above the sample floor. Below it these rates are
             // arithmetic on noise, and reporting them as findings would give a
             // creator with one launch a verdict.
-            match record.graduation_bps() {
+            // Organic graduations only. Gating on the undifferentiated rate
+            // selects for creators whose curves complete inside the launch
+            // block, which is the bundling signature rather than evidence that
+            // anyone wanted the token.
+            match record.organic_graduation_bps() {
                 // Distinguished, because they are different findings. Never is
                 // a fact about the creator; rarely is a fact about where this
                 // threshold happens to sit, and research will want to move it.
@@ -269,6 +273,7 @@ mod tests {
                 measured: 20,
                 stillborn: 10,
                 graduated: 3,
+                graduated_organic: 3,
             },
             sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
             token_observed_at: Slot(499_000),
@@ -319,6 +324,7 @@ mod tests {
             measured: 3,
             stillborn: 0,
             graduated: 3,
+            graduated_organic: 3,
         };
         // A perfect record over three launches is three events, not a rate.
         let d = CreatorEdge::default().consider(&c);
@@ -333,6 +339,7 @@ mod tests {
             measured: 40,
             stillborn: 20,
             graduated: 0,
+            graduated_organic: 0,
         };
         assert!(
             CreatorEdge::default()
@@ -352,9 +359,57 @@ mod tests {
             measured: 60,
             stillborn: 30,
             graduated: 1,
+            graduated_organic: 1,
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::CreatorGraduatesTooRarely));
+    }
+
+    #[test]
+    fn a_creator_whose_tokens_only_graduate_instantly_is_refused() {
+        // The finding this rule exists for. Every graduation in the live store
+        // completed within three slots of launch -- a whole bonding curve bought
+        // out in the launch block, which is a bundle rather than demand. Gating
+        // on the undifferentiated rate would rank this creator top; gating on the
+        // organic rate refuses them.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 40,
+            measured: 40,
+            stillborn: 0,
+            graduated: 40,
+            graduated_organic: 0,
+        };
+        let record = c.creator_record;
+        assert_eq!(record.graduation_bps(), Some(10_000), "flawless, on paper");
+        assert_eq!(record.organic_graduation_bps(), Some(0));
+        assert_eq!(record.graduated_instant(), 40);
+
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            reasons.contains(&PassReason::CreatorNeverGraduated),
+            "a 100% instant graduation rate must not read as a perfect record: {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn the_same_creator_passes_the_gate_once_the_graduations_are_organic() {
+        // The other half of the pair. Without this, the rule above would also be
+        // satisfied by a gate that refuses everyone.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 40,
+            measured: 40,
+            stillborn: 0,
+            graduated: 40,
+            graduated_organic: 40,
+        };
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            !reasons.contains(&PassReason::CreatorNeverGraduated)
+                && !reasons.contains(&PassReason::CreatorGraduatesTooRarely),
+            "organic graduations must clear the graduation gate: {reasons:?}"
+        );
         assert!(!reasons.contains(&PassReason::CreatorNeverGraduated));
     }
 
@@ -368,6 +423,7 @@ mod tests {
             measured: 500,
             stillborn: 495,
             graduated: 5,
+            graduated_organic: 5,
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::CreatorMostlyStillborn));
@@ -501,6 +557,7 @@ mod tests {
             measured: 6,
             stillborn: 2,
             graduated: 1,
+            graduated_organic: 1,
         };
         let strict = CreatorEdge {
             thresholds: Thresholds {

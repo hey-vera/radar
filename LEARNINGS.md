@@ -157,3 +157,50 @@ member has to survive whatever that loop does. Widening one is an API change to
 every loop over it, and the compiler cannot see it. The fix was not a better
 comment; it was a second constant that means "the ones this loop can handle".
 
+
+---
+
+## 7. A filter that was right for one instruction and inverted for another
+
+**Found:** 2026-08-24, by trying to reproduce a finding rather than accepting it.
+
+`resolve_mint` requires exactly one non-quote mint per transaction and skips the
+row otherwise. Correct for a launch. A pump.fun migration moves the subject token
+*and* the LP mint the pool creates in the same transaction, so it always had two
+candidates and was always skipped. Measured over one hour: of 66 migrations, 49
+had two non-quote mints, 17 had none, and **none had exactly one**.
+
+**Cost:** the store held 4 graduations where roughly 1,480 had happened — a 0.3%
+capture rate — for a day. `creator_edge` gates on the graduation rate, so the
+strategy could never propose anything, and the reason looked like a market fact.
+
+**The expensive part was not the missing data, it was the conclusion drawn from
+it.** The four rows that survived all completed within three slots, which was
+written up as "graduation is inherently instant, so the creator rule selects for
+bundlers", and the population rate was reported as 0.0133% — argued to be 60×
+rarer than the plan assumed. The true rate is about 3%, three times *higher*
+than assumed. The surviving sample was biased by the same bug that suppressed
+it: a degenerate migration is the one most likely to leave a single resolvable
+mint. A broken filter does not produce less data, it produces a **selected**
+sample, and a selected sample supports confident conclusions about the selection.
+
+**What catches a recurrence:** the resolution is now keyed on the instruction,
+with a test asserting a launch still resolves to the mint it created — the
+inverted rule applied everywhere would have destroyed the working half, since 300
+of 303 mints in sampled launch transactions are minted in the transaction itself.
+A graduation whose subject cannot be determined is counted under its own skip
+reason rather than beside a million skipped trades, so the gap is visible at the
+rate it actually matters.
+
+**The general shape:** the population that survives a filter is evidence about
+the filter before it is evidence about the world. This one was found only by
+asking the chain what the answer should be and comparing — the store alone was
+internally consistent and entirely wrong.
+
+**Two further errors were found the same way**, by extracting an hour and reading
+the rows rather than trusting the count: 35 of 97 migration instructions were in
+*failed* transactions, and the 62 successful rows covered only 50 distinct mints
+because a token can carry both a `migrate` and a `migrate_v2`. Each would have
+overstated the rarest label in the store — by a third and by 24% respectively.
+Neither was in the original diagnosis. Running the thing produced three
+corrections that reasoning about it did not.

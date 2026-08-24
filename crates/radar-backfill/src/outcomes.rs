@@ -10,6 +10,8 @@
 //! batch of several hundred mints is a single query — which is why outcomes are
 //! extracted this way and raw trades are not (ADR 0002).
 
+use std::collections::BTreeMap;
+
 use radar_store::Outcome;
 use radar_types::{Address, Slot};
 use serde::Deserialize;
@@ -116,7 +118,7 @@ pub fn outcomes_from_rows(
     rows: &[AggregateRow],
     launches: &[(Address, Slot)],
     measured_at: Slot,
-    graduated: &[Address],
+    graduated: &BTreeMap<Address, Slot>,
 ) -> Vec<Outcome> {
     let mut out = Vec::with_capacity(launches.len());
 
@@ -134,7 +136,7 @@ pub fn outcomes_from_rows(
             transfers: row.and_then(|r| parse(&r.transfers)).unwrap_or(0),
             unique_senders: row.and_then(|r| parse(&r.uniq_src)).unwrap_or(0),
             unique_receivers: row.and_then(|r| parse(&r.uniq_dst)).unwrap_or(0),
-            graduated: graduated.contains(mint),
+            graduated_at: graduated.get(mint).copied(),
         });
     }
     out
@@ -167,7 +169,7 @@ mod tests {
         let launches = vec![(mint(1), Slot(1_000)), (mint(2), Slot(1_000))];
         let rows = vec![row(&mint(1), "50", "1001", "5000")];
 
-        let out = outcomes_from_rows(&rows, &launches, Slot(9_999), &[]);
+        let out = outcomes_from_rows(&rows, &launches, Slot(9_999), &BTreeMap::new());
         assert_eq!(out.len(), 2, "both mints must appear");
 
         let silent = out
@@ -188,7 +190,7 @@ mod tests {
             row(&mint(1), "3", "440624864", "440624868"),
             row(&mint(2), "1535", "440623612", "440998194"),
         ];
-        let out = outcomes_from_rows(&rows, &launches, Slot(441_000_000), &[]);
+        let out = outcomes_from_rows(&rows, &launches, Slot(441_000_000), &BTreeMap::new());
 
         let dead = out.iter().find(|o| o.mint == mint(1)).expect("dead");
         let alive = out.iter().find(|o| o.mint == mint(2)).expect("alive");
@@ -198,12 +200,55 @@ mod tests {
         assert!(!alive.appears_stillborn());
     }
 
+    /// A graduation map, from (mint, slot) pairs.
+    fn graduations(pairs: &[(Address, u64)]) -> BTreeMap<Address, Slot> {
+        pairs.iter().map(|(m, s)| (*m, Slot(*s))).collect()
+    }
+
     #[test]
     fn graduation_is_carried_through() {
         let launches = vec![(mint(1), Slot(1_000))];
         let rows = vec![row(&mint(1), "900", "1001", "90000")];
-        let out = outcomes_from_rows(&rows, &launches, Slot(99_999), &[mint(1)]);
-        assert!(out[0].graduated);
+        let out = outcomes_from_rows(
+            &rows,
+            &launches,
+            Slot(99_999),
+            &graduations(&[(mint(1), 90_000)]),
+        );
+        assert!(out[0].graduated());
+        assert_eq!(out[0].graduated_at, Some(Slot(90_000)));
+    }
+
+    #[test]
+    fn the_graduation_slot_survives_so_the_mode_can_be_derived() {
+        // The measurement pass is where the slot would be thrown away, and a
+        // boolean here would make the organic/instant split unrecoverable
+        // downstream however carefully the rest of the system asked for it.
+        let launches = vec![(mint(1), Slot(1_000)), (mint(2), Slot(1_000))];
+        let rows = vec![
+            row(&mint(1), "900", "1001", "90000"),
+            row(&mint(2), "900", "1000", "90000"),
+        ];
+        // One curve bought out in its own launch block, one filled over an hour.
+        let out = outcomes_from_rows(
+            &rows,
+            &launches,
+            Slot(99_999),
+            &graduations(&[(mint(1), 1_000), (mint(2), 10_000)]),
+        );
+
+        let instant = out.iter().find(|o| o.mint == mint(1)).expect("instant");
+        let organic = out.iter().find(|o| o.mint == mint(2)).expect("organic");
+        assert_eq!(instant.slots_to_graduate(), Some(0));
+        assert_eq!(
+            instant.graduation_mode(),
+            Some(radar_store::GraduationMode::Instant)
+        );
+        assert_eq!(organic.slots_to_graduate(), Some(9_000));
+        assert_eq!(
+            organic.graduation_mode(),
+            Some(radar_store::GraduationMode::Organic)
+        );
     }
 
     #[test]
@@ -211,7 +256,7 @@ mod tests {
         // Without it the row cannot be admitted through a watermark, so it could
         // never be used in a replay.
         let launches = vec![(mint(1), Slot(1_000))];
-        let out = outcomes_from_rows(&[], &launches, Slot(555_555), &[]);
+        let out = outcomes_from_rows(&[], &launches, Slot(555_555), &BTreeMap::new());
         assert_eq!(out[0].measured_at, Slot(555_555));
     }
 
@@ -221,7 +266,7 @@ mod tests {
         // not collapse into the same label.
         let launches = vec![(mint(1), Slot(1_000))];
         let rows = vec![row(&mint(1), "not a number", "also not", "nope")];
-        let out = outcomes_from_rows(&rows, &launches, Slot(9_999), &[]);
+        let out = outcomes_from_rows(&rows, &launches, Slot(9_999), &BTreeMap::new());
         assert_eq!(out[0].first_transfer_slot, None);
         assert_eq!(out[0].last_transfer_slot, None);
     }

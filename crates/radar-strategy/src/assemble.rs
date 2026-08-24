@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use radar_asof::AsOf;
 use radar_sim::ExitReport;
-use radar_store::{Event, Outcome, Reader, StoreError, Table};
+use radar_store::{Event, GraduationMode, Outcome, Reader, StoreError, Table};
 use radar_types::{Address, MicroUsd, Slot};
 
 use crate::{Candidate, CreatorRecord};
@@ -107,8 +107,14 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
         let creator = facts.creator;
         let record = per_creator.entry(creator).or_default();
         record.measured += 1;
-        if outcome.graduated {
+        if outcome.graduated() {
             record.graduated += 1;
+        }
+        // Counted apart, because the strategy gates on this one. A creator whose
+        // tokens only ever graduate in their own launch block has a graduation
+        // rate and no evidence of demand.
+        if outcome.graduation_mode() == Some(GraduationMode::Organic) {
+            record.graduated_organic += 1;
         }
         if outcome.appears_stillborn() {
             record.stillborn += 1;
@@ -209,7 +215,14 @@ pub const fn admits(as_of: AsOf, outcome: &Outcome) -> bool {
 mod tests {
     use super::*;
 
-    fn outcome(mint: u8, measured_at: u64, graduated: bool, transfers: u64) -> Outcome {
+    /// `graduated_after` is slots from launch to graduation, or `None` for a
+    /// token that never reached an AMM.
+    fn outcome(
+        mint: u8,
+        measured_at: u64,
+        graduated_after: Option<u64>,
+        transfers: u64,
+    ) -> Outcome {
         Outcome {
             mint: Address::new([mint; 32]),
             measured_at: Slot(measured_at),
@@ -219,7 +232,7 @@ mod tests {
             transfers,
             unique_senders: transfers,
             unique_receivers: transfers,
-            graduated,
+            graduated_at: graduated_after.map(|d| Slot(1_000 + d)),
         }
     }
 
@@ -257,8 +270,11 @@ mod tests {
             let creator = facts.creator;
             let record = u.creators.entry(creator).or_default();
             record.measured += 1;
-            if o.graduated {
+            if o.graduated() {
                 record.graduated += 1;
+            }
+            if o.graduation_mode() == Some(GraduationMode::Organic) {
+                record.graduated_organic += 1;
             }
             if o.appears_stillborn() {
                 record.stillborn += 1;
@@ -276,7 +292,10 @@ mod tests {
     fn a_candidate_carries_its_creators_record() {
         let u = universe_of(
             &[(1, 9, 1_000), (2, 9, 2_000)],
-            &[outcome(1, 3_000, true, 500), outcome(2, 3_100, false, 2)],
+            &[
+                outcome(1, 3_000, Some(900), 500),
+                outcome(2, 3_100, None, 2),
+            ],
             10_000,
         );
         let c = u
@@ -302,7 +321,7 @@ mod tests {
         // A token launched a week ago whose outcome was measured an hour ago
         // rests on an hour-old input, not a week-old one. Taking the launch slot
         // would make every mature token permanently stale.
-        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, false, 400)], 10_000);
+        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, None, 400)], 10_000);
         let c = u
             .candidate(&Address::new([1u8; 32]), None, None)
             .expect("launched");
@@ -325,7 +344,7 @@ mod tests {
         // reading says.
         let u = universe_of(
             &[(1, 9, 1_000), (2, 9, 2_000)],
-            &[outcome(2, 9_800, true, 500)],
+            &[outcome(2, 9_800, Some(900), 500)],
             10_000,
         );
         let c = u
@@ -341,7 +360,7 @@ mod tests {
 
     #[test]
     fn the_stalest_ingredient_is_what_a_proposal_would_carry() {
-        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, false, 400)], 10_000);
+        let u = universe_of(&[(1, 9, 1_000)], &[outcome(1, 9_500, None, 400)], 10_000);
         let c = u
             .candidate(&Address::new([1u8; 32]), None, None)
             .expect("launched");
@@ -384,8 +403,8 @@ mod tests {
     #[test]
     fn an_outcome_from_the_future_is_not_admitted() {
         let as_of = AsOf::at(Slot(5_000));
-        assert!(admits(as_of, &outcome(1, 4_999, false, 1)));
-        assert!(admits(as_of, &outcome(1, 5_000, false, 1)));
-        assert!(!admits(as_of, &outcome(1, 5_001, false, 1)));
+        assert!(admits(as_of, &outcome(1, 4_999, None, 1)));
+        assert!(admits(as_of, &outcome(1, 5_000, None, 1)));
+        assert!(!admits(as_of, &outcome(1, 5_001, None, 1)));
     }
 }

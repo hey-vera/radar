@@ -41,6 +41,7 @@ fn candidate() -> Candidate {
             measured: 20,
             stillborn: 10,
             graduated: 3,
+            graduated_organic: 3,
         },
         sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
         token_observed_at: Slot(9_000),

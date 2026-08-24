@@ -129,7 +129,7 @@ impl Instrument for CreatorTrackRecord {
 
         let measured = latest.len() as u64;
         let stillborn = latest.values().filter(|o| o.appears_stillborn()).count() as u64;
-        let graduated = latest.values().filter(|o| o.graduated).count() as u64;
+        let graduated = latest.values().filter(|o| o.graduated()).count() as u64;
         let total_transfers: u64 = latest.values().map(|o| o.transfers).sum();
 
         let mut survivals: Vec<u64> = latest.values().map(|o| o.survived_slots()).collect();

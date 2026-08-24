@@ -359,6 +359,13 @@ pub enum Scope {
     /// Every individual trade. Viable only over narrow windows, for investigating
     /// specific periods rather than backfilling history.
     Trades,
+    /// Graduations alone.
+    ///
+    /// For repairing a store whose launches are already correct. Re-running
+    /// [`Self::Lifecycle`] over a window that has already been recorded would
+    /// append a second copy of every launch in it, and the readers that
+    /// deduplicate by mint would hide that from every count that does not.
+    Graduations,
 }
 
 impl Scope {
@@ -371,6 +378,7 @@ impl Scope {
             .filter(|ix| match self {
                 Self::Lifecycle => ix.is_launch() || ix.is_graduation(),
                 Self::Trades => ix.is_trade(),
+                Self::Graduations => ix.is_graduation(),
             })
             .map(|ix| Discriminator::to_string(&ix.discriminator()))
             .collect()
@@ -684,6 +692,25 @@ mod tests {
             "four buys, two sells"
         );
         assert_eq!(Scope::default(), Scope::Lifecycle);
+
+        // The repair scope asks for graduations and nothing else, so re-running
+        // it over an already-recorded window cannot append a second copy of
+        // every launch in it.
+        let repair = Scope::Graduations.discriminators();
+        assert_eq!(repair.len(), 2, "migrate and migrate_v2: {repair:?}");
+        for d in &repair {
+            assert!(
+                discs.contains(d),
+                "graduation scope must be a subset of lifecycle: {d}"
+            );
+        }
+        assert!(
+            Scope::Graduations
+                .discriminators()
+                .iter()
+                .all(|d| !Scope::Trades.discriminators().contains(d)),
+            "a graduation is not a trade"
+        );
 
         let sql = query_for_window(
             "2026-08-21 06:00:00",

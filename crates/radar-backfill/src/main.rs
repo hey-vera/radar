@@ -62,7 +62,7 @@ struct Args {
 
 fn usage() -> &'static str {
     "radar-backfill --from 'YYYY-MM-DD HH:MM:SS' --to 'YYYY-MM-DD HH:MM:SS' \
-     --store <dir> [--window-minutes N] [--scope lifecycle|trades]
+     --store <dir> [--window-minutes N] [--scope lifecycle|graduations|trades]
    radar-backfill --follow --store <dir> [--window-minutes N]
 
    radar-backfill --outcomes --store <dir>
@@ -102,10 +102,11 @@ fn parse_args() -> Result<Args, String> {
             "--scope" => {
                 scope = match value()?.as_str() {
                     "lifecycle" => Scope::Lifecycle,
+                    "graduations" => Scope::Graduations,
                     "trades" => Scope::Trades,
                     other => {
                         return Err(format!(
-                            "unknown scope {other}; expected lifecycle or trades"
+                            "unknown scope {other}; expected lifecycle, graduations or trades"
                         ));
                     }
                 };

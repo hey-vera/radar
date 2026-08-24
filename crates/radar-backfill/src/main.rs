@@ -50,6 +50,37 @@ const FOLLOW_MIN_WINDOW_SECONDS: i64 = 60;
 /// Where the follow cursor lives inside the store.
 const CURSOR_FILE: &str = ".follow-cursor";
 
+/// How long follow mode waits after a window fails, and how far that grows.
+///
+/// A one-off backfill should fail loudly and stop: an operator is watching it,
+/// and the range can be re-run. A **daemon must not**, and this one did. On
+/// 2026-08-24 a two-minute burst of 7,233 failed `migrate` spam transactions
+/// pushed one window past the endpoint's row cap; the query eventually returned
+/// a bare HTTP 500, the error propagated out of the loop, and the recorder
+/// exited. It stayed down for hours, and the shape of that outage in the store
+/// is a slot range with nothing in it — which looks exactly like a quiet market,
+/// the one failure this project is most organised against.
+///
+/// So follow mode retries and never gives up on a window. **The cursor does not
+/// advance**, deliberately: skipping would put a hole in the record that nothing
+/// ever revisits, while stalling is visible in the log and costs only the time
+/// it takes someone to look. A stall is recoverable and a gap is not.
+const FOLLOW_RETRY_MIN: Duration = Duration::from_secs(5);
+/// The ceiling on that backoff. Radar is a guest on a free public endpoint
+/// (ADR 0002), so an endpoint that is already unhappy is not hammered.
+const FOLLOW_RETRY_MAX: Duration = Duration::from_secs(300);
+
+/// The wait after `failures` consecutive failed windows.
+///
+/// Doubling from [`FOLLOW_RETRY_MIN`], capped at [`FOLLOW_RETRY_MAX`]. Pulled
+/// out of the loop so the schedule can be tested without running a daemon.
+fn retry_backoff(failures: u32) -> Duration {
+    let doubled = FOLLOW_RETRY_MIN
+        .checked_mul(1u32.checked_shl(failures.min(16)).unwrap_or(u32::MAX))
+        .unwrap_or(FOLLOW_RETRY_MAX);
+    doubled.min(FOLLOW_RETRY_MAX)
+}
+
 struct Args {
     from: String,
     to: String,
@@ -372,6 +403,9 @@ fn follow(args: &Args) -> Result<(), String> {
     println!("staying {FOLLOW_LAG_SECONDS}s behind the chain; ctrl-c to stop");
 
     let mut totals = Stats::default();
+    // Consecutive failed windows, for the backoff. Reset by any success, so a
+    // transient upstream wobble does not leave the recorder crawling for hours.
+    let mut failures: u32 = 0;
     loop {
         let horizon = now_epoch() - FOLLOW_LAG_SECONDS;
         if horizon - cursor < FOLLOW_MIN_WINDOW_SECONDS {
@@ -380,8 +414,29 @@ fn follow(args: &Args) -> Result<(), String> {
         }
         let window_end = (cursor + step).min(horizon);
 
-        let rows =
-            fetch_window(&client, cursor, window_end, 0, args.scope).map_err(|e| e.to_string())?;
+        let rows = match fetch_window(&client, cursor, window_end, 0, args.scope) {
+            Ok(rows) => {
+                failures = 0;
+                rows
+            }
+            Err(e) => {
+                let wait = retry_backoff(failures);
+                failures = failures.saturating_add(1);
+                eprintln!(
+                    "  {} .. {} failed ({failures}): {e}",
+                    from_epoch(cursor),
+                    from_epoch(window_end)
+                );
+                eprintln!(
+                    "  retrying in {}s. The cursor stays at {} so nothing is skipped — \
+                     a stall is recoverable and a gap in the record is not.",
+                    wait.as_secs(),
+                    from_epoch(cursor)
+                );
+                std::thread::sleep(wait);
+                continue;
+            }
+        };
         let (events, stats) = events_from_rows(&rows);
         let emitted = events.len();
 
@@ -633,6 +688,39 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_retry_backoff_climbs_and_then_stops_climbing() {
+        // The recorder must keep trying a failed window forever, and must not
+        // hammer a public endpoint while doing it. Both halves are load-bearing:
+        // without the first it exits and the store grows a hole, without the
+        // second it turns an upstream wobble into an outage of its own.
+        assert_eq!(retry_backoff(0), FOLLOW_RETRY_MIN);
+        assert_eq!(retry_backoff(1), FOLLOW_RETRY_MIN * 2);
+        assert_eq!(retry_backoff(2), FOLLOW_RETRY_MIN * 4);
+        assert_eq!(retry_backoff(6), FOLLOW_RETRY_MAX, "reaches the ceiling");
+
+        // And stays there, including at values that would overflow a naive shift.
+        for failures in [7u32, 20, 100, u32::MAX] {
+            assert_eq!(
+                retry_backoff(failures),
+                FOLLOW_RETRY_MAX,
+                "backoff must saturate rather than wrap at {failures} failures"
+            );
+        }
+    }
+
+    #[test]
+    fn the_backoff_never_reaches_zero() {
+        // A zero wait would turn a persistently failing window into a hot loop
+        // against a free public endpoint, which is how a guest stops being one.
+        for failures in 0..64u32 {
+            assert!(
+                retry_backoff(failures) >= FOLLOW_RETRY_MIN,
+                "backoff collapsed at {failures} failures"
+            );
+        }
+    }
 
     #[test]
     fn timestamps_round_trip_through_epoch_seconds() {

@@ -204,3 +204,47 @@ because a token can carry both a `migrate` and a `migrate_v2`. Each would have
 overstated the rarest label in the store — by a third and by 24% respectively.
 Neither was in the original diagnosis. Running the thing produced three
 corrections that reasoning about it did not.
+
+---
+
+## 8. A daemon that exited on a transient upstream error
+
+**Found:** 2026-08-24, by regrounding rather than by an alarm — which is the
+part worth recording.
+
+The follow recorder halved a window past the endpoint's row cap, got a bare
+`HTTP 500`, and the error propagated out of the loop via `?`. The process
+exited. Nothing restarted it, nothing alarmed, and it stayed down.
+
+The trigger was real and rare: a two-minute burst of **7,233 failed `migrate`
+transactions** — spam against the old migration path, every one of them
+reverted. Normal migration rate in that window is about one a minute, so this
+was roughly a 3,600× spike, and it pushed one window over a cap that a hundred
+thousand ordinary windows had cleared.
+
+**Cost:** hours of chain never recorded. The exact hole is knowable — the cursor
+did not advance — so it is recoverable, but only because someone looked.
+
+**What makes it bad rather than unlucky** is the shape of the damage. A missing
+slot range in this store is indistinguishable from a quiet market, which is the
+failure this entire project is organised against, and the recorder created one
+by failing in the way that leaves the least evidence.
+
+**What catches a recurrence:** follow mode no longer exits on a query error. It
+retries with a doubling backoff capped at five minutes, and **the cursor stays
+put**, so a stall is visible in the log and nothing is skipped. Skipping would
+have been the easier fix and the wrong one: a stall is recoverable and a gap is
+not. `retry_backoff` is a pure function with tests, because the loop it lives in
+cannot be tested.
+
+**Two things went right and both were accidents of an earlier decision.** The
+`succeeded` filter added a day earlier — for the unrelated reason that 35 of 97
+migrations in a sampled hour had failed — meant all 1,486 spam events the
+recorder did capture were excluded from every graduation count. The population
+rate moved from 3.2064% to 3.2089% across a 7,233-event spam burst. And the
+one-off backfill path still fails loudly, which is correct: an operator is
+watching that one.
+
+**The general shape:** a check that is right for a foreground tool is wrong for
+a daemon. `?` on an error is a decision to stop, and stopping is only safe when
+something is watching. Nothing was.

@@ -37,7 +37,7 @@ use radar_types::{Address, MicroUsd, Slot};
 /// Assembled by the caller from recorded data at the watermark. A strategy
 /// cannot fetch anything it was not given, which is what makes look-ahead a
 /// property of assembly rather than of every strategy independently.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Candidate {
     /// The token.
     pub mint: Address,
@@ -95,7 +95,7 @@ impl Candidate {
 /// Counts rather than rates. A rate is a float, a float is a rounding decision,
 /// and a rounding decision inside a purity test is a flake waiting to happen.
 /// Thresholds are applied to the counts directly.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct CreatorRecord {
     /// Launches recorded at or before the watermark.
     pub launches: u64,
@@ -163,7 +163,8 @@ impl CreatorRecord {
 }
 
 /// What a strategy decided.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Decision {
     /// No proposal, and why not.
     ///

@@ -19,6 +19,7 @@ radar-instruments.workspace = true
 radar-risk.workspace = true
 radar-sim.workspace = true
 radar-strategy.workspace = true
+radar-research.workspace = true
 radar-store.workspace = true
 radar-types.workspace = true
 serde_json.workspace = true

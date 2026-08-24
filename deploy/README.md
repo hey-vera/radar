@@ -73,21 +73,58 @@ rather than an outage. The certificate account is the part that is shared.
 
 ## Every deploy after that
 
+**Run these from a workstation that can reach `guardian-vps-tail`, not from the
+box.** The name is a Tailscale name and does not resolve on `clawguard` itself,
+so running this there fails at the `scp` with `Temporary failure in name
+resolution` — and then, if the steps are pasted separately, the `install` reads
+whatever `/tmp` already held from a previous deploy and succeeds. That happened on
+2026-08-24: a fix was "deployed" and the running binary was two commits old, with
+nothing in the output saying so.
+
 ```bash
 gh run download --repo hey-vera/radar --name radar-linux-x86_64 --dir ./dist
+head -2 ./dist/BUILD-INFO.txt   # confirm this is the commit you meant to ship
 sha256sum -c <(awk 'NF==2 {print $1"  ./dist/"$2}' dist/BUILD-INFO.txt)
 
 scp dist/radar-serve dist/radar dist/radar-backfill guardian-vps-tail:/tmp/
+```
+
+Check the commit line before shipping. `gh run download` takes the most recent
+*completed* run, which during a merge is often the previous one.
+
+Install by writing beside the target and renaming, rather than over it. A running
+process holds its inode, so a rename never disturbs one mid-write, and the
+running binary keeps working until it is restarted:
+
+```bash
 ssh guardian-vps-tail '
-  sudo install -m755 /tmp/radar-serve /usr/local/bin/radar-serve &&
-  install -m755 /tmp/radar /tmp/radar-backfill ~/bin/ &&
-  sudo systemctl restart radar-serve &&
-  sleep 2 && curl -sS localhost:8402/health'
+  set -e
+  for b in radar radar-backfill radar-serve; do
+    install -m755 /tmp/$b ~/bin/$b.new && mv -f ~/bin/$b.new ~/bin/$b
+  done
+  sha256sum ~/bin/radar ~/bin/radar-backfill ~/bin/radar-serve'
+```
+
+**Compare that output against `BUILD-INFO.txt`.** Verifying the download proves
+the artifact arrived; only this proves the artifact is what got installed, and
+the two came apart in exactly the way described above.
+
+Then restart, and ask the service what it thinks it is running:
+
+```bash
+ssh guardian-vps-tail '
+  sudo systemctl restart radar-serve radar-follow &&
+  sleep 3 && curl -sS localhost:8402/health'
 ```
 
 The `curl` is the point. A deploy that does not end by asking the service what it
 thinks it is running has not been verified, and `/health` reports the version,
 the instrument count and the store watermark.
+
+**A running process keeps the old code until it is restarted.** `readlink
+/proc/<pid>/exe` prints `(deleted)` when a process is running a binary that has
+since been replaced — which is the quickest way to tell a deploy that landed from
+one that only looks like it did.
 
 ## Filling the store
 
@@ -107,10 +144,19 @@ thousand queries and several hours. It paces itself deliberately — Radar is a
 guest on a free public endpoint (ADR 0002) — so run it under `tmux` or `nohup`
 rather than a session that will disconnect.
 
-## Running without the units
+## Running without the units — and why not to
 
-Both binaries run fine under `setsid nohup` before the systemd units are
-installed, which is how the first deployment was done:
+Both binaries run fine under `setsid nohup`, which is how the first deployment
+was done. **Nothing supervises them.** On 2026-08-24 the recorder exited on a
+single bad query at 05:37 and was still down thirteen hours later, found by
+someone reading the process list for an unrelated reason. `radar-follow.service`
+sets `Restart=always` with `RestartSec=30`, and would have turned that outage
+into a thirty-second gap.
+
+Treat this section as what to do for ten minutes of debugging, not as a way to
+run the recorder. If you find yourself here for anything longer, install the
+unit instead — it is written, it is in this directory, and the only reason it was
+not already running is that installing it needs an interactive `sudo`:
 
 ```bash
 cd ~/radar

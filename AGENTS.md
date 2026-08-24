@@ -70,10 +70,28 @@ compiles and the tests pass — in which case the tests are also wrong.
    replayable and a refusal reproducible from a recording.
 
 3. **Nothing reads past its watermark.** Every read is gated by
-   [`AsOf`](crates/radar-asof). A value observed after the watermark cannot be
-   unwrapped — not "should not", cannot. This is what keeps look-ahead bias out
-   of research results, and it reaches into the cache too: a replay must not be
-   served a live-populated entry from the future.
+   [`AsOf`](crates/radar-asof), and this is what keeps look-ahead bias out of
+   research results. It reaches into the cache too: a replay must not be served a
+   live-populated entry from the future.
+
+   The enforcement is **at the boundary functions, not in the type system**, and
+   it is worth being exact about that because an earlier version of this rule was
+   not. There are two mechanisms and they are for different situations:
+
+   - **Scans filter.** `Reader::read` and `Reader::read_outcomes` drop rows past
+     the watermark as they go, because a partition file legitimately contains
+     slots on both sides of it. Erroring there would make a normal read fail.
+   - **Single observations are refused.** `AsOf::accept` takes an `Observed<T>`
+     and returns `LookAhead` rather than a value. That is the right shape for one
+     value arriving from outside the store, and nothing inside the store needs
+     it today.
+
+   So the guarantee is "every path out of the store applies the gate", which is a
+   property of four call sites rather than something the compiler proves.
+   [`crates/radar-store/tests/watermark_holds.rs`](crates/radar-store/tests/watermark_holds.rs)
+   is what holds it up: it reads across a file that straddles the watermark,
+   sweeps every boundary, and each of its cases was checked by deleting the
+   filter and confirming the test fails.
 
 4. **Untrusted content is never an instruction.** Token metadata, social posts,
    website copy and transaction memos are `Trust::Untrusted` no matter how

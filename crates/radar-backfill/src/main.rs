@@ -70,6 +70,47 @@ const FOLLOW_RETRY_MIN: Duration = Duration::from_secs(5);
 /// (ADR 0002), so an endpoint that is already unhappy is not hammered.
 const FOLLOW_RETRY_MAX: Duration = Duration::from_secs(300);
 
+/// The smallest window follow mode will shrink to under repeated failure.
+///
+/// Shrinking matters more than waiting. A five-minute window during a migration
+/// spam burst is several thousand rows, and `fetch_window` has to narrow it into
+/// dozens of sub-queries that must *all* succeed together — one HTTP 500 near
+/// the end discards the lot. Retrying the same five minutes just re-runs the
+/// same long odds.
+///
+/// Halving the window instead turns all-or-nothing into incremental progress:
+/// the cursor advances as far as it can get, and what is left is a smaller
+/// problem than what failed. Measured on the 2026-08-24 bursts, a minute of the
+/// worst of it is ~5,800 rows, which narrows into a handful of sub-queries
+/// rather than dozens.
+const FOLLOW_MIN_STEP_SECONDS: i64 = 15;
+
+/// The window to try after one that size failed.
+///
+/// Halved, with a floor. Pulled out with its counterpart so the pair can be
+/// tested: between them they decide whether a burst is crawled or stalled on.
+const fn shrink_step(current: i64) -> i64 {
+    let halved = current / 2;
+    if halved < FOLLOW_MIN_STEP_SECONDS {
+        FOLLOW_MIN_STEP_SECONDS
+    } else {
+        halved
+    }
+}
+
+/// The window to try after one that size succeeded.
+///
+/// Doubled, never past `configured`. Doubling rather than jumping straight back:
+/// one window that fits is not evidence that the size which just failed will.
+const fn grow_step(current: i64, configured: i64) -> i64 {
+    let doubled = current.saturating_mul(2);
+    if doubled > configured {
+        configured
+    } else {
+        doubled
+    }
+}
+
 /// The wait after `failures` consecutive failed windows.
 ///
 /// Doubling from [`FOLLOW_RETRY_MIN`], capped at [`FOLLOW_RETRY_MAX`]. Pulled
@@ -406,17 +447,24 @@ fn follow(args: &Args) -> Result<(), String> {
     // Consecutive failed windows, for the backoff. Reset by any success, so a
     // transient upstream wobble does not leave the recorder crawling for hours.
     let mut failures: u32 = 0;
+    // The window size actually in use. Shrinks on failure and recovers on
+    // success, so a burst is crawled rather than repeatedly re-attempted whole.
+    let mut current_step = step;
     loop {
         let horizon = now_epoch() - FOLLOW_LAG_SECONDS;
         if horizon - cursor < FOLLOW_MIN_WINDOW_SECONDS {
             std::thread::sleep(FOLLOW_IDLE);
             continue;
         }
-        let window_end = (cursor + step).min(horizon);
+        let window_end = (cursor + current_step).min(horizon);
 
         let rows = match fetch_window(&client, cursor, window_end, 0, args.scope) {
             Ok(rows) => {
                 failures = 0;
+                // Recover by doubling rather than jumping straight back to the
+                // configured step: one lucky window is not evidence that the
+                // size which just failed will now work.
+                current_step = grow_step(current_step, step);
                 rows
             }
             Err(e) => {
@@ -427,12 +475,15 @@ fn follow(args: &Args) -> Result<(), String> {
                     from_epoch(cursor),
                     from_epoch(window_end)
                 );
+                let shrunk = shrink_step(current_step);
                 eprintln!(
-                    "  retrying in {}s. The cursor stays at {} so nothing is skipped — \
-                     a stall is recoverable and a gap in the record is not.",
+                    "  window {current_step}s -> {shrunk}s, retrying in {}s. The cursor stays \
+                     at {} so nothing is skipped — a stall is recoverable and a gap in the \
+                     record is not.",
                     wait.as_secs(),
                     from_epoch(cursor)
                 );
+                current_step = shrunk;
                 std::thread::sleep(wait);
                 continue;
             }
@@ -708,6 +759,47 @@ mod tests {
                 "backoff must saturate rather than wrap at {failures} failures"
             );
         }
+    }
+
+    #[test]
+    fn the_window_shrinks_under_failure_and_recovers_after_it() {
+        // Shrinking is what turns a burst from a stall into a crawl. A five
+        // minute window during the 2026-08-24 spam bursts was several thousand
+        // rows and needed dozens of narrowed sub-queries to all succeed at once;
+        // retrying that whole window just re-runs the same long odds.
+        let configured = 300;
+        assert_eq!(shrink_step(configured), 150);
+        assert_eq!(shrink_step(150), 75);
+
+        // Recovery is gradual, and never past what the operator asked for.
+        assert_eq!(grow_step(75, configured), 150);
+        assert_eq!(grow_step(150, configured), configured);
+        assert_eq!(grow_step(configured, configured), configured);
+    }
+
+    #[test]
+    fn the_window_never_shrinks_to_nothing_or_grows_without_bound() {
+        // A window of zero seconds would spin against a public endpoint forever
+        // without ever advancing the cursor, which is a worse stall than the one
+        // this replaced -- it would look like progress in the log.
+        let mut step = 300;
+        for _ in 0..40 {
+            step = shrink_step(step);
+            assert!(step >= FOLLOW_MIN_STEP_SECONDS, "shrank to {step}");
+        }
+        assert_eq!(step, FOLLOW_MIN_STEP_SECONDS);
+
+        // And growth is bounded by the configured size however long it runs well.
+        let mut step = FOLLOW_MIN_STEP_SECONDS;
+        for _ in 0..40 {
+            step = grow_step(step, 300);
+            assert!(step <= 300, "grew to {step}");
+        }
+        assert_eq!(step, 300);
+
+        // Saturating rather than wrapping, so a preposterous --window-minutes
+        // cannot turn into a negative window.
+        assert_eq!(grow_step(i64::MAX, 300), 300);
     }
 
     #[test]

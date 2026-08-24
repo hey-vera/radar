@@ -10,7 +10,7 @@
 //! be noise. Two launches with one death is not a 50% failure rate; it is two
 //! launches.
 
-use radar_store::{Event, Outcome, Table};
+use radar_store::{Event, GraduationMode, Outcome, Table};
 use radar_types::Mutability;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -47,13 +47,30 @@ pub struct Output {
     /// Measured tokens that showed almost no life: five or fewer transfers
     /// within 300 slots of launch.
     pub stillborn: u64,
-    /// Measured tokens that reached an AMM.
+    /// Measured tokens that reached an AMM, however they got there.
+    ///
+    /// Reported for completeness and **not** the number to rank creators by.
+    /// See `graduated_organic`.
     pub graduated: u64,
+    /// Measured tokens whose curve filled over time rather than in a block.
+    ///
+    /// The one that carries information. A curve bought out within three slots
+    /// of its launch was bought by capital committed before the token existed,
+    /// so it is evidence of coordination rather than of demand — and a creator
+    /// ranked on the undifferentiated count is ranked partly on how well they
+    /// bundle. Measured across the store, 39% of graduations are instant.
+    pub graduated_organic: u64,
+    /// Measured tokens whose curve completed within three slots of the launch.
+    pub graduated_instant: u64,
     /// Share of measured tokens that were stillborn, or `None` below the minimum
     /// sample.
     pub stillborn_rate: Option<f64>,
-    /// Share that graduated, or `None` below the minimum sample.
+    /// Share that graduated by any route, or `None` below the minimum sample.
     pub graduation_rate: Option<f64>,
+    /// Share that graduated organically, or `None` below the minimum sample.
+    ///
+    /// The rate `creator_edge` gates on.
+    pub organic_graduation_rate: Option<f64>,
     /// Median slots survived across measured tokens.
     pub median_survival_slots: Option<u64>,
     /// The longest-surviving token's slot count.
@@ -130,6 +147,14 @@ impl Instrument for CreatorTrackRecord {
         let measured = latest.len() as u64;
         let stillborn = latest.values().filter(|o| o.appears_stillborn()).count() as u64;
         let graduated = latest.values().filter(|o| o.graduated()).count() as u64;
+        let graduated_organic = latest
+            .values()
+            .filter(|o| o.graduation_mode() == Some(GraduationMode::Organic))
+            .count() as u64;
+        let graduated_instant = latest
+            .values()
+            .filter(|o| o.graduation_mode() == Some(GraduationMode::Instant))
+            .count() as u64;
         let total_transfers: u64 = latest.values().map(|o| o.transfers).sum();
 
         let mut survivals: Vec<u64> = latest.values().map(|o| o.survived_slots()).collect();
@@ -150,8 +175,11 @@ impl Instrument for CreatorTrackRecord {
             measured,
             stillborn,
             graduated,
+            graduated_organic,
+            graduated_instant,
             stillborn_rate: rate(stillborn),
             graduation_rate: rate(graduated),
+            organic_graduation_rate: rate(graduated_organic),
             median_survival_slots: survivals.get(survivals.len() / 2).copied(),
             best_survival_slots: survivals.last().copied(),
             total_transfers,

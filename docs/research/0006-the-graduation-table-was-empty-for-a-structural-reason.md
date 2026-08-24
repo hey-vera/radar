@@ -149,6 +149,57 @@ The names are measurements rather than verdicts: `Instant` says what was
 observed. Calling it `Bundled` would assume the conclusion, the same way calling
 a stillborn token a rug would.
 
+## Deployed, and what the whole store says
+
+Repaired on the live instance on 2026-08-24 — `--scope graduations` over the
+store's own window recovered **1,740 graduation events at 97.5% yield**, with the
+44 it could not resolve counted under `GraduationSubjectUnresolved` rather than
+disappearing among skipped trades. Outcomes were re-measured against them.
+
+```
+launches recorded : 33932
+graduations       : 1088
+population rate   : 3.2064%  (1088 of 33932)
+  of which instant  : 369  (<= 3 slots from launch)
+  of which organic  : 566
+  duration unknown  : 153  (launched before this store started)
+
+distinct creators who graduated a token: 803
+```
+
+Four graduations became 1,088; one creator with a graduation became 803. Of the
+935 with a measurable duration, **39% are instant** — close to the 27% and 42%
+seen in the two independent samples, and far too large a share to leave folded
+into one label.
+
+The separation the signal needs is now visible. Against a 3.2% population rate,
+measured creators run from `bwamJzzt…` at 2 graduations from **403** launches
+(0.5%, below the population rate) to `DyyJbubC…` at 6 from 11 and `9Mztn56c…` at
+8 from 26 — an order of magnitude either side of the base rate. Before the fix
+every one of these creators had a rate of zero.
+
+### The decision lane, before and after
+
+The same command over the same instance, either side of the repair:
+
+| `radar consider --window 6000` | before ([0005](0005-first-end-to-end-decision-pass.md)) | after |
+|---|---|---|
+| `CreatorNeverGraduated` | 1,570 — every creator | 158 |
+| `CreatorGraduatesTooRarely` | *unreachable* | 27 |
+| `InputsTooStale` | 2,014 | 0 |
+| reached the paid tier | **0** | **32** |
+
+`CreatorGraduatesTooRarely` could not fire before, because a threshold on a rate
+whose numerator is always zero is dead code that looks like a working rule. The
+paid tier had never run: 0005 reported *"spending on exit analysis would change
+no answer, so nothing is spent"*, which read as the tiering working and was
+actually the strategy short-circuiting. It now spends, and refuses on measured
+grounds — `CapacityBelowFloor` and `NoRoute` — which is the first time those
+refusals have been about the tokens rather than about the absence of data.
+
+Nothing was proposed. That remains the correct outcome for a strategy whose
+thresholds are untuned by design.
+
 ## What this does not establish
 
 Whether organic graduation history predicts anything. There is now a sample where

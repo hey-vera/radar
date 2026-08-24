@@ -44,6 +44,21 @@ pub struct Row {
     /// Distinct candidate mints found for the transaction.
     #[serde(default)]
     pub mints: Vec<String>,
+    /// Mints this transaction **created**, from their `MintTo` transfer rows.
+    ///
+    /// Load-bearing for graduations and meaningless for launches, because the
+    /// two are opposites: a `create` mints its own subject token, while a
+    /// `migrate` mints a *different* token — the AMM's LP mint — alongside the
+    /// subject it merely moves. See [`resolve_graduation_mint`].
+    #[serde(default)]
+    pub minted: Vec<String>,
+    /// Mints named in the transaction's post-token balances.
+    ///
+    /// A second source for the subject, used only when the transfer rows cannot
+    /// answer. CryptoHouse's `token_transfers` has no row at all for roughly a
+    /// fifth of successful migrations, and the balances carry the mint for those.
+    #[serde(default)]
+    pub balance_mints: Vec<String>,
     /// Position of the transaction within its block, if resolved.
     #[serde(default)]
     pub tx_index: Option<String>,
@@ -59,6 +74,15 @@ pub enum Skipped {
     NoMint,
     /// More than one candidate mint, so attribution would be a guess.
     AmbiguousMint,
+    /// A graduation whose subject token could not be told from the LP mint.
+    ///
+    /// Counted apart from [`Self::AmbiguousMint`] because the two have opposite
+    /// weight. A skipped trade is one of a million a day; a skipped graduation
+    /// is one of about sixty an hour, and it is the numerator of the only
+    /// unambiguously good outcome the store records. Folding them together is
+    /// how the graduation table sat at four rows for a day while reading as a
+    /// market with no graduations in it.
+    GraduationSubjectUnresolved,
     /// The instruction data was not valid base58.
     BadData,
     /// The decoder does not know this instruction.
@@ -128,6 +152,57 @@ pub fn resolve_mint(candidates: &[String]) -> Result<&str, Skipped> {
     Ok(first)
 }
 
+/// The token a **graduation** is about, which is not the one it creates.
+///
+/// A migration transaction moves two non-quote tokens, and the naive rule —
+/// "the single mint that is not a quote asset" — sees two candidates and refuses
+/// every one of them. Measured over one hour of chain: of 66 migrations, 49 had
+/// two non-quote mints and 17 had none. Not one had exactly one, so not one
+/// could be recorded.
+///
+/// The two are distinguishable structurally, and the distinction is the right
+/// way round rather than a heuristic: the **LP mint is created by the migration**
+/// — it appears as `MintTo` then `Burn` — while the **subject token predates it**
+/// and only moves. So the subject is the non-quote mint this transaction did not
+/// mint.
+///
+/// The amount is *not* usable for this. The subject's transfers summed to
+/// `413,800,000,000,000` in one sample and `206,900,000,000,000` in another, so a
+/// constant that looked like the bonding-curve remainder matched under half of
+/// them.
+///
+/// Where the transfer rows are absent entirely, the post-token balances answer
+/// instead. Measured over the same hour, the two together resolved **62 of 62**
+/// successful migrations to exactly one mint.
+///
+/// # Errors
+///
+/// Returns [`Skipped::GraduationSubjectUnresolved`] if neither source leaves
+/// exactly one candidate. Counted rather than guessed: a graduation attributed
+/// to the LP mint is a graduation recorded against a token that never launched.
+pub fn resolve_graduation_mint(row: &Row) -> Result<&str, Skipped> {
+    let not_quote = |m: &&String| !QUOTE_MINTS.contains(&m.as_str());
+
+    // The subject moved but was not minted here. Applying this to a launch would
+    // be exactly wrong -- a `create` mints its subject, and 300 of 303 mints in
+    // sampled launch transactions were minted in the transaction itself -- which
+    // is why this is a graduation-only rule rather than a general one.
+    let mut moved = row
+        .mints
+        .iter()
+        .filter(not_quote)
+        .filter(|m| !row.minted.contains(m));
+    if let (Some(only), None) = (moved.next(), moved.next()) {
+        return Ok(only);
+    }
+
+    let mut from_balances = row.balance_mints.iter().filter(not_quote);
+    match (from_balances.next(), from_balances.next()) {
+        (Some(only), None) => Ok(only),
+        _ => Err(Skipped::GraduationSubjectUnresolved),
+    }
+}
+
 fn parse_u64(s: &str) -> Result<u64, Skipped> {
     s.parse().map_err(|_| Skipped::BadField)
 }
@@ -178,9 +253,16 @@ pub fn event_from_row(row: &Row) -> Result<Event, Skipped> {
     };
 
     let envelope = envelope(row)?;
-    let mint: Address = resolve_mint(&row.mints)?
-        .parse()
-        .map_err(|_| Skipped::BadField)?;
+    // Which mint a row is about depends on what the instruction did to it. A
+    // launch and a trade have one subject and the quote filter finds it; a
+    // graduation has two non-quote tokens and needs to know which one it made.
+    let mint: Address = if instruction.is_graduation() {
+        resolve_graduation_mint(row)?
+    } else {
+        resolve_mint(&row.mints)?
+    }
+    .parse()
+    .map_err(|_| Skipped::BadField)?;
     let origin = Origin::known(pumpfun::PROGRAM_ID, instruction.anchor_name());
 
     if instruction.is_launch() {
@@ -277,6 +359,13 @@ pub enum Scope {
     /// Every individual trade. Viable only over narrow windows, for investigating
     /// specific periods rather than backfilling history.
     Trades,
+    /// Graduations alone.
+    ///
+    /// For repairing a store whose launches are already correct. Re-running
+    /// [`Self::Lifecycle`] over a window that has already been recorded would
+    /// append a second copy of every launch in it, and the readers that
+    /// deduplicate by mint would hide that from every count that does not.
+    Graduations,
 }
 
 impl Scope {
@@ -289,6 +378,7 @@ impl Scope {
             .filter(|ix| match self {
                 Self::Lifecycle => ix.is_launch() || ix.is_graduation(),
                 Self::Trades => ix.is_trade(),
+                Self::Graduations => ix.is_graduation(),
             })
             .map(|ix| Discriminator::to_string(&ix.discriminator()))
             .collect()
@@ -323,18 +413,22 @@ pub fn query_for_window(from: &str, to: &str, scope: Scope) -> String {
              AND block_timestamp >= '{from}' AND block_timestamp < '{to}' \
              AND lower(hex(substring(base58Decode(data),1,8))) IN ({discs})\
          ), mints AS (\
-           SELECT tx_signature, groupUniqArray(mint) AS mints \
+           SELECT tx_signature, \
+                  groupUniqArrayIf(mint, mint NOT IN ({quotes})) AS mints, \
+                  groupUniqArrayIf(mint, transfer_type='MintTo') AS minted \
            FROM solana.token_transfers \
            WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}' \
-             AND mint NOT IN ({quotes}) \
            GROUP BY tx_signature\
          ), txs AS (\
-           SELECT signature, index AS tx_index, err FROM solana.transactions \
+           SELECT signature, index AS tx_index, err, \
+                  arrayDistinct(arrayMap(x -> x.2, post_token_balances)) AS balance_mints \
+           FROM solana.transactions \
            WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}'\
          ) \
          SELECT toString(ix.block_slot) AS slot, ix.tx_signature AS sig, \
                 toString(ix.ix_index) AS ix_index, toString(ix.parent_index) AS parent_index, \
-                ix.data AS data, mints.mints AS mints, \
+                ix.data AS data, mints.mints AS mints, mints.minted AS minted, \
+                txs.balance_mints AS balance_mints, \
                 toString(txs.tx_index) AS tx_index, toString(txs.err = '') AS ok \
          FROM ix LEFT JOIN mints ON ix.tx_signature = mints.tx_signature \
                  LEFT JOIN txs ON ix.tx_signature = txs.signature"
@@ -353,9 +447,96 @@ mod tests {
             parent_index: "-1".into(),
             data: data_b58.into(),
             mints: mints.iter().map(|s| (*s).to_owned()).collect(),
+            minted: Vec::new(),
+            balance_mints: Vec::new(),
             tx_index: Some("117".into()),
             ok: Some("1".into()),
         }
+    }
+
+    /// A real `migrate_v2` row, captured from mainnet slot 441251921.
+    ///
+    /// Kept verbatim rather than synthesised, because the shape it holds is the
+    /// whole finding: two non-quote mints, one of which this transaction created.
+    fn real_migration_row() -> Row {
+        Row {
+            slot: "441251921".into(),
+            sig: "mZpcwJN6kTd7BxdNd5dDQ7EJpBR2JRBZb8BsZSSXWr2wKb6Rn8PNxE75Guji2BkFsRwWPAFQPmDkwJa7CPbJcX6".into(),
+            ix_index: "2".into(),
+            parent_index: "-1".into(),
+            data: "YQq8B6nbicx".into(),
+            mints: vec![
+                MIGRATED.to_owned(),
+                LP_MINT.to_owned(),
+            ],
+            minted: vec![LP_MINT.to_owned()],
+            balance_mints: vec![
+                MIGRATED.to_owned(),
+                QUOTE_MINTS[0].to_owned(),
+            ],
+            tx_index: Some("110".into()),
+            ok: Some("1".into()),
+        }
+    }
+
+    /// The token that graduated in the captured transaction.
+    const MIGRATED: &str = "2Rt18SqHXcgzUU1P94Qr71A9URcpmkwB99cD5SGXpump";
+    /// The AMM LP mint the same transaction created.
+    const LP_MINT: &str = "Dck97H5qwyztdKm9hmfXhQjbT7uZGLsFFGo5du3ToE4U";
+
+    #[test]
+    fn a_graduation_resolves_to_the_token_it_moved_not_the_one_it_minted() {
+        let row = real_migration_row();
+        // The naive rule sees two candidates and refuses. This is the whole bug:
+        // every graduation on chain took that path, so the table held four rows
+        // where roughly 1,480 events had happened.
+        assert_eq!(resolve_mint(&row.mints), Err(Skipped::AmbiguousMint));
+        assert_eq!(resolve_graduation_mint(&row), Ok(MIGRATED));
+    }
+
+    #[test]
+    fn the_whole_row_becomes_a_graduation_for_the_right_mint() {
+        let event = event_from_row(&real_migration_row()).expect("a graduation");
+        assert!(matches!(event, Event::Graduation(_)));
+        assert_eq!(event.mint().to_string(), MIGRATED);
+    }
+
+    #[test]
+    fn a_graduation_falls_back_to_balances_when_there_are_no_transfer_rows() {
+        // CryptoHouse has no `token_transfers` row at all for roughly a fifth of
+        // successful migrations. Without this fallback those are lost silently,
+        // which is the same failure one layer down.
+        let mut row = real_migration_row();
+        row.mints.clear();
+        row.minted.clear();
+        assert_eq!(resolve_graduation_mint(&row), Ok(MIGRATED));
+    }
+
+    #[test]
+    fn a_graduation_that_cannot_be_told_apart_is_refused_with_its_own_reason() {
+        // Not AmbiguousMint. A skipped trade is one of a million a day; a skipped
+        // graduation is one of about sixty an hour and is the numerator of the
+        // only good outcome recorded, so the two must not share a counter.
+        let mut row = real_migration_row();
+        row.minted.clear();
+        row.balance_mints = vec![MIGRATED.to_owned(), LP_MINT.to_owned()];
+        assert_eq!(
+            resolve_graduation_mint(&row),
+            Err(Skipped::GraduationSubjectUnresolved)
+        );
+    }
+
+    #[test]
+    fn a_launch_still_resolves_to_the_mint_it_created() {
+        // The graduation rule inverted would destroy the half that works: a
+        // `create` mints its own subject, and 300 of 303 mints in sampled launch
+        // transactions were minted in the transaction itself. So the rule must
+        // stay keyed on the instruction, never applied to every row.
+        let mut row = row(&launch_data(), &[PUMP]);
+        row.minted = vec![PUMP.to_owned()];
+        let event = event_from_row(&row).expect("a launch");
+        assert!(matches!(event, Event::Launch(_)));
+        assert_eq!(event.mint().to_string(), PUMP);
     }
 
     fn launch_data() -> String {
@@ -512,13 +693,43 @@ mod tests {
         );
         assert_eq!(Scope::default(), Scope::Lifecycle);
 
+        // The repair scope asks for graduations and nothing else, so re-running
+        // it over an already-recorded window cannot append a second copy of
+        // every launch in it.
+        let repair = Scope::Graduations.discriminators();
+        assert_eq!(repair.len(), 2, "migrate and migrate_v2: {repair:?}");
+        for d in &repair {
+            assert!(
+                discs.contains(d),
+                "graduation scope must be a subset of lifecycle: {d}"
+            );
+        }
+        assert!(
+            Scope::Graduations
+                .discriminators()
+                .iter()
+                .all(|d| !Scope::Trades.discriminators().contains(d)),
+            "a graduation is not a trade"
+        );
+
         let sql = query_for_window(
             "2026-08-21 06:00:00",
             "2026-08-21 06:02:00",
             Scope::Lifecycle,
         );
         assert!(sql.contains(&pumpfun::PROGRAM_ID.to_string()));
-        assert!(sql.contains("groupUniqArray(mint)"));
+        // The two columns graduation resolution depends on. Without `minted` the
+        // subject cannot be told from the LP mint, and without the balance
+        // fallback the migrations that have no transfer rows are lost — so a
+        // query missing either silently reinstates the bug.
+        assert!(
+            sql.contains("transfer_type='MintTo'"),
+            "missing minted column"
+        );
+        assert!(
+            sql.contains("post_token_balances"),
+            "missing balance fallback"
+        );
         // Quote mints excluded server-side keeps the payload small.
         assert!(sql.contains("So11111111111111111111111111111111111111112"));
         for d in &discs {

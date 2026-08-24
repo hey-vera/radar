@@ -103,21 +103,53 @@ pub struct CreatorRecord {
     pub measured: u64,
     /// Measured tokens that showed almost no life.
     pub stillborn: u64,
-    /// Measured tokens that reached an AMM.
+    /// Measured tokens that reached an AMM, however they got there.
+    ///
+    /// Kept for the population view, and deliberately **not** what the strategy
+    /// gates on. See [`Self::graduated_organic`].
     pub graduated: u64,
+    /// Measured tokens whose curve filled over time rather than in a block.
+    ///
+    /// This is the one the strategy uses, and the distinction is the whole
+    /// point. A creator whose tokens graduate instantly is not a creator who
+    /// makes tokens people want; they are a creator who bundles. Selecting on
+    /// undifferentiated graduations rewards exactly that, which is the opposite
+    /// of the intent — so the rate that gates a proposal counts only
+    /// [`GraduationMode::Organic`](radar_store::GraduationMode::Organic).
+    pub graduated_organic: u64,
 }
 
 impl CreatorRecord {
-    /// Graduations per ten thousand measured launches.
+    /// Graduations of any kind, per ten thousand measured launches.
     ///
     /// `None` below any measurement at all — a rate over zero samples is not a
     /// small number, it is not a number.
+    ///
+    /// Reported, not acted on. Use [`Self::organic_graduation_bps`] for
+    /// decisions.
     #[must_use]
     pub const fn graduation_bps(&self) -> Option<u64> {
         if self.measured == 0 {
             return None;
         }
         Some(self.graduated.saturating_mul(10_000) / self.measured)
+    }
+
+    /// Organic graduations per ten thousand measured launches.
+    ///
+    /// The rate a proposal is gated on.
+    #[must_use]
+    pub const fn organic_graduation_bps(&self) -> Option<u64> {
+        if self.measured == 0 {
+            return None;
+        }
+        Some(self.graduated_organic.saturating_mul(10_000) / self.measured)
+    }
+
+    /// Measured graduations that completed within a few slots of the launch.
+    #[must_use]
+    pub const fn graduated_instant(&self) -> u64 {
+        self.graduated.saturating_sub(self.graduated_organic)
     }
 
     /// Stillbirths per ten thousand measured launches.
@@ -220,6 +252,7 @@ mod tests {
             measured: 8,
             stillborn: 6,
             graduated: 2,
+            graduated_organic: 2,
         };
         assert_eq!(r.graduation_bps(), Some(2_500));
         assert_eq!(r.stillborn_bps(), Some(7_500));

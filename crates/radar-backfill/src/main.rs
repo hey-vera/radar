@@ -6,6 +6,7 @@
 //! retried rather than skipped — skipping would leave a gap in the record that
 //! looks exactly like a quiet market.
 
+use std::collections::BTreeMap;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -61,7 +62,7 @@ struct Args {
 
 fn usage() -> &'static str {
     "radar-backfill --from 'YYYY-MM-DD HH:MM:SS' --to 'YYYY-MM-DD HH:MM:SS' \
-     --store <dir> [--window-minutes N] [--scope lifecycle|trades]
+     --store <dir> [--window-minutes N] [--scope lifecycle|graduations|trades]
    radar-backfill --follow --store <dir> [--window-minutes N]
 
    radar-backfill --outcomes --store <dir>
@@ -101,10 +102,11 @@ fn parse_args() -> Result<Args, String> {
             "--scope" => {
                 scope = match value()?.as_str() {
                     "lifecycle" => Scope::Lifecycle,
+                    "graduations" => Scope::Graduations,
                     "trades" => Scope::Trades,
                     other => {
                         return Err(format!(
-                            "unknown scope {other}; expected lifecycle or trades"
+                            "unknown scope {other}; expected lifecycle, graduations or trades"
                         ));
                     }
                 };
@@ -411,10 +413,14 @@ fn follow(args: &Args) -> Result<(), String> {
     }
 }
 
-/// Every token the store knows about, and which of them graduated.
+/// Every token the store knows about, and when each graduation happened.
+///
+/// The graduation **slot** rather than a set of mints, because the outcome label
+/// needs to distinguish a curve bought out in the launch block from one that
+/// filled over days, and a membership test cannot.
 type Universe = (
     Vec<(radar_types::Address, radar_types::Slot)>,
-    Vec<radar_types::Address>,
+    BTreeMap<radar_types::Address, radar_types::Slot>,
 );
 
 /// Reads the token universe from the store, deduplicated by mint.
@@ -433,12 +439,26 @@ fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, String> {
     launches.sort_unstable();
     launches.dedup_by_key(|(mint, _)| *mint);
 
-    let graduated: Vec<radar_types::Address> = reader
+    // Earliest wins: a token graduates once, and a partition written twice must
+    // not turn one event into a later-looking second one.
+    let mut graduated: BTreeMap<radar_types::Address, radar_types::Slot> = BTreeMap::new();
+    for event in reader
         .read(Table::Graduations, as_of)
         .map_err(|e| e.to_string())?
-        .iter()
-        .map(radar_store::Event::mint)
-        .collect();
+    {
+        // A failed `migrate` moved nothing. It is worth recording — a migration
+        // that was attempted and reverted is real information — but it is not a
+        // graduation, and counting it as one inflated the rarest and most
+        // load-bearing label in the store by about a third.
+        if !event.envelope().succeeded {
+            continue;
+        }
+        let slot = event.envelope().slot;
+        graduated
+            .entry(event.mint())
+            .and_modify(|at| *at = (*at).min(slot))
+            .or_insert(slot);
+    }
 
     Ok((launches, graduated))
 }

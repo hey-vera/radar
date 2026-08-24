@@ -50,7 +50,10 @@ pub fn schema_for(table: Table) -> Arc<Schema> {
             Field::new("transfers", DataType::UInt64, false),
             Field::new("unique_senders", DataType::UInt64, false),
             Field::new("unique_receivers", DataType::UInt64, false),
-            Field::new("graduated", DataType::Boolean, false),
+            // The slot, not a flag. Null means no graduation recorded; a value
+            // lets "same block as launch" and "three days later" stay different
+            // outcomes instead of collapsing into one boolean.
+            Field::new("graduated_at", DataType::UInt64, true),
         ]));
     }
 

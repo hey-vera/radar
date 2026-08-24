@@ -43,11 +43,85 @@ pub struct Outcome {
     pub unique_senders: u64,
     /// Distinct receiving token accounts.
     pub unique_receivers: u64,
-    /// Whether the token reached an AMM.
-    pub graduated: bool,
+    /// The slot the token reached an AMM, if it ever did.
+    ///
+    /// The slot rather than a flag, because *when* is the whole signal. A token
+    /// whose bonding curve was bought out in its own launch block and one that
+    /// filled over three days are both `graduated = true`, and treating them as
+    /// the same outcome is what made the creator signal select for the thing it
+    /// was meant to avoid. See [`GraduationMode`].
+    ///
+    /// `None` means no graduation was recorded — which is not quite "did not
+    /// graduate", since the store only knows what it has seen.
+    pub graduated_at: Option<Slot>,
 }
 
+/// How a token reached the AMM.
+///
+/// Measured, not assumed. Over 44 graduations with a recoverable subject mint,
+/// slots from first transfer to migration ran `min 0, median 828, p90 274,163,
+/// max 809,491` — a hard spike at zero and then a broad tail. The distribution
+/// is bimodal, and the two modes are different events wearing one label.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GraduationMode {
+    /// The bonding curve completed within a few slots of the launch.
+    ///
+    /// Nobody discovers a token, decides, and buys out its entire curve inside
+    /// a block. Capital that size arriving that fast was committed before the
+    /// token existed, which makes this the signature of a bundled launch rather
+    /// than of demand. 12 of 44 measured graduations were at *exactly* zero
+    /// slots — the same block as the first transfer.
+    ///
+    /// It is named for what was observed rather than for what it implies:
+    /// "instant" is a measurement, "bundled" would be a verdict.
+    Instant,
+    /// The curve filled over time, from buyers arriving separately.
+    Organic,
+}
+
+/// Slots within which a graduation counts as [`GraduationMode::Instant`].
+///
+/// Three, not zero. The launch and the buy-out can straddle a slot boundary
+/// without being any less simultaneous in intent, and the measured distribution
+/// has nothing between 0 and 25 — so the threshold sits inside a gap rather than
+/// on a slope, and moving it anywhere in that range changes no answer.
+pub const INSTANT_WITHIN_SLOTS: u64 = 3;
+
 impl Outcome {
+    /// Whether the token reached an AMM at all.
+    #[must_use]
+    pub const fn graduated(&self) -> bool {
+        self.graduated_at.is_some()
+    }
+
+    /// How the token graduated, or `None` if it did not.
+    ///
+    /// Deliberately not defaulting to [`GraduationMode::Organic`] for a token
+    /// that never graduated: absent is not zero, and a non-event has no mode.
+    #[must_use]
+    pub const fn graduation_mode(&self) -> Option<GraduationMode> {
+        let Some(at) = self.graduated_at else {
+            return None;
+        };
+        Some(
+            if at.get().saturating_sub(self.launch_slot.get()) <= INSTANT_WITHIN_SLOTS {
+                GraduationMode::Instant
+            } else {
+                GraduationMode::Organic
+            },
+        )
+    }
+
+    /// Slots from launch to graduation, if it graduated.
+    #[must_use]
+    pub const fn slots_to_graduate(&self) -> Option<u64> {
+        let Some(at) = self.graduated_at else {
+            return None;
+        };
+        Some(at.get().saturating_sub(self.launch_slot.get()))
+    }
+
     /// Slots between launch and the last observed transfer.
     ///
     /// The bluntest useful label: a token that traded for four slots and one
@@ -86,7 +160,7 @@ mod tests {
             transfers,
             unique_senders: 3,
             unique_receivers: 2,
-            graduated: false,
+            graduated_at: None,
         }
     }
 
@@ -132,5 +206,69 @@ mod tests {
         // two want different labels.
         let brief = outcome(900, 1_000, Some(1_100));
         assert!(!brief.appears_stillborn());
+    }
+
+    /// The outcome of a token that graduated `after` slots past its launch.
+    fn graduated(after: u64) -> Outcome {
+        Outcome {
+            graduated_at: Some(Slot(1_000 + after)),
+            ..outcome(500, 1_000, Some(1_000 + after))
+        }
+    }
+
+    #[test]
+    fn a_token_that_never_graduated_has_no_mode_rather_than_a_default_one() {
+        // Absent is not zero. Defaulting a non-event to Organic would put every
+        // dead token into the population the signal is trying to select for.
+        let never = outcome(10, 1_000, Some(2_000));
+        assert!(!never.graduated());
+        assert_eq!(never.graduation_mode(), None);
+        assert_eq!(never.slots_to_graduate(), None);
+    }
+
+    #[test]
+    fn a_curve_bought_out_in_the_launch_block_is_instant() {
+        // 12 of 44 measured graduations were at exactly zero slots. Nobody
+        // discovers a token and buys out its whole curve inside one block.
+        let same_block = graduated(0);
+        assert!(same_block.graduated());
+        assert_eq!(same_block.slots_to_graduate(), Some(0));
+        assert_eq!(same_block.graduation_mode(), Some(GraduationMode::Instant));
+    }
+
+    #[test]
+    fn the_boundary_sits_inside_the_gap_the_measurements_left() {
+        // The measured distribution jumps from 0 straight to 25, so the exact
+        // threshold is unobservable anywhere in between -- which is the point of
+        // putting it there. These two assertions pin both sides of it.
+        assert_eq!(
+            graduated(INSTANT_WITHIN_SLOTS).graduation_mode(),
+            Some(GraduationMode::Instant)
+        );
+        assert_eq!(
+            graduated(INSTANT_WITHIN_SLOTS + 1).graduation_mode(),
+            Some(GraduationMode::Organic)
+        );
+    }
+
+    #[test]
+    fn the_real_median_graduation_is_organic() {
+        // The measured median was 828 slots, about five minutes -- a curve that
+        // filled from buyers arriving separately.
+        let median = graduated(828);
+        assert_eq!(median.graduation_mode(), Some(GraduationMode::Organic));
+        assert_eq!(median.slots_to_graduate(), Some(828));
+    }
+
+    #[test]
+    fn a_graduation_recorded_before_its_launch_is_zero_rather_than_wrapping() {
+        // Saturating, so a clock or ordering fault cannot produce a duration of
+        // eighteen quintillion slots and read as the most organic token on file.
+        let impossible = Outcome {
+            graduated_at: Some(Slot(500)),
+            ..outcome(10, 1_000, Some(1_000))
+        };
+        assert_eq!(impossible.slots_to_graduate(), Some(0));
+        assert_eq!(impossible.graduation_mode(), Some(GraduationMode::Instant));
     }
 }

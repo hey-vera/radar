@@ -134,7 +134,7 @@ pub fn decode_payload(header: &str) -> Result<Value, Rejected> {
         return Ok(direct);
     }
 
-    let bytes = radar_signer::b64::decode(header.trim())
+    let bytes = radar_types::b64::decode(header.trim())
         .ok_or_else(|| Rejected::Malformed("not base64".to_owned()))?;
     let text = String::from_utf8(bytes).map_err(|_| Rejected::Malformed("not UTF-8".to_owned()))?;
     let parsed: Value =
@@ -378,7 +378,7 @@ mod tests {
     #[test]
     fn a_base64_payload_decodes() {
         let payload = r#"{"scheme":"exact","payload":{"signature":"abc"}}"#;
-        let encoded = radar_signer::b64::encode(payload.as_bytes());
+        let encoded = radar_types::b64::encode(payload.as_bytes());
         assert_eq!(
             decode_payload(&encoded).expect("decodes")["scheme"],
             "exact"
@@ -402,12 +402,12 @@ mod tests {
         assert!(matches!(decode_payload(""), Err(Rejected::Malformed(_))));
         // Valid base64 of something that is not JSON.
         assert!(matches!(
-            decode_payload(&radar_signer::b64::encode(b"hello")),
+            decode_payload(&radar_types::b64::encode(b"hello")),
             Err(Rejected::Malformed(_))
         ));
         // Valid JSON that is not an object.
         assert!(matches!(
-            decode_payload(&radar_signer::b64::encode(b"[1,2,3]")),
+            decode_payload(&radar_types::b64::encode(b"[1,2,3]")),
             Err(Rejected::Malformed(_))
         ));
     }
@@ -420,7 +420,7 @@ mod tests {
         c.facilitator = "http://127.0.0.1:1".to_owned();
         let err = verify(
             &c,
-            &radar_signer::b64::encode(br#"{"scheme":"exact"}"#),
+            &radar_types::b64::encode(br#"{"scheme":"exact"}"#),
             "/x402/v1/instruments/x",
             "x",
             1_000,

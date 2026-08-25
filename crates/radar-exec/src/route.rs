@@ -303,7 +303,7 @@ pub fn impact_to_bps(pct: Option<&str>) -> u32 {
 /// Returns [`RouteError::Unverifiable`] if the bytes do not decode, or use
 /// address lookup tables.
 pub fn verify_shape(transaction_base64: &str) -> Result<(), RouteError> {
-    let bytes = radar_signer::b64::decode(transaction_base64)
+    let bytes = radar_types::b64::decode(transaction_base64)
         .ok_or_else(|| RouteError::Unverifiable("not base64".to_owned()))?;
     radar_signer::decode(&bytes).map_err(|e| RouteError::Unverifiable(e.to_string()))?;
     Ok(())
@@ -345,7 +345,7 @@ mod tests {
         bytes.extend_from_slice(&[1u8; 32]);
         bytes.extend_from_slice(&[0xAA; 32]);
         bytes.push(0);
-        assert_eq!(verify_shape(&radar_signer::b64::encode(&bytes)), Ok(()));
+        assert_eq!(verify_shape(&radar_types::b64::encode(&bytes)), Ok(()));
     }
 
     #[test]
@@ -359,7 +359,7 @@ mod tests {
         bytes.extend_from_slice(&[0xAA; 32]);
         bytes.push(0);
         bytes.push(1);
-        let err = verify_shape(&radar_signer::b64::encode(&bytes)).expect_err("must refuse");
+        let err = verify_shape(&radar_types::b64::encode(&bytes)).expect_err("must refuse");
         assert!(
             matches!(err, RouteError::Unverifiable(ref m) if m.contains("lookup")),
             "got {err}"

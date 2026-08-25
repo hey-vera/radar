@@ -23,7 +23,7 @@ use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 
 use radar_signer::protocol::{Request, Response, place_signature, slot_of};
-use radar_signer::{Allowlist, Key, b64, check};
+use radar_signer::{Allowlist, Key, check};
 use radar_types::Address;
 
 fn main() -> std::process::ExitCode {
@@ -124,7 +124,7 @@ fn handle(line: &str, config: &Config) -> Response {
     let Ok(request) = serde_json::from_str::<Request>(line) else {
         return Response::refused("unreadable request");
     };
-    let Some(bytes) = b64::decode(&request.transaction) else {
+    let Some(bytes) = radar_types::b64::decode(&request.transaction) else {
         return Response::refused("transaction is not base64");
     };
 
@@ -159,6 +159,6 @@ fn handle(line: &str, config: &Config) -> Response {
     Response::Signed {
         signature: signature.to_string(),
         wallet: config.key.public().to_string(),
-        transaction: b64::encode(&signed),
+        transaction: radar_types::b64::encode(&signed),
     }
 }

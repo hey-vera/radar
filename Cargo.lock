@@ -1449,7 +1449,6 @@ dependencies = [
  "http-body-util",
  "radar-asof",
  "radar-instruments",
- "radar-signer",
  "radar-store",
  "radar-types",
  "serde",

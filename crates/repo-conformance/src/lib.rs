@@ -154,6 +154,68 @@ pub fn resolve(document: &Path, link: &str) -> PathBuf {
         .join(link)
 }
 
+/// Every path git has under version control, relative to the repository root.
+///
+/// From `git ls-files` rather than from the filesystem, because the failure this
+/// supports is a file that exists on somebody's disk and in no commit.
+#[must_use]
+pub fn tracked_files() -> BTreeSet<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["ls-files"])
+        .output();
+    match out {
+        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().replace('\\', "/"))
+            .filter(|l| !l.is_empty())
+            .collect(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Paths named inside backticks in a document.
+///
+/// Deliberately conservative. A code span holds all sorts of things — type
+/// names, flags, function calls — and flagging those would make the check
+/// noisy enough to be turned off, which is worse than not having it. So a span
+/// counts as a path only if it looks like one and nothing else: it contains a
+/// `/` or a known file extension, has no whitespace, parentheses or leading
+/// dashes, and does not end in `()`.
+#[must_use]
+pub fn code_span_paths(text: &str) -> BTreeSet<String> {
+    const EXTENSIONS: &[&str] = &[".rs", ".toml", ".md", ".yml", ".yaml", ".service", ".timer"];
+    let mut out = BTreeSet::new();
+    let mut rest = text;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else { break };
+        let span = &after[..end];
+        rest = &after[end + 1..];
+
+        let looks_like_a_path = (span.contains('/')
+            || EXTENSIONS.iter().any(|e| span.ends_with(e)))
+            && !span.contains(char::is_whitespace)
+            && !span.contains('(')
+            && !span.starts_with('-')
+            && !span.contains('*')
+            // `other-repo:path/to/file` names a file somewhere else, and a
+            // leading `/` names one on a machine. Neither is a claim about this
+            // repository, and both are how such a claim should be written --
+            // which is the point, because LEARNINGS entry 1 is about a citation
+            // that gave a reader no way to tell.
+            && !span.contains(':')
+            && !span.starts_with('/');
+        // A bare `a/b` with no extension is as likely to be prose as a path.
+        let has_extension = EXTENSIONS.iter().any(|e| span.ends_with(e));
+        if looks_like_a_path && has_extension {
+            out.insert(span.to_owned());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,6 +365,110 @@ mod tests {
             missing.is_empty(),
             "the deploy guide names files that do not exist: {missing:?}"
         );
+    }
+
+    #[test]
+    fn nothing_that_listens_on_a_network_depends_on_the_signer_crate() {
+        // AGENTS.md rule 1 says the signer "has no network, no listener and no
+        // method that signs arbitrary bytes". That was true of the signer
+        // *binary* and not of the signer *crate*: `radar-serve` — the
+        // internet-facing HTTP server — listed `radar-signer` as a dependency,
+        // so `Key::load` and `Key::sign` were compiled into its address space.
+        //
+        // Nothing was called. That is exactly why it survived review, and why
+        // asserting it is worth more than fixing it: the only thing the web
+        // server ever wanted was a base64 codec, which now lives in
+        // `radar-types` where every crate can reach it without reaching past it.
+        //
+        // The rule is about which processes can hold a key, so it is checked
+        // against the crates that bind a socket rather than against everything.
+        const LISTENERS: &[&str] = &["radar-serve"];
+
+        for listener in LISTENERS {
+            let manifest = root().join("crates").join(listener).join("Cargo.toml");
+            let text = std::fs::read_to_string(&manifest)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", manifest.display()));
+            assert!(
+                !text.contains("radar-signer"),
+                "{listener} listens on a network and must not depend on radar-signer; \
+                 if it needs something from there, that something belongs somewhere else"
+            );
+        }
+    }
+
+    #[test]
+    fn every_file_path_named_in_the_documentation_exists_and_is_tracked() {
+        // LEARNINGS entry 1 has said "nothing catches a recurrence" since the
+        // day it was written. The failure it records is a sibling repository
+        // documenting a design as canonical while citing a source file that is
+        // in no commit — surviving only as stale build output.
+        //
+        // Relative *links* are already checked. This checks paths named in prose
+        // and in code spans, which is how that repository's claim was written and
+        // is the form a link checker cannot see.
+        let tracked = tracked_files();
+        assert!(
+            !tracked.is_empty(),
+            "no tracked files found; the check would pass vacuously"
+        );
+
+        // Matched by suffix, because a document names a path the way a reader
+        // would follow it -- `pipeline.rs` from prose about that file, or
+        // `radar-store/tests/watermark_holds.rs` from a paragraph already inside
+        // `crates/`. Requiring a repository-root path would flag correct prose,
+        // and a check that flags correct prose is a check somebody turns off.
+        let resolves = |named: &str| {
+            tracked
+                .iter()
+                .any(|t| t == named || t.ends_with(&format!("/{named}")))
+        };
+
+        let mut missing = Vec::new();
+        for doc in documents() {
+            let Ok(text) = std::fs::read_to_string(&doc) else {
+                continue;
+            };
+            for path in code_span_paths(&text) {
+                if !resolves(&path) {
+                    missing.push(format!("{} names {path}", doc.display()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "documentation names files that are not tracked in git:\n  {}",
+            missing.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn the_path_extractor_finds_paths_and_ignores_prose() {
+        // The check above is only worth having if this is right: too greedy and
+        // it fails on ordinary backticked words, too narrow and it passes
+        // vacuously — which is the failure mode it exists to prevent.
+        let found = code_span_paths(
+            "see `crates/radar-types/src/lib.rs` and `Cargo.toml`, but not `Slot` \
+             or `foo.bar()` or `--flag` or `a/b`",
+        );
+        assert!(found.contains("crates/radar-types/src/lib.rs"), "{found:?}");
+        assert!(found.contains("Cargo.toml"), "{found:?}");
+        assert!(
+            !found.contains("Slot"),
+            "a type name is not a path: {found:?}"
+        );
+        assert!(
+            !found.contains("foo.bar()"),
+            "a call is not a path: {found:?}"
+        );
+        assert!(!found.contains("--flag"), "a flag is not a path: {found:?}");
+        // A bare `a/b` with no extension is as likely to be prose as a path.
+        assert!(!found.contains("a/b"), "{found:?}");
+
+        // A path somewhere else is not a claim about this repository, and has to
+        // be written so that both a reader and this check can tell.
+        let external =
+            code_span_paths("`claw-net:internal/x.md` and `/etc/systemd/system/y.service`");
+        assert!(external.is_empty(), "{external:?}");
     }
 
     #[test]

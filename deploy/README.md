@@ -36,7 +36,7 @@ below is correct, and the live host has not caught up with it yet.
   *First install* has never been run on this host and still needs to be.
 
 - **Name collision, do not be fooled by it.** `/etc/systemd/system/` also holds
-  `radar-hosted.service`, which is inactive and is **not Radar** — it is an
+  `/etc/systemd/system/radar-hosted.service`, which is inactive and is **not Radar** — it is an
   unrelated Node service for `radar.claw-net.org` (`npx tsx hosted/server.ts`).
   Enabling or restarting it does nothing useful and will not start the API.
 

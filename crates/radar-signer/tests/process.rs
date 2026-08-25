@@ -112,7 +112,7 @@ fn transaction(accounts: &[[u8; 32]], instructions: &[(u8, Vec<u8>, Vec<u8>)]) -
         out.push(u8::try_from(data.len()).expect("small"));
         out.extend_from_slice(data);
     }
-    radar_signer::b64::encode(&out)
+    radar_types::b64::encode(&out)
 }
 
 /// The honest transaction: a swap on the allowed DEX, in the authorised mint.
@@ -172,8 +172,8 @@ fn the_process_signs_an_honest_transaction() {
     // leave the message untouched. A signer that re-serialised the message
     // would be signing bytes it verified and returning bytes it did not.
     let returned =
-        radar_signer::b64::decode(answer["transaction"].as_str().expect("string")).expect("base64");
-    let original = radar_signer::b64::decode(&honest()).expect("base64");
+        radar_types::b64::decode(answer["transaction"].as_str().expect("string")).expect("base64");
+    let original = radar_types::b64::decode(&honest()).expect("base64");
     assert_eq!(returned.len(), original.len());
     assert_eq!(
         &returned[65..],

@@ -25,10 +25,19 @@ disagree with each other about a constant.
 built", which was wrong in a way that mattered — it was built, and the source is
 gone. Correcting it required going back through the evidence.
 
-**What catches a recurrence here:** nothing yet. A conformance test asserting
-that every file path named in the docs exists and is tracked is the obvious
-answer, and is not written. Until it is, this entry is the only thing standing
-between Radar and the same failure.
+**What catches a recurrence here:** `repo-conformance`'s
+`every_file_path_named_in_the_documentation_exists_and_is_tracked`, written on
+2026-08-25 — the check this entry asked for on the day it was opened.
+
+It found its own founding case on its first run. `docs/research/0003` cited four
+files by path that are in the sibling repository or nowhere, written exactly the
+way the lost `src/core/credits.ts` was: in backticks, with no sign to a reader
+that they were somewhere else. They now carry a `claw-net:` prefix, and a path
+qualified with a repository or rooted at `/` is understood as a claim about
+another machine rather than about this tree.
+
+Paths resolve by suffix, because prose names a file the way a reader would follow
+it. A check that flagged correct prose would be a check somebody turned off.
 
 ---
 

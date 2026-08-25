@@ -111,6 +111,61 @@ them stillborn, and argued creator launch rate was "cheap to compute and already
 discriminating". This is the same fact measured against outcomes across 638
 creators rather than three.
 
+## Turning the gradient into a threshold
+
+The banded table shows launch volume is a negative signal but not where to draw a
+line. Read finely, over every creator rather than split in two:
+
+```
+  LAUNCHES     CREATORS   LAUNCHES   ORGANIC  RATE
+  5-9               243       1313        23  1.75% [1.17% - 2.61%]
+  10-19             165       1809        25  1.38% [0.94% - 2.03%]
+  20-49             155       2431        20  0.82% [0.53% - 1.27%]
+  50-99              44       1562        14  0.89% [0.53% - 1.50%]
+  100-249            27       1530        12  0.78% [0.45% - 1.37%]
+  250+                4       1085         6  (too few creators)
+```
+
+It **falls and then flattens**: roughly halving between 5–9 and 20–49, and flat
+from there. The extremes of this finer split do not separate at 95% — which is
+worth stating, because the earlier 0.33% figure was the *conjunction* of prolific
+**and** never-graduated, not launch volume alone. Launch volume alone is weaker
+than that number implied.
+
+Choosing a threshold by looking at a curve picks whichever boundary flatters the
+sample. Asking the same question of every candidate instead:
+
+```
+  CUT       PER DAY           BELOW (quieter)      AT OR ABOVE (busier)
+  10            5.8     1.75% [1.17% - 2.61%]     0.91% [0.73% - 1.14%]  separates
+  15            8.7     1.53% [1.12% - 2.10%]     0.85% [0.67% - 1.09%]  separates
+  20           11.6     1.53% [1.16% - 2.03%]     0.78% [0.60% - 1.03%]  separates
+  30           17.4     1.48% [1.16% - 1.89%]     0.68% [0.50% - 0.94%]  separates
+  50           29.0     1.22% [0.97% - 1.55%]     0.76% [0.54% - 1.08%]
+  100          58.1     1.15% [0.93% - 1.43%]     0.68% [0.44% - 1.09%]
+```
+
+**Four of six separate at 95%, spanning roughly 6 to 17 launches a day.** That
+range is the finding, not any single cut in it. `creator_edge` uses **10 a day**,
+which is inside the supported range and is deliberately *not* one of the tested
+points — every cut across the range separated, so the rule does not depend on
+picking the one that fitted best. The insensitivity is the argument for the
+number.
+
+The rate is computed over each creator's own observed span, and is `None` below
+six hours of activity: under that, one busy minute reads as a thousand launches a
+day and the number says more about when the creator was first seen than how they
+behave. Absent rather than zero, because zero would read as the quietest possible
+creator and pass a threshold it was never tested against.
+
+### What it does to the decision lane
+
+Against 1,372 recent candidates, the new refusal fires on **500** of them, and
+candidates reaching the paid tier fall from 16 to 8. A third of recent launches
+coming from creators above the threshold is not surprising: prolific creators are
+a small minority of *creators* and a large share of *launches*, so any per-launch
+filter meets them disproportionately.
+
 ## What this is not
 
 **One window, of a few days.** Two days of chain, one pivot. The next month

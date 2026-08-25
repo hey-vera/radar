@@ -59,6 +59,23 @@ pub struct LaunchFacts {
     pub observed_at: Slot,
 }
 
+/// Slots in a day, at the nominal 2.5 a second.
+///
+/// Nominal because the measured rate moves: 2.4059 slots a second on 2026-08-20
+/// and 2.7349 on 2026-08-23. A launch rate is compared against a threshold with
+/// wide separation either side, so a 14% wobble in the denominator does not
+/// change an answer — but it is why this is not given more precision than it has.
+const SLOTS_PER_DAY: u64 = 216_000;
+
+/// The shortest span a launch rate may be divided over.
+///
+/// Six hours. Below it the denominator is small enough that one busy minute
+/// reads as a thousand launches a day, and the rate says more about when the
+/// creator was first seen than about how they behave. Absent, not zero: a rate
+/// that cannot be measured is `None`, because zero would read as the quietest
+/// possible creator and pass a threshold it was never tested against.
+const MIN_RATE_SPAN_SLOTS: u64 = 54_000;
+
 /// Reads everything at or before `as_of`.
 ///
 /// # Errors
@@ -68,6 +85,7 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
     let mut launches = BTreeMap::new();
     let mut per_creator: BTreeMap<Address, CreatorRecord> = BTreeMap::new();
     let mut creator_observed: BTreeMap<Address, Slot> = BTreeMap::new();
+    let mut first_launch: BTreeMap<Address, Slot> = BTreeMap::new();
 
     for event in reader.read(Table::Launches, as_of)? {
         let Event::Launch(launch) = event else {
@@ -85,6 +103,11 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
             },
         );
         per_creator.entry(launch.creator).or_default().launches += 1;
+        // Earliest launch, for the rate denominator below.
+        first_launch
+            .entry(launch.creator)
+            .and_modify(|at: &mut Slot| *at = (*at).min(launch.envelope.slot))
+            .or_insert(launch.envelope.slot);
         // A launch is itself an observation of the creator: it is the moment
         // Radar last learned anything about them.
         let seen = creator_observed
@@ -123,6 +146,18 @@ pub fn universe(reader: &Reader, as_of: AsOf) -> Result<Universe, StoreError> {
             .entry(creator)
             .or_insert(outcome.measured_at);
         *seen = (*seen).max(outcome.measured_at);
+    }
+
+    // Launch rate, over each creator's own observed span. Done here rather than
+    // in the strategy because it needs the watermark and the launch slots, and a
+    // strategy that recomputed it from a different denominator would be applying
+    // a threshold that was never measured against that denominator.
+    for (creator, record) in &mut per_creator {
+        record.launches_per_day = first_launch
+            .get(creator)
+            .map(|first| as_of.slot().get().saturating_sub(first.get()))
+            .filter(|span| *span >= MIN_RATE_SPAN_SLOTS)
+            .map(|span| record.launches.saturating_mul(SLOTS_PER_DAY) / span);
     }
 
     Ok(Universe {

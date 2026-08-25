@@ -62,6 +62,20 @@ pub struct Thresholds {
     /// that is about Radar's measurement cadence rather than about the creator —
     /// which is what a single shared budget did to 88% of live candidates.
     pub max_creator_age: u64,
+    /// Launches per day above which a creator is refused.
+    ///
+    /// The one threshold here that was set from a measurement rather than from
+    /// first principles. `docs/research/0007` split 638 creators at candidate
+    /// cuts of 10, 15, 20, 30, 50 and 100 prior launches; the first four
+    /// separated the quieter and busier populations at 95% and the last two did
+    /// not. Over the 1.72 days measured those cuts are roughly 5.8, 8.7, 11.6
+    /// and 17.4 launches a day.
+    ///
+    /// Ten sits inside that range without being any of the tested points, which
+    /// is deliberate: every cut across the range separated, so the rule does not
+    /// depend on picking the one that flattered the sample. That insensitivity is
+    /// the argument for the number, not the fit.
+    pub max_launches_per_day: u64,
     /// Round-trip cost assumed when proposing, per ten thousand of notional.
     ///
     /// A placeholder until [`radar_exec`] can measure it — and deliberately
@@ -91,6 +105,8 @@ impl Thresholds {
         capacity_impact_bps: 100,
         // A fifth of what the book showed.
         capacity_share_bps: 2_000,
+        // Measured, not assumed. See the field's documentation.
+        max_launches_per_day: 10,
         min_notional: MicroUsd::DOLLAR,
         // ~40 minutes at 2.5 slots a second.
         max_token_age: 6_000,
@@ -158,6 +174,13 @@ impl Strategy for CreatorEdge {
             {
                 reasons.push(PassReason::CreatorMostlyStillborn);
             }
+        }
+
+        // Outside the sample-floor branch on purpose: a launch rate needs no
+        // measured outcomes, only launches, so it is knowable for creators whose
+        // record is otherwise too thin to say anything about.
+        if record.launches_too_fast(t.max_launches_per_day) {
+            reasons.push(PassReason::CreatorLaunchesTooFast);
         }
 
         let age_of = |observed| candidate.as_of.slot().saturating_since(observed).get();
@@ -274,6 +297,7 @@ mod tests {
                 stillborn: 10,
                 graduated: 3,
                 graduated_organic: 3,
+                launches_per_day: None,
             },
             sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
             token_observed_at: Slot(499_000),
@@ -325,6 +349,7 @@ mod tests {
             stillborn: 0,
             graduated: 3,
             graduated_organic: 3,
+            launches_per_day: None,
         };
         // A perfect record over three launches is three events, not a rate.
         let d = CreatorEdge::default().consider(&c);
@@ -340,6 +365,7 @@ mod tests {
             stillborn: 20,
             graduated: 0,
             graduated_organic: 0,
+            launches_per_day: None,
         };
         assert!(
             CreatorEdge::default()
@@ -360,9 +386,72 @@ mod tests {
             stillborn: 30,
             graduated: 1,
             graduated_organic: 1,
+            launches_per_day: None,
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::CreatorGraduatesTooRarely));
+    }
+
+    #[test]
+    fn a_creator_who_launches_faster_than_the_measured_threshold_is_refused() {
+        // Measured over 638 creators: tokens from creators who launch more
+        // graduate less often per launch, and every cut between roughly six and
+        // seventeen a day separated the populations at 95%.
+        let mut c = good();
+        c.creator_record.launches_per_day = Some(Thresholds::DEFAULT.max_launches_per_day + 1);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            reasons.contains(&PassReason::CreatorLaunchesTooFast),
+            "expected a launch-rate refusal, got {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_creator_exactly_at_the_threshold_is_not_refused_for_it() {
+        // The boundary belongs to the permitted side. Refusing at the threshold
+        // would make the documented number mean something other than it says.
+        let mut c = good();
+        c.creator_record.launches_per_day = Some(Thresholds::DEFAULT.max_launches_per_day);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(!reasons.contains(&PassReason::CreatorLaunchesTooFast));
+    }
+
+    #[test]
+    fn an_unmeasurable_launch_rate_is_not_grounds_for_refusal() {
+        // Absent is not zero, and it is also not guilt. A creator seen for too
+        // little chain to divide by has no rate, and refusing on one that could
+        // not be computed would be inventing evidence -- the sample floor already
+        // handles creators nobody knows anything about.
+        let mut c = good();
+        c.creator_record.launches_per_day = None;
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(!reasons.contains(&PassReason::CreatorLaunchesTooFast));
+    }
+
+    #[test]
+    fn the_launch_rate_is_judged_without_waiting_for_measured_outcomes() {
+        // It needs launches, not outcomes, so it is knowable for a creator whose
+        // record is otherwise too thin to say anything about. Putting it inside
+        // the sample-floor branch would have hidden the one signal that does not
+        // need the floor.
+        let mut c = good();
+        c.creator_record = CreatorRecord {
+            launches: 200,
+            measured: 0,
+            stillborn: 0,
+            graduated: 0,
+            graduated_organic: 0,
+            launches_per_day: Some(120),
+        };
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            reasons.contains(&PassReason::CreatorUnproven),
+            "still unproven"
+        );
+        assert!(
+            reasons.contains(&PassReason::CreatorLaunchesTooFast),
+            "and the rate is knowable anyway: {reasons:?}"
+        );
     }
 
     #[test]
@@ -379,6 +468,7 @@ mod tests {
             stillborn: 0,
             graduated: 40,
             graduated_organic: 0,
+            launches_per_day: None,
         };
         let record = c.creator_record;
         assert_eq!(record.graduation_bps(), Some(10_000), "flawless, on paper");
@@ -403,6 +493,7 @@ mod tests {
             stillborn: 0,
             graduated: 40,
             graduated_organic: 40,
+            launches_per_day: None,
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(
@@ -424,6 +515,7 @@ mod tests {
             stillborn: 495,
             graduated: 5,
             graduated_organic: 5,
+            launches_per_day: None,
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::CreatorMostlyStillborn));
@@ -558,6 +650,7 @@ mod tests {
             stillborn: 2,
             graduated: 1,
             graduated_organic: 1,
+            launches_per_day: None,
         };
         let strict = CreatorEdge {
             thresholds: Thresholds {

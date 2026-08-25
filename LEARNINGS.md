@@ -576,6 +576,22 @@ each and a note that a `ControlGroup` under `/user.slice/` is the specific
 failure being looked for. A reader can now tell "this is what it was" from "this
 is what it is" in one line.
 
+**It went wrong in the other direction the same day, which is the part that
+settles it.** The ruleset was created hours after this entry was written, and
+`.github/required-checks.txt` — rewritten above to say plainly that *nothing*
+was required — became false again immediately. A file that has been wrong in
+both directions within a day is not a file that needed a more careful answer. It
+needed to stop giving an answer:
+
+```
+gh api repos/hey-vera/radar/rules/branches/main --jq '[.[].type]'
+```
+
+The enforcement was also confirmed in the direction that fails, because a
+control verified only where it passes is not verified. A direct push to `main`
+is now refused with *"Changes must be made through a pull request"* and *"8 of 8
+required status checks are expected"*.
+
 **The general shape:** documentation asserts two kinds of thing, and only one of
 them is checkable from inside the repository. A claim about the code is
 checkable and should be checked. **A claim about a remote host is a

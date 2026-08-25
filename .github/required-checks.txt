@@ -1,33 +1,41 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# The checks that SHOULD be required on `main`, and how each one is run.
+# The checks required on `main`, and how each one is run.
 #
-# Left of `=` is the status-check context, exactly as a ruleset would name it.
+# Left of `=` is the status-check context, exactly as the ruleset names it.
 # Right of `=` is the recipe the job runs. The workflow contains no copy of the
 # command, so local and CI cannot diverge.
 #
+# Adding a check means adding it in three places: the ruleset, a workflow job,
+# and here.
+#
 # ---------------------------------------------------------------------------
-# NOTHING IS ACTUALLY REQUIRED. Checked 2026-08-25:
+# Confirm what is actually enforced, rather than trusting this comment:
 #
-#   gh api repos/hey-vera/radar/rules/branches/main        -> []
-#   gh api repos/hey-vera/radar/rulesets?includes_parents=true -> []
-#   gh api repos/hey-vera/radar/branches/main/protection   -> 404 Branch not protected
+#   gh api repos/hey-vera/radar/rules/branches/main --jq '[.[].type]'
 #
-# There is no ruleset and no branch protection. Every check below runs on every
-# pull request and reports; none of them can block a merge, and nothing prevents
-# a direct push to `main`. The PRs that have gone through review did so by
-# discipline, not by enforcement.
+# Expected, and true on 2026-08-25:
 #
-# An earlier version of this file opened "The required status checks on the
-# `main` ruleset" and singled out `mutants` as the one not yet in it. That read
-# as six enforced checks and one gap. It was seven gaps. Recorded as LEARNINGS
-# entry 13, which is about exactly this: a claim about a system outside the
-# repository cannot be checked from inside it, so it has to be written as the
-# query and its expected answer rather than as an assertion.
+#   ["deletion", "non_fast_forward", "pull_request", "required_status_checks"]
 #
-# Closing this needs a repository admin to create a ruleset on `main` requiring
-# the contexts below. Adding a check then means adding it in three places -- the
-# ruleset, a workflow job, and here.
+# An empty array means nothing is enforced and every line below is decorative.
+# That was the state until 2026-08-25, while an earlier version of this file
+# opened "The required status checks on the `main` ruleset" and named seven --
+# the file describing the enforcement was the only evidence the enforcement
+# existed. LEARNINGS entry 13.
+#
+# This file has now been wrong in both directions in one day, which is the
+# argument for writing the query instead of the answer rather than for writing
+# a more careful answer.
+#
+# Verified in the failing direction too, because a check confirmed only where it
+# passes is not confirmed: a direct push to `main` is refused with "Changes must
+# be made through a pull request" and "8 of 8 required status checks are
+# expected".
+#
+# There are no bypass actors, admins included. An override means editing the
+# ruleset, which is a deliberate act and leaves a trace -- the point, given how
+# this file read yesterday.
 # ---------------------------------------------------------------------------
 
 build           = just build

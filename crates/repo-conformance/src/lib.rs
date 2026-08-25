@@ -154,24 +154,77 @@ pub fn resolve(document: &Path, link: &str) -> PathBuf {
         .join(link)
 }
 
-/// Every path git has under version control, relative to the repository root.
+/// Every file this repository is made of, relative to its root, `/`-separated.
 ///
-/// From `git ls-files` rather than from the filesystem, because the failure this
-/// supports is a file that exists on somebody's disk and in no commit.
+/// Git first, because the failure this supports is a file that exists on
+/// somebody's disk and in no commit — and only git can tell those apart.
+///
+/// Falling back to walking the tree when git cannot answer is deliberate and is
+/// weaker on purpose. `cargo mutants` builds in a copy with no `.git`, and a
+/// check that skipped itself there would be vacuous exactly where it is least
+/// observed. Existence is a smaller claim than tracked-ness, and it is a claim.
 #[must_use]
-pub fn tracked_files() -> BTreeSet<String> {
-    let out = std::process::Command::new("git")
+pub fn known_files() -> BTreeSet<String> {
+    let from_git = std::process::Command::new("git")
         .arg("-C")
         .arg(root())
         .args(["ls-files"])
         .output();
-    match out {
-        Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .map(|l| l.trim().replace('\\', "/"))
-            .filter(|l| !l.is_empty())
-            .collect(),
-        _ => BTreeSet::new(),
+    if let Ok(out) = from_git
+        && out.status.success()
+    {
+        {
+            let files = parse_ls_files(&String::from_utf8_lossy(&out.stdout));
+            // A mutant deleting this `!` survives, and it is worth writing down
+            // rather than chasing: inverted, a successful `git ls-files` falls
+            // through to walking the tree, which produces an equally usable
+            // list. The two branches disagree about *provenance* — tracked
+            // versus merely present — and no test can see that difference from
+            // inside a checkout where everything present is also tracked.
+            if !files.is_empty() {
+                return files;
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(&root(), &root(), &mut out);
+    out
+}
+
+/// Parses `git ls-files` output into repository-relative paths.
+///
+/// Split out from the process call because the process call cannot be tested and
+/// this can. Blank lines are dropped and separators normalised to `/`, both of
+/// which matter: an empty entry would match every suffix query and quietly make
+/// the check that uses this pass for any path at all.
+#[must_use]
+pub fn parse_ls_files(output: &str) -> BTreeSet<String> {
+    output
+        .lines()
+        .map(|l| l.trim().replace('\\', "/"))
+        .filter(|l| !l.is_empty())
+        .collect()
+}
+
+/// Collects every file under `dir` as a path relative to `base`.
+fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut BTreeSet<String>) {
+    // `target` is build output and `.git` is not source. Descending into either
+    // would take minutes and find nothing a document would ever name.
+    const SKIP: &[&str] = &["target", ".git", "node_modules"];
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        if SKIP.iter().any(|s| *s == name) {
+            continue;
+        }
+        if path.is_dir() {
+            walk(&path, base, out);
+        } else if let Ok(rel) = path.strip_prefix(base) {
+            out.insert(rel.to_string_lossy().replace('\\', "/"));
+        }
     }
 }
 
@@ -406,10 +459,17 @@ mod tests {
         // Relative *links* are already checked. This checks paths named in prose
         // and in code spans, which is how that repository's claim was written and
         // is the form a link checker cannot see.
-        let tracked = tracked_files();
+        // Two levels, because this has to hold in two places. In a checkout,
+        // git decides: the failure being guarded against is a file that exists
+        // on somebody's disk and in no commit. Under `cargo mutants` the tree is
+        // copied without a `.git`, so git can decide nothing -- and the honest
+        // response is to fall back to existence on disk rather than to skip,
+        // which would make the whole check vacuous exactly where it is least
+        // observed.
+        let known = known_files();
         assert!(
-            !tracked.is_empty(),
-            "no tracked files found; the check would pass vacuously"
+            !known.is_empty(),
+            "no files found at all; the check would pass vacuously"
         );
 
         // Matched by suffix, because a document names a path the way a reader
@@ -418,7 +478,7 @@ mod tests {
         // `crates/`. Requiring a repository-root path would flag correct prose,
         // and a check that flags correct prose is a check somebody turns off.
         let resolves = |named: &str| {
-            tracked
+            known
                 .iter()
                 .any(|t| t == named || t.ends_with(&format!("/{named}")))
         };
@@ -439,6 +499,66 @@ mod tests {
             "documentation names files that are not tracked in git:\n  {}",
             missing.join("\n  ")
         );
+    }
+
+    #[test]
+    fn ls_files_output_becomes_paths_and_never_an_empty_one() {
+        // An empty entry is the dangerous one: `resolves` asks whether any known
+        // path ends with `/{named}`, and "" would not match that — but a bare ""
+        // in the set makes `is_empty()` false, so the fallback to walking the
+        // tree never happens and the whole check runs against a set of nothing.
+        let parsed = parse_ls_files("a/b.rs\n\n  c.toml  \n\n");
+        assert_eq!(parsed.len(), 2, "blank lines are not paths: {parsed:?}");
+        assert!(parsed.contains("a/b.rs"));
+        assert!(parsed.contains("c.toml"), "surrounding space is trimmed");
+        assert!(
+            !parsed.contains(""),
+            "an empty path matches nothing and hides that"
+        );
+
+        // Windows separators normalise, or every suffix match fails on Windows.
+        assert!(
+            parse_ls_files("crates\\radar-types\\src\\lib.rs")
+                .contains("crates/radar-types/src/lib.rs")
+        );
+
+        // Nothing in, nothing out — which is what makes the caller fall back.
+        assert!(parse_ls_files("").is_empty());
+        assert!(parse_ls_files("\n\n").is_empty());
+    }
+
+    #[test]
+    fn spans_are_paired_so_prose_between_them_is_not_read_as_one() {
+        // Advancing past the closing backtick is what keeps spans paired. Off by
+        // one and the *gaps* become spans, so `a.rs` followed by `b.rs` reads the
+        // prose between them as a third — and the check starts reporting paths
+        // nobody wrote.
+        let found = code_span_paths("`a.rs` then not/a/path.rs then `b.rs`");
+        assert_eq!(found.len(), 2, "exactly the two spans: {found:?}");
+        assert!(
+            found.contains("a.rs") && found.contains("b.rs"),
+            "{found:?}"
+        );
+        assert!(
+            !found.contains("not/a/path.rs"),
+            "unquoted prose is not a code span: {found:?}"
+        );
+    }
+
+    #[test]
+    fn a_code_span_excludes_its_own_backticks() {
+        // Off-by-one here is invisible in the happy path and fatal to the check:
+        // a span read as "`Cargo.toml" resolves against nothing, so every named
+        // path would be reported missing — or, read the other way, nothing is
+        // extracted at all and the check passes for everything.
+        let found = code_span_paths("see `Cargo.toml` here");
+        assert_eq!(found.len(), 1, "{found:?}");
+        let only = found.iter().next().expect("one");
+        assert_eq!(
+            only, "Cargo.toml",
+            "the delimiters are not part of the path"
+        );
+        assert!(!only.starts_with('`') && !only.ends_with('`'));
     }
 
     #[test]

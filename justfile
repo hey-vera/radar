@@ -27,7 +27,7 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "545"
+export MIN_TESTS := "548"
 
 _default:
     @just --list --unsorted
@@ -71,6 +71,65 @@ lint:
 
 fmt:
     {{ cargo }} fmt --check
+
+# Mutation testing over the changed lines.
+#
+# The answer to the thing MIN_TESTS cannot see. A floor catches tests being
+# *deleted*; it says nothing about an assertion *loosened in place* --
+#
+#     assert_eq!(v, Verdict::Blocked);   ->   assert!(matches!(v, _));
+#
+# -- which leaves the count identical and the coverage identical and the suite
+# green. A mutant is a small edit to the implementation; if the tests still pass
+# with it in place, they do not constrain that behaviour.
+#
+# This session found two such holes by hand: one test in `watermark_holds.rs` was
+# decorative, and nothing at all constrained the no-route ceiling in the capacity
+# search. Both took ninety seconds to find once somebody thought to look, and
+# neither would ever have been found by counting.
+#
+# `--in-diff` scopes it to what the branch changed, so cost tracks the size of
+# the change rather than the size of the repository.
+#
+# A timeout is `inconclusive`, never a pass: mutation testing runs the suite once
+# per mutant, and an infinite loop introduced by a mutant looks exactly like a
+# slow one. Reporting that as "caught" would be the check lying in the direction
+# that feels good.
+mutants base="origin/main":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v cargo-mutants >/dev/null 2>&1; then
+        echo "cargo-mutants is not installed:" >&2
+        echo "  cargo install --locked cargo-mutants" >&2
+        exit 127
+    fi
+    # No fetching. A recipe that changes the repository it is run in is a recipe
+    # that can damage it: an earlier draft used `--depth=1` and left the working
+    # clone shallow, which silently broke `merge-base` for every command after
+    # it. CI checks out with `fetch-depth: 0`, and a local run uses the history
+    # that is already there.
+    if ! git rev-parse --verify --quiet {{ base }} >/dev/null; then
+        echo "{{ base }} is not in this repository." >&2
+        echo "Fetch it yourself, then re-run -- this recipe will not touch your git state." >&2
+        exit 1
+    fi
+    # A real file rather than `<(...)`: process substitution hands the tool a
+    # /dev/fd path, which it cannot open on every platform this recipe has to run
+    # on. Verified by it failing that way first.
+    diff_file=$(mktemp)
+    trap 'rm -f "$diff_file"' EXIT
+    # Merge-base on the left so the scope is what this branch changed rather than
+    # everything that has landed on the base since. Working tree on the right --
+    # not HEAD -- because `--in-diff` matches the diff against the *source it is
+    # mutating*, and a diff of committed state against a tree with uncommitted
+    # edits is rejected as stale. In CI the two are the same thing.
+    merge_base=$(git merge-base {{ base }} HEAD)
+    git diff "$merge_base" > "$diff_file"
+    if [ ! -s "$diff_file" ]; then
+        echo "no changes against {{ base }}; nothing to mutate."
+        exit 0
+    fi
+    {{ cargo }} mutants --in-diff "$diff_file"         --timeout 300 --minimum-test-timeout 60 -- --offline
 
 # Advisories, licences, and source provenance.
 cargo-deny:

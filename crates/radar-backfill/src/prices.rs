@@ -44,24 +44,19 @@ use serde::Deserialize;
 
 /// Mints per price query.
 ///
-/// Smaller than [`crate::outcomes::MINTS_PER_BATCH`] because this query touches
-/// `solana.transactions`, which is 163 TiB, where the outcomes aggregate only
-/// reads `token_transfers`.
+/// Matched to [`crate::outcomes::MINTS_PER_BATCH`] so one chunk serves both
+/// queries, because **the cost of this query barely depends on how many mints it
+/// asks about**. That is the opposite of what it looks like, and measuring was
+/// the only way to find it. Over a fixed 24-hour window on the live endpoint:
 ///
-/// **The cost driver is the number of matching transactions, not the length of
-/// the window** — which is the opposite of what it looks like, and worth stating
-/// because the first version of this query had it backwards. Measured on the
-/// live endpoint with the signature pushdown below in place:
-///
-/// | window | read | elapsed |
+/// | mints | read | elapsed |
 /// |---|---|---|
-/// | 6 hours | 12.8 GB | 4.7 s |
-/// | 24 hours | 28.7 GB | 8.7 s |
+/// | 25 | 193.9 GB | 22.9 s |
+/// | 200 | 211.8 GB | 51.3 s |
 ///
-/// Without the pushdown a *two*-hour window read 27.5 GB and a six-hour one
-/// exceeded the server's 18.6 GiB memory limit outright. So the window is
-/// allowed to be a full day and the batch is what stays bounded.
-pub const MINTS_PER_BATCH: usize = 200;
+/// Nearly all of that is the window scan itself. The lever is [`WINDOW_HOURS`],
+/// not the batch.
+pub const MINTS_PER_BATCH: usize = 400;
 
 /// One aggregate price row, as the endpoint returns it.
 ///
@@ -226,10 +221,32 @@ fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
 
 /// How far back a single price query reaches.
 ///
-/// A day, because that is what the endpoint will do in one pass: 28.7 GB and
-/// under nine seconds with the signature pushdown in place. Longer would be more
-/// complete and would stop running.
-pub const WINDOW_HOURS: i64 = 24;
+/// Six hours, and the number is a measurement rather than a preference. Against
+/// 200 mints on the live endpoint:
+///
+/// | window | read | elapsed |
+/// |---|---|---|
+/// | 1 hour | 18.7 GB | 1.6 s |
+/// | 4 hours | 56.7 GB | 3.3 s |
+/// | 24 hours | 211.8 GB | 51.3 s |
+///
+/// Twenty-four hours is not affordable: 51 s against a 60 s server timeout, and
+/// a 50-mint run at that width timed out outright while a 200-mint one did not —
+/// the endpoint is shared and the variance at that size is larger than the
+/// margin. Six hours is a twentieth of the cost with room to spare.
+///
+/// # What this does and does not cover
+///
+/// Tokens are measured at [`crate::checkpoints::CHECKPOINTS`] — 1 h, 6 h and
+/// 24 h after launch. A six-hour window covers a token's **whole life at the
+/// first two**, which are the checkpoints a trade would live inside. At the
+/// 24-hour checkpoint it covers hours 18–24, and [`Prices::fold`] carries hours
+/// 0–6 forward from the earlier measurement, leaving **hours 6–18 unpriced**.
+///
+/// So `peak_price` and `trough_price` are extremes over what was *measured*, not
+/// over the token's whole life, and `fills` is what says how much that was. That
+/// distinction is why the fill count is stored rather than derived.
+pub const WINDOW_HOURS: i64 = 6;
 
 /// Where a price window starts: [`WINDOW_HOURS`] before `to`, but never earlier
 /// than `since`.
@@ -309,20 +326,36 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
-/// Attaches measured prices to outcomes, by mint.
+/// Attaches measured prices to outcomes, folding them onto what was already
+/// known about each mint.
 ///
-/// An outcome whose mint is not in `priced` keeps its prices absent. That is the
-/// common case and the correct one: most tokens in a batch never traded, and a
-/// token that never traded has no price rather than a price of nothing.
+/// `prior` is the price path from a mint's most recent earlier measurement.
+/// Folding rather than overwriting is what lets a six-hour window describe a
+/// token older than six hours: each run contributes the slice it could see, and
+/// the extremes accumulate. Overwriting would make every measurement describe
+/// only the last window, so a token's peak would fall out of the record as soon
+/// as it aged past one.
+///
+/// An outcome whose mint appears in neither map keeps its prices absent. That is
+/// the common case and the correct one: most tokens in a batch never traded, and
+/// a token that never traded has no price rather than a price of nothing.
 #[must_use]
 pub fn apply(
     outcomes: Vec<radar_store::Outcome>,
     priced: &BTreeMap<String, Prices>,
+    prior: &BTreeMap<String, Prices>,
 ) -> Vec<radar_store::Outcome> {
     outcomes
         .into_iter()
         .map(|mut o| {
-            if let Some(p) = priced.get(&o.mint.to_string()) {
+            let key = o.mint.to_string();
+            let folded = match (prior.get(&key), priced.get(&key)) {
+                (Some(before), Some(now)) => Some(before.fold(*now)),
+                (Some(before), None) => Some(*before),
+                (None, Some(now)) => Some(*now),
+                (None, None) => None,
+            };
+            if let Some(p) = folded {
                 o.first_price = p.first;
                 o.last_price = p.last;
                 o.peak_price = p.peak;
@@ -335,9 +368,59 @@ pub fn apply(
         .collect()
 }
 
+/// The price path each mint was last measured with.
+///
+/// Built from outcomes already in the store, keeping the most recent measurement
+/// per mint — which is what [`apply`] folds the new window onto.
+#[must_use]
+pub fn prior_prices(already: &[radar_store::Outcome]) -> BTreeMap<String, Prices> {
+    let mut latest: BTreeMap<String, (radar_types::Slot, Prices)> = BTreeMap::new();
+    for o in already {
+        if o.fills == 0 && o.first_price.is_none() {
+            continue;
+        }
+        let entry = latest
+            .entry(o.mint.to_string())
+            .or_insert((o.measured_at, Prices::default()));
+        if o.measured_at >= entry.0 {
+            *entry = (
+                o.measured_at,
+                Prices {
+                    fills: o.fills,
+                    vwap: o.vwap,
+                    first: o.first_price,
+                    last: o.last_price,
+                    peak: o.peak_price,
+                    trough: o.trough_price,
+                },
+            );
+        }
+    }
+    latest.into_iter().map(|(m, (_, p))| (m, p)).collect()
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn outcome(mint: u8) -> radar_store::Outcome {
+        radar_store::Outcome {
+            mint: radar_types::Address::new([mint; 32]),
+            measured_at: radar_types::Slot(500_000),
+            launch_slot: radar_types::Slot(1_000),
+            first_transfer_slot: None,
+            last_transfer_slot: None,
+            transfers: 0,
+            unique_senders: 0,
+            unique_receivers: 0,
+            graduated_at: None,
+            first_price: None,
+            last_price: None,
+            peak_price: None,
+            trough_price: None,
+            vwap: None,
+            fills: 0,
+        }
+    }
 
     fn row(mint: &str, fills: &str, first: &str, last: &str, peak: &str, trough: &str) -> PriceRow {
         PriceRow {
@@ -409,18 +492,26 @@ mod tests {
     }
 
     #[test]
-    fn a_window_reaches_back_a_day_but_no_further_than_the_earliest_launch() {
-        // Reaching past the earliest launch would price chain that no token in
-        // the batch existed for -- paid for, and about nothing.
+    fn a_window_reaches_back_six_hours_but_no_further_than_the_earliest_launch() {
+        // Six hours because that is what the endpoint will do: 3.3 s against
+        // 51.3 s for twenty-four, on a sixty-second timeout. Reaching past the
+        // earliest launch would price chain that no token in the batch existed
+        // for -- paid for, and about nothing.
+        assert_eq!(WINDOW_HOURS, 6, "the window this test is written against");
         assert_eq!(
             window_start("2026-08-25 16:00:00", "2020-01-01 00:00:00"),
-            "2026-08-24 16:00:00",
-            "a full day back when the launches are older than that"
+            "2026-08-25 10:00:00",
+            "six hours back when the launches are older than that"
+        );
+        assert_eq!(
+            window_start("2026-08-25 16:00:00", "2026-08-25 14:00:00"),
+            "2026-08-25 14:00:00",
+            "clamped to the earliest launch when that is more recent than six hours back"
         );
         assert_eq!(
             window_start("2026-08-25 16:00:00", "2026-08-25 09:00:00"),
-            "2026-08-25 09:00:00",
-            "clamped to the earliest launch when that is more recent"
+            "2026-08-25 10:00:00",
+            "and not widened to reach a launch that is older than the window"
         );
     }
 
@@ -476,27 +567,10 @@ mod tests {
         // never traded has no price rather than a price of nothing. Defaulting
         // these to zero would put every dead token at the bottom of every
         // drawdown statistic in the store.
-        let outcome = |mint: u8| radar_store::Outcome {
-            mint: radar_types::Address::new([mint; 32]),
-            measured_at: radar_types::Slot(500_000),
-            launch_slot: radar_types::Slot(1_000),
-            first_transfer_slot: None,
-            last_transfer_slot: None,
-            transfers: 0,
-            unique_senders: 0,
-            unique_receivers: 0,
-            graduated_at: None,
-            first_price: None,
-            last_price: None,
-            peak_price: None,
-            trough_price: None,
-            vwap: None,
-            fills: 0,
-        };
         let traded = radar_types::Address::new([1u8; 32]).to_string();
         let priced = to_prices(&[row(&traded, "45", "100", "200", "300", "50")]);
 
-        let out = apply(vec![outcome(1), outcome(2)], &priced);
+        let out = apply(vec![outcome(1), outcome(2)], &priced, &BTreeMap::new());
         assert_eq!(
             out[0].first_price,
             Some(100),
@@ -583,5 +657,78 @@ mod tests {
         assert_eq!(folded.last, Some(9));
         assert_eq!(folded.peak, Some(11));
         assert_eq!(folded.trough, Some(5));
+    }
+
+    #[test]
+    fn a_new_window_folds_onto_what_was_already_known() {
+        // The reason a six-hour window can describe a token older than six
+        // hours. Overwriting would make each measurement describe only the last
+        // window, so a token's peak would drop out of the record the moment it
+        // aged past one — and the peak is the whole point of recording MFE.
+        let key = radar_types::Address::new([1u8; 32]).to_string();
+        let prior = to_prices(&[row(&key, "10", "100", "200", "900", "50")]);
+        let now = to_prices(&[row(&key, "5", "400", "500", "300", "20")]);
+
+        let out = apply(vec![outcome(1)], &now, &prior);
+        assert_eq!(out[0].first_price, Some(100), "the earliest price survives");
+        assert_eq!(
+            out[0].last_price,
+            Some(500),
+            "the latest is the new window's"
+        );
+        assert_eq!(out[0].peak_price, Some(900), "peak from the earlier window");
+        assert_eq!(out[0].trough_price, Some(20), "trough from the later one");
+        assert_eq!(out[0].fills, 15, "fills accumulate across windows");
+    }
+
+    #[test]
+    fn a_mint_that_did_not_trade_this_window_keeps_its_history() {
+        // A quiet six hours must not erase a measured path. Dropping to absent
+        // here would make an MFE disappear the moment trading stopped, which is
+        // exactly when the number matters most.
+        let key = radar_types::Address::new([1u8; 32]).to_string();
+        let prior = to_prices(&[row(&key, "10", "100", "200", "900", "50")]);
+
+        let out = apply(vec![outcome(1)], &BTreeMap::new(), &prior);
+        assert_eq!(out[0].first_price, Some(100));
+        assert_eq!(out[0].peak_price, Some(900));
+        assert_eq!(out[0].fills, 10);
+    }
+
+    #[test]
+    fn prior_prices_keeps_the_most_recent_measurement_per_mint() {
+        // Outcomes are append-only, so a mint has one row per checkpoint. The
+        // path to fold onto is the newest of them; folding onto an older one
+        // would re-apply a window that has already been counted.
+        let priced_outcome = |measured: u64, first: u64, peak: u64, fills: u64| {
+            let mut o = outcome(1);
+            o.measured_at = radar_types::Slot(measured);
+            o.first_price = Some(first);
+            o.peak_price = Some(peak);
+            o.fills = fills;
+            o
+        };
+        let already = vec![
+            priced_outcome(9_000, 100, 500, 4),
+            priced_outcome(54_000, 100, 900, 11),
+        ];
+
+        let prior = prior_prices(&already);
+        let p = prior
+            .get(&radar_types::Address::new([1u8; 32]).to_string())
+            .expect("the mint is known");
+        assert_eq!(p.peak, Some(900), "the newer measurement wins");
+        assert_eq!(p.fills, 11);
+    }
+
+    #[test]
+    fn an_unpriced_history_contributes_nothing_to_fold_onto() {
+        // Every outcome written before prices existed has no path. Carrying one
+        // in as a price would invent a first price of nothing for every token
+        // already in the store.
+        assert!(
+            prior_prices(&[outcome(1)]).is_empty(),
+            "nothing measured means nothing to fold"
+        );
     }
 }

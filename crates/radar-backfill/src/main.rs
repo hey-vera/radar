@@ -622,6 +622,9 @@ fn measure(args: &Args) -> Result<(), String> {
         .ok_or("could not resolve a timestamp for the earliest launch slot")?;
 
     let (price_from, price_to) = price_window(&client, measured_at, &since);
+    // What each mint was last priced at, so a six-hour window can describe a
+    // token older than six hours instead of replacing what is known about it.
+    let prior = prices::prior_prices(&already);
 
     let total_known = launches.len();
     let due = due_for_measurement(&launches, &already, measured_at);
@@ -654,7 +657,7 @@ fn measure(args: &Args) -> Result<(), String> {
         priced_batches += u64::from(!priced.is_empty());
 
         let measured = outcomes::outcomes_from_rows(&rows, batch, measured_at, &graduated);
-        let measured = prices::apply(measured, &priced);
+        let measured = prices::apply(measured, &priced, &prior);
         for outcome in measured {
             if outcome.appears_stillborn() {
                 stillborn += 1;

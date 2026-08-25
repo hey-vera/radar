@@ -127,6 +127,19 @@ fn candidate() -> Candidate {
 }
 
 /// A policy that would actually let something through.
+///
+/// The cost ceiling is 10%, and it used to be 5%. That is not a loosened test —
+/// it is what an honest cost estimate costs. `assumed_round_trip_bps` was 200
+/// until 26,691 measured fills put a round trip at ~850, and **at real pump.fun
+/// execution costs a 5% ceiling refuses every trade there is**. Leaving it at 5
+/// and lowering the cost estimate to match would have been the exact move
+/// `ADR 0006`-style gate-gaming warns about: making the number that gates capital
+/// agree with the test rather than with the market.
+///
+/// So this records a real constraint rather than hiding one. Any live policy has
+/// to either accept ~8.5% round trips or find a cheaper way to trade, and a
+/// strategy needs more than 8.5% of expected edge before it is worth doing at
+/// all.
 fn capped() -> Policy {
     Policy {
         autonomy: Autonomy::Capped,
@@ -134,7 +147,7 @@ fn capped() -> Policy {
         max_deployed: MicroUsd::from_dollars(1_000.0),
         max_per_creator: MicroUsd::from_dollars(250.0),
         max_daily_loss: MicroUsd::from_dollars(100.0),
-        max_round_trip_cost_percent: 5,
+        max_round_trip_cost_percent: 10,
         max_canary: MicroUsd::from_dollars(1.0),
         max_input_staleness: SlotDelta(6_000),
         max_consecutive_failures: 3,

@@ -78,9 +78,41 @@ pub struct Thresholds {
     pub max_launches_per_day: u64,
     /// Round-trip cost assumed when proposing, per ten thousand of notional.
     ///
-    /// A placeholder until [`radar_exec`] can measure it — and deliberately
-    /// pessimistic, because the kernel refuses on cost and an optimistic
-    /// estimate here would launder a bad trade past it.
+    /// **This was 200 bps, described as "deliberately pessimistic". It was
+    /// optimistic by roughly a factor of four, and the sentence claiming
+    /// otherwise was the only thing standing between that and the kernel.**
+    ///
+    /// Measured on 2026-08-25 over 26,691 fills touching 200 pump.fun tokens
+    /// launched in one hour, as the gap between the largest outflow and the
+    /// largest inflow of each transaction — the protocol fee, the priority fee,
+    /// account rent and slippage together, which is what a trader actually
+    /// gives up:
+    ///
+    /// | | per leg, bps |
+    /// |---|---|
+    /// | median | 423 |
+    /// | mean | 845 |
+    /// | 90th percentile | 2,280 |
+    ///
+    /// Broken down by how many accounts the transaction moved, the two most
+    /// common shapes — 14,312 of the fills — sit near 950–990 bps per leg, while
+    /// larger shapes sit near 260–300. The spread is wide and the method is
+    /// approximate: it attributes the largest inflow/outflow pair to the trade,
+    /// so it also captures rent and any second hop.
+    ///
+    /// So this is 850 — twice the overall median of 423, rounded up rather than
+    /// down, which is above every measured subgroup's 25th percentile and below
+    /// the mean. It is not precise and is not claimed to be. It is four times
+    /// better than a number that was wrong in the direction that costs money,
+    /// and it is now wrong in the direction that refuses trades.
+    ///
+    /// The first draft of this change used 800, because it is a rounder number.
+    /// `the_assumed_cost_is_not_below_what_a_round_trip_was_measured_to_cost`
+    /// rejected it, which is what that test is for.
+    ///
+    /// Refining it is [`radar_exec`]'s job once the execution lane records what
+    /// a fill actually cost, rather than what a cohort of other people's fills
+    /// cost.
     ///
     /// [`radar_exec`]: https://github.com/hey-vera/radar
     pub assumed_round_trip_bps: u64,
@@ -114,8 +146,10 @@ impl Thresholds {
         // checkpoint gap, so a creator's record is never stale merely because
         // the next scheduled measurement has not come round yet.
         max_creator_age: 216_000,
-        // 2%. Fees, tip, spread and slippage on both legs.
-        assumed_round_trip_bps: 200,
+        // 8.5%. Measured, not assumed -- see the field's documentation. Two legs
+        // at the median of 26,691 observed fills, rounded *up*: a cost estimate
+        // rounded down is the direction that launders a trade past the kernel.
+        assumed_round_trip_bps: 850,
     };
 }
 
@@ -258,6 +292,25 @@ fn size(candidate: &Candidate, t: &Thresholds) -> Option<MicroUsd> {
         capacity.get().saturating_mul(t.capacity_share_bps) / 10_000,
     ))
 }
+
+/// Median round-trip execution cost measured on 2026-08-25, in basis points.
+///
+/// 423 bps per leg over 26,691 fills touching 200 pump.fun tokens launched in one
+/// hour, doubled. Kept as a named constant so the floor below reads as a
+/// measurement rather than as a magic number.
+#[cfg(test)]
+const MEASURED_MEDIAN_ROUND_TRIP_BPS: u64 = 846;
+
+/// The assumption may not sit below what a round trip was measured to cost.
+///
+/// Compile-time, because the whole risk is someone lowering it under pressure to
+/// make something propose — and a check that only runs when the tests are run is
+/// a check that can be skipped by not running them.
+#[cfg(test)]
+const _: () = assert!(
+    Thresholds::DEFAULT.assumed_round_trip_bps >= MEASURED_MEDIAN_ROUND_TRIP_BPS,
+    "assumed_round_trip_bps is below the measured median cost of a round trip"
+);
 
 #[cfg(test)]
 mod tests {
@@ -723,13 +776,36 @@ mod tests {
 
     #[test]
     fn the_assumed_cost_is_pessimistic_enough_to_reach_the_kernel() {
-        // The kernel refuses on round-trip cost as a share of notional. An
-        // optimistic estimate here would launder a bad trade past that check,
-        // so the estimate must be present and non-trivial.
+        // The kernel refuses on round-trip cost as a share of notional, so an
+        // optimistic estimate here launders a bad trade past that check. The
+        // previous value was 200 bps and its documentation called that
+        // pessimistic; 26,691 measured fills put the median at 423 bps *per
+        // leg*, so it was optimistic by about four times and the claim was the
+        // only guard against it.
         let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
             panic!("expected a proposal");
         };
         assert!(p.estimated_round_trip_cost > MicroUsd::ZERO);
-        assert_eq!(p.estimated_round_trip_cost, MicroUsd::from_dollars(1.92));
+        assert_eq!(p.estimated_round_trip_cost, MicroUsd::from_dollars(8.16));
+    }
+
+    #[test]
+    fn the_assumed_cost_is_not_below_what_a_round_trip_was_measured_to_cost() {
+        // The property, rather than the number. A future edit that lowers this
+        // to make something propose is making a decision about money, and this
+        // is where it has to argue with a measurement instead of with a comment.
+        //
+        // Checked on the proposal the strategy actually emits, so it holds for
+        // what reaches the kernel rather than only for the constant. The floor
+        // itself is asserted at compile time beside the threshold.
+        let Decision::Propose(p) = CreatorEdge::default().consider(&good()) else {
+            panic!("expected a proposal");
+        };
+        let notional = p.notional.get();
+        let implied_bps = p.estimated_round_trip_cost.get() * 10_000 / notional;
+        assert!(
+            implied_bps >= MEASURED_MEDIAN_ROUND_TRIP_BPS,
+            "the proposal implies {implied_bps} bps against a measured {MEASURED_MEDIAN_ROUND_TRIP_BPS}"
+        );
     }
 }

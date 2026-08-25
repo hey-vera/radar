@@ -1327,6 +1327,7 @@ dependencies = [
  "bs58",
  "radar-asof",
  "radar-decode",
+ "radar-graph",
  "radar-store",
  "radar-types",
  "serde",

@@ -13,6 +13,7 @@ authors.workspace = true
 bs58.workspace = true
 radar-asof.workspace = true
 radar-decode.workspace = true
+radar-graph.workspace = true
 radar-store.workspace = true
 radar-types.workspace = true
 serde.workspace = true

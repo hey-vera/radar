@@ -143,6 +143,37 @@ const CENTRE_LIFT_X100: u64 = 1_170;
 /// Instant-graduation lift across the band, in hundredths.
 const BAND_LIFT_X100: u64 = 670;
 
+/// Somewhere a launch block's shape can be read from.
+///
+/// A trait rather than a concrete client for the same reason [`Quoter`] is one
+/// in `radar-sim`: this crate is pure policy, and a policy crate that knows how
+/// to open a socket is a policy crate that cannot be tested without one.
+///
+/// Implementations must answer **only** about the given slot. The whole signal
+/// is that a bundle is visible in the launch block specifically, and a source
+/// that widened the window to be helpful would dissolve it.
+///
+/// [`Quoter`]: https://github.com/hey-vera/radar
+pub trait LaunchBlockSource {
+    /// Why the shape could not be read.
+    type Error;
+
+    /// Counts the token's recipients inside one slot.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the source cannot answer. A source that cannot
+    /// answer must say so rather than returning an empty shape — zero recipients
+    /// is a real observation meaning nobody received the token, and it scores as
+    /// `Unremarkable`, so a failure reported as zero would quietly clear a
+    /// bundle.
+    fn shape_at(
+        &self,
+        mint: &radar_types::Address,
+        slot: radar_types::Slot,
+    ) -> Result<LaunchBlockShape, Self::Error>;
+}
+
 /// Scores a launch block.
 ///
 /// Pure and total: every shape gets a verdict, including shapes the measurement

@@ -504,3 +504,88 @@ Which means the guard cannot be a test. It has to be the habit of computing a
 figure whose plausible range is known in advance, and checking against it — the
 same move that caught the lamport rescaling in the same module a day earlier, by
 comparing a derived price against an independent quote.
+
+---
+
+## 13. Documentation that asserted a state instead of a way to check it
+
+**Found:** 2026-08-25, during an adversarial review, by asking the box what it
+was running rather than reading the file that says.
+
+`deploy/README.md` carried a section headed *"What is actually running right now
+(2026-08-25)"*. It said `radar-serve` was **running, but not as a service** — a
+hand-started process reparented to init in an SSH login-session scope — and that
+*First install* step 2 "has never been run on this host and still needs to be".
+Further down, above the restart step, the deploy loop said **"This fails today
+with `Unit radar-serve.service not found`"**.
+
+Every word was true when written, earlier the same day. It was written *because*
+the rest of the file described a deployment that did not match the box, and
+correcting it was right. Then the unit was installed and the correction outlived
+the thing it corrected:
+
+```
+ControlGroup=/system.slice/radar-serve.service
+Restart=always   MemoryMax=805306368   ProtectSystem=strict   enabled
+```
+
+**Cost:** none yet, and the direction is the safe one — it reports a *missing*
+safeguard that is present, rather than a present one that is missing. The
+plausible damage was an operator re-running an install step that had already
+been run (harmless), or reading "this fails today" directly above the deploy
+procedure and concluding the deploy path was broken when it works.
+
+**What made it invisible:** `repo-conformance` enforces that every file path
+named in the documentation exists and is tracked — the check LEARNINGS 1 asked
+for, which found its own founding case. It cannot help here, and no amount of
+extending it would. **A claim about another machine has no path to resolve.**
+
+**The same review found a second instance, which is why this is an entry rather
+than a fix.** `.github/required-checks.txt` opened *"The required status checks
+on the `main` ruleset"* and listed seven, singling out `mutants` as the one "NOT
+YET IN THE RULESET". That reads as six enforced checks and one gap. It was seven
+gaps:
+
+```
+gh api repos/hey-vera/radar/rules/branches/main             -> []
+gh api repos/hey-vera/radar/rulesets?includes_parents=true  -> []
+gh api repos/hey-vera/radar/branches/main/protection        -> 404 Branch not protected
+```
+
+There is no ruleset and never was. Every check runs on every pull request and
+reports; **none of them can block a merge, and nothing prevents a direct push to
+`main`.** The file describing the enforcement was the only evidence the
+enforcement existed, and it was written by the same hand that would have created
+it. That is the shape to watch for: a document that asserts a control, standing
+in for the control.
+
+**What catches a recurrence:** not a check — a change of shape, and it is worth
+being explicit that no mechanical guard was added.
+
+The obvious one would assert that host claims carry a recent date. It would fail
+CI with no code change, on a clock, which makes it a check somebody turns off —
+the same reasoning entry 1 gives for why path resolution matches by suffix ("a
+check that flagged correct prose would be a check somebody turned off"). A
+decorative check here would be worse than none, because it would look like this
+entry had been closed.
+
+Instead the section is now *Verifying the deployment*, and it gives the
+**command rather than the answer**: `systemctl list-unit-files "radar*"`,
+`systemctl show radar-serve -p ControlGroup …`, with the expected output beside
+each and a note that a `ControlGroup` under `/user.slice/` is the specific
+failure being looked for. A reader can now tell "this is what it was" from "this
+is what it is" in one line.
+
+**The general shape:** documentation asserts two kinds of thing, and only one of
+them is checkable from inside the repository. A claim about the code is
+checkable and should be checked. **A claim about a remote host is a
+measurement, and a measurement written down as prose is stale the moment
+anything changes** — including, as here, when someone fixes the very problem it
+reports. Write the query and the expected result instead. A date in the heading
+lets a reader discount the claim; the command lets them replace it.
+
+The uncomfortable half: documentation in this project has now outlived what it
+described three times, and the first (entry 1, a design documented as
+canonical with its source lost) produced a check that genuinely works. The
+lesson is not "write another check". It is that the two failures are different
+in kind, and only one of them has a mechanical fix.

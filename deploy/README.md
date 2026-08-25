@@ -17,31 +17,60 @@ key to a host running Cortex and Pulse would put those services one workflow
 compromise away from a stranger, and the benefit is saving one `scp`. The
 artifact is downloaded and placed by whoever already has that access.
 
-## What is actually running right now (2026-08-25)
+## Verifying the deployment (checked 2026-08-25)
 
-**This section exists because the rest of this file described a deployment that
-did not match the box.** An adversarial review found the difference; the runbook
-below is correct, and the live host has not caught up with it yet.
+Every claim here is checkable with one command, and the command is given rather
+than the answer.
 
-- `radar-follow.service` — installed and active. Correct.
-- `radar-brief.timer` — installed and active. Correct.
-- `radar-serve` — **running, but not as a service.** It is a hand-started process
-  reparented to init, in an SSH login-session scope
-  (`/user.slice/user-1000.slice/session-NNNNNN.scope`). `systemctl status
-  radar-serve` answers *"Unit radar-serve.service could not be found."*
+**An earlier version of this section asserted a state instead.** It described
+`radar-serve` running as a hand-started process, was correct on the day it was
+written, and stayed in the file after the host was fixed — telling the next
+operator that *First install* step 2 "has never been run" when it had, and that
+the deploy procedure "fails today" when it works. A runbook that states a remote
+host's state has a half-life. One that states how to ask does not.
 
-  So it has none of `Restart=always`, `MemoryMax=`, `ProtectSystem=strict` or
-  `NoNewPrivileges=` from [`radar-serve.service`](radar-serve.service). **It will
-  not survive a reboot, and `loginctl terminate-session` kills it.** Step 2 of
-  *First install* has never been run on this host and still needs to be.
+```bash
+ssh guardian-vps-tail 'systemctl list-unit-files "radar*" --no-pager'
+```
+
+Expected, and true on 2026-08-25:
+
+| unit | state |
+|---|---|
+| `radar-serve.service` | enabled, active |
+| `radar-follow.service` | enabled, active |
+| `radar-brief.timer` | enabled, active |
+| `radar-brief.service` | static — the timer starts it |
+| `/etc/systemd/system/radar-hosted.service` | disabled, and **not Radar** — see below |
+
+`radar-serve` should be in the system slice with its sandbox applied:
+
+```bash
+ssh guardian-vps-tail 'systemctl show radar-serve \
+  -p ControlGroup -p Restart -p MemoryMax -p ProtectSystem -p NoNewPrivileges'
+```
+
+```
+ControlGroup=/system.slice/radar-serve.service
+Restart=always
+MemoryMax=805306368
+ProtectSystem=strict
+NoNewPrivileges=yes
+```
+
+**A `ControlGroup` under `/user.slice/user-1000.slice/session-NNNNNN.scope` is
+the failure this checks for**: a process started by hand over SSH and reparented
+to init. It serves correctly and has none of the sandbox above, does not survive
+a reboot, and `loginctl terminate-session` kills it. If you see that, run step 2
+of *First install* — it is the situation the unit exists to remove.
 
 - **Name collision, do not be fooled by it.** `/etc/systemd/system/` also holds
-  `/etc/systemd/system/radar-hosted.service`, which is inactive and is **not Radar** — it is an
+  `/etc/systemd/system/radar-hosted.service`, which is disabled and is **not Radar** — it is an
   unrelated Node service for `radar.claw-net.org` (`npx tsx hosted/server.ts`).
   Enabling or restarting it does nothing useful and will not start the API.
 
-Until step 2 is run, `radar brief`'s `serving` check is the thing standing between
-a dead API and nobody noticing.
+`radar brief`'s `serving` check is what stands between a dead API and nobody
+noticing. It runs on `radar-brief.timer` every fifteen minutes.
 
 ## First install
 
@@ -143,11 +172,12 @@ ssh guardian-vps-tail '
   sleep 3 && curl -sS localhost:8402/health'
 ```
 
-**This fails today with `Unit radar-serve.service not found`** — see *What is
-actually running right now*. Until the unit is installed, the running server is a
-session-scoped process and restarting it means killing the old one by pid and
-starting a new one by hand, which is exactly the fragility the unit removes. Do
-step 2 of *First install* rather than building a habit around the workaround.
+**This `sudo` prompts for a password.** `guardian`'s NOPASSWD sudoers list
+covers `claw-net-node`, Caddy, Cortex and Pulse — it has no radar entry, so the
+restart needs an interactive session and cannot be run unattended. That is the
+right boundary today; see the optional NOPASSWD line under *First install* step 2
+if it becomes tedious. An agent that cannot restart a production service on its
+own is a feature, not a gap.
 
 The `curl` is the point. A deploy that does not end by asking the service what it
 thinks it is running has not been verified, and `/health` reports the version,

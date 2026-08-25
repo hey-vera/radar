@@ -495,11 +495,29 @@ fn replay_lane(args: &[String]) -> Result<(), String> {
 
 /// Prints the operational brief. Exits non-zero when something is wrong, so a
 /// cron line can alarm on it without parsing the output.
+/// Which serving endpoint `brief` should probe, if any.
+///
+/// Flag first, then environment: the deploy sets the environment so the timer
+/// never runs blind, and a flag lets an operator point at another instance.
+///
+/// **An empty value counts as unset.** `RADAR_SERVE_URL=` in a unit file, and the
+/// empty default of the `just brief` recipe, are both how "no endpoint" gets
+/// spelled in practice. Treating that as a URL turns a *missing config* report
+/// into a `bad uri` *failure*, and those are the two things rule 8 exists to keep
+/// apart — one means nobody configured the check, the other means the server is
+/// broken, and they send an operator to different places.
+fn resolve_serve_url(from_flag: Option<String>, from_env: Option<String>) -> Option<String> {
+    from_flag.or(from_env).filter(|url| !url.trim().is_empty())
+}
+
 fn brief_report(args: &[String]) -> Result<(), String> {
     let store = flag(args, "--store").ok_or("brief needs --store <dir>")?;
     // Flag first, then environment. The deploy sets the environment so the timer
     // never runs blind; a flag lets an operator point at another instance.
-    let serve_url = flag(args, "--serve-url").or_else(|| std::env::var("RADAR_SERVE_URL").ok());
+    let serve_url = resolve_serve_url(
+        flag(args, "--serve-url"),
+        std::env::var("RADAR_SERVE_URL").ok(),
+    );
     if brief::run(std::path::Path::new(&store), serve_url.as_deref()) {
         Ok(())
     } else {
@@ -583,6 +601,36 @@ mod tests {
     #[test]
     fn output_is_truncated_to_the_column_width() {
         assert_eq!(sanitise("0123456789abcdef", 8), "01234567");
+    }
+
+    #[test]
+    fn an_empty_serving_endpoint_is_the_same_as_no_endpoint() {
+        // Found on the deployed instance: `RADAR_SERVE_URL=` reported
+        // "serving  is not answering: bad uri: /health is missing scheme" —
+        // a FAIL that reads as a broken server when the truth is that nobody
+        // configured the check. Both alarm, but they are not the same finding.
+        assert_eq!(resolve_serve_url(None, Some(String::new())), None);
+        assert_eq!(resolve_serve_url(None, Some("   ".to_owned())), None);
+        assert_eq!(resolve_serve_url(Some(String::new()), None), None);
+        assert_eq!(resolve_serve_url(None, None), None);
+    }
+
+    #[test]
+    fn a_real_endpoint_survives_and_the_flag_wins() {
+        // The other direction, so the rule above is not satisfied by discarding
+        // everything.
+        assert_eq!(
+            resolve_serve_url(None, Some("http://127.0.0.1:8402".to_owned())),
+            Some("http://127.0.0.1:8402".to_owned())
+        );
+        assert_eq!(
+            resolve_serve_url(
+                Some("http://elsewhere:1".to_owned()),
+                Some("http://127.0.0.1:8402".to_owned())
+            ),
+            Some("http://elsewhere:1".to_owned()),
+            "an explicit flag beats the deploy's environment"
+        );
     }
 
     #[test]

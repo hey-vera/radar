@@ -47,6 +47,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod study;
+
 use radar_asof::AsOf;
 use radar_strategy::{Candidate, Strategy};
 use radar_types::{Address, Slot};

@@ -1,0 +1,25 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-brief.timer, then:
+#   sudo systemctl enable --now radar-brief.timer
+#
+# Fifteen minutes. The check warns at twenty minutes of ingestion lag and fails
+# at sixty, so this cadence notices a stopped recorder inside the first failing
+# window rather than an hour later — and it is cheap: a few file reads.
+#
+# Persistent=true so a check missed while the box was down runs on boot. A
+# monitor that stays quiet about the window it was asleep for is the failure it
+# exists to prevent.
+[Unit]
+Description=Run the Radar health check every fifteen minutes
+Documentation=https://github.com/hey-vera/radar
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=15min
+Persistent=true
+AccuracySec=30s
+Unit=radar-brief.service
+
+[Install]
+WantedBy=timers.target

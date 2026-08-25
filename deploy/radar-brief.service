@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-brief.service
+#
+# The health check, run on a timer. Oneshot: it does its work and exits, and the
+# timer decides how often. Failure is expected to be rare and is not restarted —
+# a health check that retried until it passed would report the one run that
+# happened to succeed.
+[Unit]
+Description=Radar health check — alarms when ingestion has stopped
+Documentation=https://github.com/hey-vera/radar
+
+[Service]
+Type=oneshot
+User=guardian
+Group=guardian
+ExecStart=/home/guardian/bin/radar-brief.sh
+
+# Set RADAR_ALERT_WEBHOOK here to deliver failures somewhere a person will see
+# them. Without it the check still writes to the journal at error priority, so
+# an unset channel is quieter but never silent.
+EnvironmentFile=-/etc/radar/alert.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+MemoryMax=256M
+TasksMax=32

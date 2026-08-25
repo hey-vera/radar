@@ -169,6 +169,54 @@ roughly 0% CPU — neither appears in the top consumers on a box also running
 Cortex and Pulse. The systemd units are for restart-on-failure and boot
 persistence, not for resource containment.
 
+## Knowing when it stopped
+
+`radar-follow.service` restarts a recorder that dies. It cannot help with a
+recorder that is running and not advancing, and it cannot tell anyone either way.
+
+`radar brief` decides what unhealthy means and says so through its exit status.
+`radar-brief.timer` runs it every fifteen minutes, and `radar-brief.sh` delivers
+the answer:
+
+```bash
+sudo install -D -m644 deploy/radar-brief.service /etc/systemd/system/radar-brief.service
+sudo install -D -m644 deploy/radar-brief.timer   /etc/systemd/system/radar-brief.timer
+install  -m755 deploy/radar-brief.sh ~/bin/radar-brief.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-brief.timer
+
+# Prove it before trusting it: a store that cannot be healthy must exit non-zero.
+mkdir -p /tmp/emptystore && RADAR_STORE=/tmp/emptystore ~/bin/radar-brief.sh; echo "exit=$?"
+journalctl -t radar-brief -p err -n 5 --no-pager
+```
+
+Fifteen minutes is chosen against the thresholds: the check warns at twenty
+minutes of ingestion lag and fails at sixty, so a stopped recorder is noticed
+inside the first failing window rather than an hour later.
+
+### Where a failure goes
+
+**The journal, always.** `journalctl -t radar-brief -p err` shows one line per
+failing check. This needs no configuration and cannot be switched off.
+
+**A webhook, if one is configured.** Put it in `/etc/radar/alert.env`:
+
+```
+RADAR_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
+```
+
+Unset means no webhook, never a silent pass — the journal line happens
+regardless. That is rule 8 applied to alerting: missing configuration must not
+turn a failure into a success.
+
+**As of 2026-08-24 no channel is configured on this box, and that is worth
+knowing.** `claw-net/scripts/monitoring-check.sh` has been running every five
+minutes for months with `SLACK_WEBHOOK_URL`, `ALERT_EMAIL` and
+`PAGERDUTY_ROUTING_KEY` all unset, writing to a log nobody reads. A monitor
+without a channel is a monitor that only works when someone is already
+suspicious — which is how a thirteen-hour recorder outage was found by accident
+rather than reported.
+
 ## Keeping it current
 
 `--follow` picks up where the store left off and keeps going, staying five

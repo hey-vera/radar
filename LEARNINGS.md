@@ -440,3 +440,58 @@ above as a unit test.
 reporting about itself until something has passed through it. That is what
 prompted re-running after the first fix instead of declaring it done, and it is
 the only reason this was found.
+
+---
+
+## 12. An aggregate that included an event that was not a trade
+
+**Found:** 2026-08-25, within an hour of shipping the price path, by using the
+data rather than by testing the code.
+
+The first study over the new prices reported a median maximum favourable
+excursion of **7,054%** and a 90th percentile of **1,081,162%** across 188
+tokens. Nothing in the pipeline objected. Every test passed, the query ran, the
+numbers had the right type and the right scale, and they were nonsense.
+
+`solana.token_transfers` carries a `MintTo` row at launch holding the **entire
+supply** — 1e15 base units against whatever SOL moved in the creation
+transaction, which is 44x the average real fill on the same token. It is also the
+*earliest* row for the mint, so `argMin(price, ts)` selected it as
+`first_price`, and every excursion in the study was measured against the supply
+mint instead of against a trade.
+
+Filtered to `Transfer` and `TransferChecked`, the same cohort reports a median
+MFE of 23.7% and a median held-to-end of **-13.4%** — consistent with the base
+rate `AGENTS.md` opens with, where the first set was consistent with nothing.
+
+**Cost:** one contaminated outcomes file in production, caught before a second.
+It had to be quarantined by hand rather than left to age out, because
+`prior_prices` folds each measurement onto the last one, so a wrong `first_price`
+would have propagated into every later measurement of the same token
+indefinitely. A fold is a ratchet, and a ratchet turns a transient bad row into a
+permanent one.
+
+**What made it survive the tests:** every test used a stub quoter or a
+hand-written row. Not one of them fetched a real `token_transfers` page, and the
+`MintTo` row does not exist in any fixture — because nobody who had not seen it
+would think to write one. The unit tests were testing arithmetic on numbers that
+were already wrong upstream.
+
+**What catches a recurrence:** the query asserts its own filter
+(`the_query_counts_only_transfers_between_accounts`), which is a structural test
+rather than a numerical one — the same shape as the signature-pushdown assertion
+beside it, and for the same reason: neither changes a value in a way a fixture
+would notice.
+
+**The general shape, and it is the sharpest version yet of entries 7 and 10:**
+**a wrong number looks like a number, where a missing one looks like a gap.** The
+graduation bug (7) produced too *few* rows and was found because a count was
+implausible. The probe bug (10) produced a *constant* and was found because zero
+proposals was implausible. This one produced a full distribution of the right
+shape and magnitude-of-digits, and the only thing that gave it away was a human
+reading 1,081,162% and knowing markets do not do that.
+
+Which means the guard cannot be a test. It has to be the habit of computing a
+figure whose plausible range is known in advance, and checking against it — the
+same move that caught the lamport rescaling in the same module a day earlier, by
+comparing a derived price against an independent quote.

@@ -1377,6 +1377,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-graph"
+version = "0.0.1"
+dependencies = [
+ "radar-types",
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "radar-instruments"
 version = "0.0.1"
 dependencies = [

@@ -22,6 +22,14 @@ set -uo pipefail
 STORE="${RADAR_STORE:-/home/guardian/radar/data/store}"
 BIN="${RADAR_BIN:-/home/guardian/bin/radar}"
 
+# The serving surface the check should probe. Exported rather than passed so the
+# unit's EnvironmentFile can override it without editing this script.
+#
+# Defaulted rather than left unset: an unset endpoint makes `brief` report
+# "cannot see" and alarm, which is correct for a workstation and pure noise on
+# the box that is running the server. On this host we know where it is.
+export RADAR_SERVE_URL="${RADAR_SERVE_URL:-http://127.0.0.1:8402}"
+
 output="$("$BIN" brief --store "$STORE" 2>&1)"
 status=$?
 

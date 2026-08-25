@@ -1352,6 +1352,7 @@ dependencies = [
  "radar-types",
  "serde_json",
  "tempfile",
+ "ureq",
 ]
 
 [[package]]

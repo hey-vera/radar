@@ -306,3 +306,72 @@ now sits inside one partition and fails when the filter is removed.
 A test written against correct code cannot tell you whether it tests anything.
 Only breaking the code can, and it took ninety seconds to find that one of these
 four was decorative.
+
+---
+
+## 10. A hardcoded probe size that made the answer a constant
+
+**Found:** 2026-08-25, during an adversarial review, by running the decision lane
+against production and asking why the number was round.
+
+`radar consider` reported `0 proposal(s) raised` over 41,254 candidates, with
+`CapacityBelowFloor` on 20 of the 25 candidates that survived every free filter.
+Read as a market observation that is a finding about liquidity. It is not a
+market observation. It is a constant.
+
+`consider.rs` called `radar_sim::probe(quoter, mint, structure, 1_000_000_000)`.
+That fourth argument is an intended position in **raw token units**, hardcoded,
+used for every token regardless of supply, decimals or price. Probe multiples are
+`[1, 2, 5]`, so the largest size ever quoted was 5e9 raw units.
+
+A pump.fun token has six decimals and a supply around 1–2e15 raw units. So the
+probe asked what it could get for roughly **0.00005% of the supply**. Measured
+live against a token the run had just refused: 1e9 raw units quoted at **4,000
+lamports** — about $0.0004 — at 0.59 bps of impact. A thousand times more moved
+the price less than one basis point, so the token had ample depth and the probe
+never went near it.
+
+Carried through: capacity ≤ ~20,000 lamports ≈ $0.002; `capacity_share_bps` of
+2,000 takes a fifth, giving a notional of ~$0.0004 against a `min_notional` of
+$1.00. **The maximum notional the pipeline could ever propose was 2,457× below the
+floor it had to clear.** No token, in any market, at any time, could have produced
+a proposal.
+
+**Cost:** none in money, because the lane is shut. The cost was in belief. Two
+claims rested on this: that the trading lane was "built and tested end to end",
+and that `Policy::CLOSED` was what stood between Radar and a trade. Neither was
+true — the lane was shut four stages upstream of the policy, and the policy had
+never been handed a proposal to refuse.
+
+**The general shape, for the third time:** a broken instrument does not produce
+less data, it produces a **selected** sample, and a selected sample supports
+confident conclusions about the selection. Entry 7 was a filter that selected
+degenerate migrations and got written up as "graduation is inherently instant".
+This one selected nothing at all and read as "these tokens are too thin to trade".
+Both times the store was internally consistent and entirely wrong, and both times
+the only thing that found it was asking the outside world what the answer should
+be and comparing.
+
+**What made it invisible** is worth recording separately.
+`radar-strategy/tests/pipeline.rs` exists precisely to catch this class of bug —
+its own doc comment says *"a strategy whose proposals the kernel always refuses is
+a broken pipeline that both halves' tests call green"*. It missed it, because its
+fixture supplies a synthetic `ExitReport` with `out_lamports` in the hundreds of
+millions while the real probe returns four thousand. The test written to catch the
+bug was immunised against it by a fixture five orders of magnitude away from
+anything the system can measure. A fixture that cannot be produced by the code
+under test is a fixture that tests a different system.
+
+**What catches a recurrence: nothing yet, and this entry is written before the
+fix rather than after it.** The probe still takes a caller-chosen size. The
+planned fix removes the constant entirely — search for the size at which impact
+reaches the budget, denominated in SOL, reading the token's decimals rather than
+assuming them — and re-points `pipeline.rs`'s fixture at a curve the real probe
+can produce. Until both land, this entry is the only thing standing between Radar
+and the same silence.
+
+The guard that would have caught it earliest is not a test but a habit: **a funnel
+that reports zero is reporting about itself until something has passed through it
+at least once.** `0 proposals` becomes a claim about the market only after a
+proposal has been observed. Worth applying to every counter in the system, not
+just this one.

@@ -27,7 +27,7 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "500"
+export MIN_TESTS := "505"
 
 _default:
     @just --list --unsorted
@@ -91,7 +91,13 @@ licence-headers:
 
 # --- operator commands --------------------------------------------------------
 
-# What the system is doing right now: ingestion lag, spend against budget,
-# provider health, open positions. Reads live state, so it can never be stale.
-brief store="data/store":
-    @{{ cargo }} run --release -q --bin radar -- brief --store {{ store }}
+# What the system is doing right now: ingestion lag, store contents, the serving
+# surface, and what the trading lane is authorised to do. Reads live state, so it
+# can never be stale.
+#
+# `serve` defaults to empty, and an empty endpoint makes the serving check report
+# Unknown -- which alarms. That is deliberate: on a workstation there is no server
+# to look at, and the check saying so is more useful than the check being silent.
+# Pass `just brief data/store http://127.0.0.1:8402` when there is one.
+brief store="data/store" serve="":
+    @RADAR_SERVE_URL={{ serve }} {{ cargo }} run --release -q --bin radar -- brief --store {{ store }}

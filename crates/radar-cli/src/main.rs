@@ -497,7 +497,10 @@ fn replay_lane(args: &[String]) -> Result<(), String> {
 /// cron line can alarm on it without parsing the output.
 fn brief_report(args: &[String]) -> Result<(), String> {
     let store = flag(args, "--store").ok_or("brief needs --store <dir>")?;
-    if brief::run(std::path::Path::new(&store)) {
+    // Flag first, then environment. The deploy sets the environment so the timer
+    // never runs blind; a flag lets an operator point at another instance.
+    let serve_url = flag(args, "--serve-url").or_else(|| std::env::var("RADAR_SERVE_URL").ok());
+    if brief::run(std::path::Path::new(&store), serve_url.as_deref()) {
         Ok(())
     } else {
         // A distinct message from an error: the brief worked, the system is not

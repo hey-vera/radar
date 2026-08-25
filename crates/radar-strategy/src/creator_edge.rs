@@ -183,6 +183,17 @@ impl Strategy for CreatorEdge {
             reasons.push(PassReason::CreatorLaunchesTooFast);
         }
 
+        // Only an actionable verdict refuses. `None` is "not looked at" and must
+        // not read as clean, but it also cannot refuse on its own -- a candidate
+        // that was never examined has no evidence against it, and inventing some
+        // would refuse the entire population the moment the fetch broke.
+        if candidate
+            .coordination
+            .is_some_and(radar_graph::Coordination::is_actionable)
+        {
+            reasons.push(PassReason::LaunchLooksCoordinated);
+        }
+
         let age_of = |observed| candidate.as_of.slot().saturating_since(observed).get();
         if age_of(candidate.token_observed_at) > t.max_token_age {
             reasons.push(PassReason::TokenReadingTooOld);
@@ -264,6 +275,7 @@ mod tests {
             mint: Address::new([7u8; 32]),
             creator: Address::new([8u8; 32]),
             launch_slot: Slot(400_000),
+            coordination: None,
             as_of: AsOf::at(Slot(500_000)),
             exit: Some(ExitReport {
                 mint: Address::new([7u8; 32]),
@@ -390,6 +402,53 @@ mod tests {
         };
         let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
         assert!(reasons.contains(&PassReason::CreatorGraduatesTooRarely));
+    }
+
+    #[test]
+    fn a_launch_block_that_looks_arranged_is_refused() {
+        // 68% of launches that graduated within three slots had exactly this
+        // shape, against 5% of launches that never graduated. It is a refusal
+        // and not an entry: the same observation makes an instant graduation
+        // 11.7x likelier, and an instant graduation means the supply is already
+        // held by whoever arranged it.
+        let c = good().with_coordination(radar_graph::Coordination::Likely);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            reasons.contains(&PassReason::LaunchLooksCoordinated),
+            "expected a coordination refusal, got {reasons:?}"
+        );
+    }
+
+    #[test]
+    fn a_suspected_launch_block_is_not_refused_on_its_own() {
+        // `Suspected` fires on 13% of all launches at a four-fold enrichment.
+        // Worth recording, too blunt to refuse on -- the failure research 0004
+        // recorded for the same-slot-buy heuristic, which fired on 91%.
+        let c = good().with_coordination(radar_graph::Coordination::Suspected);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(!reasons.contains(&PassReason::LaunchLooksCoordinated));
+    }
+
+    #[test]
+    fn an_unremarkable_launch_block_is_not_refused() {
+        let c = good().with_coordination(radar_graph::Coordination::Unremarkable);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(!reasons.contains(&PassReason::LaunchLooksCoordinated));
+    }
+
+    #[test]
+    fn a_launch_block_that_was_never_looked_at_neither_passes_nor_refuses() {
+        // The subtle one. `None` must not read as clean -- but it must not
+        // refuse either, or a broken fetch would disqualify the whole population
+        // and look like a market with nothing in it. The absence is carried, and
+        // whatever consumes the decision can see that no look was paid for.
+        let c = good();
+        assert_eq!(c.coordination, None);
+        let reasons = CreatorEdge::default().consider(&c).reasons().to_vec();
+        assert!(
+            !reasons.contains(&PassReason::LaunchLooksCoordinated),
+            "an unexamined launch has no evidence against it"
+        );
     }
 
     #[test]

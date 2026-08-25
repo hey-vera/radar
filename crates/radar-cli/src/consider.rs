@@ -26,11 +26,13 @@
 use std::collections::BTreeMap;
 
 use radar_asof::AsOf;
-use radar_risk::{Policy, PortfolioState, Verdict, evaluate};
+use radar_backfill::launch_block::CryptoHouseBlocks;
+use radar_graph::LaunchBlockSource;
+use radar_risk::{Policy, PortfolioState, Proposal, Verdict, evaluate};
 use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::Reader;
-use radar_strategy::{Candidate, CreatorEdge, Decision, PassReason, Strategy, universe};
-use radar_types::MicroUsd;
+use radar_strategy::{Candidate, CreatorEdge, Decision, PassReason, Strategy, Universe, universe};
+use radar_types::{Address, MicroUsd};
 
 /// How many candidates the paid tier will be spent on in one pass.
 ///
@@ -124,20 +126,96 @@ pub fn run(reader: &Reader, window: u64, cap: usize) -> Result<(), String> {
     };
     println!("SOL price    : ${:.2}\n", price_dollars(sol_price));
 
-    let rpc = RpcClient::default();
-    let mut proposals = Vec::new();
-
-    for mint in worth_paying_for.iter().take(budget) {
-        let structure = rpc.mint_structure(mint).ok();
-        let exit = radar_sim::probe(&quoter, mint, structure, 1_000_000_000);
-        let Some(candidate) = universe.candidate(mint, Some(exit), Some(sol_price)) else {
-            continue;
-        };
-        report_one(&strategy, &candidate, &mut proposals);
-    }
+    let proposals = paid_tier(
+        &universe,
+        &strategy,
+        worth_paying_for.iter().take(budget),
+        &quoter,
+        sol_price,
+    );
 
     verdicts(&proposals, watermark);
     Ok(())
+}
+
+/// The paid tier: the two calls that cost money, in the order that spends least.
+///
+/// Split out because it is the part with a budget attached, and because reading
+/// the free tier's tally should not mean scrolling past the spending.
+fn paid_tier<'a>(
+    universe: &Universe,
+    strategy: &CreatorEdge,
+    mints: impl Iterator<Item = &'a Address>,
+    quoter: &JupiterQuoter,
+    sol_price: MicroUsd,
+) -> Vec<Proposal> {
+    let rpc = RpcClient::default();
+    let blocks = CryptoHouseBlocks::default();
+    let mut proposals = Vec::new();
+    let mut refused_on_shape = 0usize;
+    // Counted apart from "looked and found clean". A fetch that fails leaves the
+    // verdict absent, the strategy correctly declines to refuse on an absence,
+    // and the gate is then silently off. Without this line a broken source and a
+    // clean population produce identical output.
+    let (mut looked, mut look_failed) = (0usize, 0usize);
+
+    for mint in mints {
+        // The launch-block look runs first because it is the cheaper of the two
+        // paid calls and it can end the question. Probing the exit of a token
+        // whose curve was already bought out by whoever arranged it is money
+        // spent to be told something the block said for less.
+        let coordination = match universe.launches.get(mint) {
+            Some(facts) => match blocks.shape_at(mint, facts.slot) {
+                Ok(shape) => {
+                    looked += 1;
+                    Some(radar_graph::assess(shape).coordination)
+                }
+                Err(e) => {
+                    look_failed += 1;
+                    eprintln!("  {mint}  launch block unreadable: {e}");
+                    None
+                }
+            },
+            None => None,
+        };
+
+        if coordination.is_some_and(radar_graph::Coordination::is_actionable) {
+            refused_on_shape += 1;
+            println!("  {mint}  launch block looks arranged — not probing the exit");
+            continue;
+        }
+
+        let structure = rpc.mint_structure(mint).ok();
+        let exit = radar_sim::probe(quoter, mint, structure, 1_000_000_000);
+        let Some(candidate) = universe.candidate(mint, Some(exit), Some(sol_price)) else {
+            continue;
+        };
+        let candidate = match coordination {
+            Some(c) => candidate.with_coordination(c),
+            // Carried as absent rather than as clean. The strategy will not
+            // refuse on it, and it will not treat it as a pass either.
+            None => candidate,
+        };
+        report_one(strategy, &candidate, &mut proposals);
+    }
+
+    println!(
+        "
+launch blocks read: {looked}, unreadable: {look_failed}"
+    );
+    if refused_on_shape > 0 {
+        println!(
+            "{refused_on_shape} candidate(s) refused on shape before any exit probe was paid for."
+        );
+    }
+    if look_failed > 0 {
+        println!(
+            "A candidate whose launch block could not be read carries no verdict, and the
+             strategy will not refuse on an absence — so those passed this gate without
+             being examined rather than by being clean."
+        );
+    }
+    proposals
 }
 
 /// Prints what the strategy made of one paid-for candidate.

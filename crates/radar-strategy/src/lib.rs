@@ -54,6 +54,12 @@ pub struct Candidate {
     pub exit: Option<ExitReport>,
     /// How this creator's previous launches turned out.
     pub creator_record: CreatorRecord,
+    /// What the launch block looked like, if it was fetched.
+    ///
+    /// `None` means not looked at, which is not the same as looked at and found
+    /// clean. A strategy must not read an absent verdict as a pass — see the
+    /// refusal in [`creator_edge`](crate::creator_edge).
+    pub coordination: Option<radar_graph::Coordination>,
     /// The SOL price used to convert exit capacity into notional, or `None` if
     /// unknown.
     pub sol_price_micro_usd: Option<MicroUsd>,
@@ -79,6 +85,18 @@ pub struct Candidate {
 }
 
 impl Candidate {
+    /// Attaches a launch-block verdict.
+    ///
+    /// Separate from the constructor because it costs a query, and a candidate
+    /// is built for every recorded token while the look is paid for on a
+    /// handful. Builder-style rather than a fourth `Option` argument, so a call
+    /// site says which value it is supplying.
+    #[must_use]
+    pub const fn with_coordination(mut self, coordination: radar_graph::Coordination) -> Self {
+        self.coordination = Some(coordination);
+        self
+    }
+
     /// The oldest mutable input this candidate rests on.
     ///
     /// What goes on the proposal, because the risk kernel's staleness check is

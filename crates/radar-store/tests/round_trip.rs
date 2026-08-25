@@ -304,6 +304,113 @@ fn unknown_instructions_are_stored_and_stay_queryable() {
 
 // --- outcomes ----------------------------------------------------------------
 
+/// Writes an outcomes file in the shape the store used *before* prices existed,
+/// bypassing the writer so the old schema is reproduced exactly.
+///
+/// The point is to hold a guarantee that cannot be checked any other way: the
+/// live store held 29 outcome files, 142,826 measurements, written without these
+/// columns. A reader that demanded them would have made every one unreadable.
+fn write_pre_price_outcomes(dir: &std::path::Path) -> std::path::PathBuf {
+    use arrow::array::{StringBuilder, UInt64Builder};
+    use arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("mint", DataType::Utf8, false),
+        Field::new("measured_at", DataType::UInt64, false),
+        Field::new("launch_slot", DataType::UInt64, false),
+        Field::new("first_transfer_slot", DataType::UInt64, true),
+        Field::new("last_transfer_slot", DataType::UInt64, true),
+        Field::new("transfers", DataType::UInt64, false),
+        Field::new("unique_senders", DataType::UInt64, false),
+        Field::new("unique_receivers", DataType::UInt64, false),
+        Field::new("graduated_at", DataType::UInt64, true),
+    ]));
+
+    let mut mint_b = StringBuilder::new();
+    let mut cols: Vec<UInt64Builder> = (0..8).map(|_| UInt64Builder::new()).collect();
+    mint_b.append_value(mint(1).to_string());
+    cols[0].append_value(500_000); // measured_at
+    cols[1].append_value(1_000); // launch_slot
+    cols[2].append_value(1_001); // first_transfer_slot
+    cols[3].append_value(1_500); // last_transfer_slot
+    cols[4].append_value(42); // transfers
+    cols[5].append_value(7); // unique_senders
+    cols[6].append_value(5); // unique_receivers
+    cols[7].append_null(); // graduated_at
+
+    let mut arrays: Vec<arrow::array::ArrayRef> = vec![Arc::new(mint_b.finish())];
+    for c in &mut cols {
+        arrays.push(Arc::new(c.finish()));
+    }
+    let batch = arrow::record_batch::RecordBatch::try_new(schema.clone(), arrays).expect("batch");
+
+    let outcomes = dir.join("outcomes");
+    std::fs::create_dir_all(&outcomes).expect("mkdir");
+    let path = outcomes.join("000000000000000000-legacy.parquet");
+    let file = std::fs::File::create(&path).expect("create");
+    let mut w = parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("writer");
+    w.write(&batch).expect("write");
+    w.close().expect("close");
+    path
+}
+
+#[test]
+fn outcomes_written_before_prices_existed_are_still_readable() {
+    // Verified against the live store when the columns were added: 142,826
+    // measurements across 29 files, none of which carry a price column. A
+    // reader that required them would have failed on every one, and the failure
+    // would have looked like a corrupted store rather than a schema change.
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_pre_price_outcomes(dir.path());
+
+    let rows = Reader::open(dir.path())
+        .read_outcomes(AsOf::at(Slot(1_000_000)))
+        .expect("an older file must still read");
+
+    assert_eq!(rows.len(), 1, "the row survived the schema change");
+    let o = &rows[0];
+    assert_eq!(o.transfers, 42, "the old columns still arrive intact");
+    assert_eq!(o.unique_senders, 7);
+
+    // Absent, not zero. A file that never carried a price is not a token that
+    // traded at nothing, and every derived figure must decline to answer.
+    assert_eq!(o.first_price, None);
+    assert_eq!(o.peak_price, None);
+    assert_eq!(o.vwap, None);
+    assert_eq!(o.fills, 0);
+    assert_eq!(
+        o.mfe_bps(),
+        None,
+        "no price means no excursion, not a flat one"
+    );
+    assert_eq!(o.mae_bps(), None);
+    assert_eq!(o.held_to_end_gain_bps(), None);
+}
+
+#[test]
+fn a_price_path_round_trips() {
+    // The other direction: what the writer emits, the reader returns.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut o = outcome(2, 500_000, 1_000, Some(1_500), 42);
+    o.first_price = Some(21_000_000_000_000);
+    o.last_price = Some(30_296_236_543);
+    o.peak_price = Some(68_758_447_614_858);
+    o.trough_price = Some(1_886_773_264_633);
+    o.vwap = Some(21_002_820_020_797);
+    o.fills = 45;
+
+    let mut w = Writer::open(dir.path(), 1).expect("writer");
+    w.append_outcome(o.clone()).expect("append");
+    w.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_outcomes(AsOf::at(Slot(1_000_000)))
+        .expect("read");
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0], o, "every price field survives the round trip");
+}
+
 fn outcome(mint_id: u8, measured: u64, launch: u64, last: Option<u64>, transfers: u64) -> Outcome {
     Outcome {
         mint: mint(mint_id),
@@ -315,6 +422,12 @@ fn outcome(mint_id: u8, measured: u64, launch: u64, last: Option<u64>, transfers
         unique_senders: 7,
         unique_receivers: 5,
         graduated_at: None,
+        first_price: None,
+        last_price: None,
+        peak_price: None,
+        trough_price: None,
+        vwap: None,
+        fills: 0,
     }
 }
 

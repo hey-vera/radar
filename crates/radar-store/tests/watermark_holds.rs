@@ -49,6 +49,12 @@ fn outcome_at(measured_at: u64) -> Outcome {
         unique_senders: 5,
         unique_receivers: 5,
         graduated_at: None,
+        first_price: None,
+        last_price: None,
+        peak_price: None,
+        trough_price: None,
+        vwap: None,
+        fills: 0,
     }
 }
 

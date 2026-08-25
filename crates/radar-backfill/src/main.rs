@@ -14,6 +14,7 @@ use radar_asof::AsOf;
 use radar_backfill::checkpoints;
 use radar_backfill::extract::{Row, Skipped, Stats};
 use radar_backfill::outcomes::{self, AggregateRow, HeadRow, TimeRow};
+use radar_backfill::prices::{self, PriceRow};
 use radar_backfill::{Client, QueryError, Scope, events_from_rows, query_for_window};
 use radar_store::{Event, Reader, Table, Writer, from_epoch, now_epoch, to_epoch};
 
@@ -526,6 +527,57 @@ fn due_for_measurement(
 }
 
 /// Measures what became of every token already in the store.
+/// The window a price query may cover, as `(from, to)`.
+///
+/// Bounded at both ends, where the transfer window deliberately is not. Prices
+/// come from a join against `solana.transactions`, and the cost is driven by how
+/// many transactions match rather than by how long the window is -- so a full day
+/// is affordable and an unbounded range is not.
+///
+/// `(None, None)` when the chain head's timestamp cannot be resolved. The
+/// outcomes still get written; their prices simply stay absent, because an
+/// unwritten outcome is a hole in the record and an unpriced one is not.
+fn price_window(
+    client: &Client,
+    measured_at: radar_types::Slot,
+    since: &str,
+) -> (Option<String>, Option<String>) {
+    let Ok(now) = client.query::<TimeRow>(&outcomes::query_for_slot_time(measured_at)) else {
+        return (None, None);
+    };
+    let to = now
+        .first()
+        .map(|t| t.at.clone())
+        .filter(|t| !t.is_empty() && !t.starts_with("1970"));
+    let from = to.as_ref().map(|to| prices::window_start(to, since));
+    (from, to)
+}
+
+/// Prices for one batch, or an empty map if they could not be fetched.
+///
+/// A pricing failure must not discard the outcome. An outcome with no price is a
+/// measurement with a gap; an outcome that was never written because pricing
+/// failed is a hole in the record, and the second is worse -- a missing slot
+/// range in this store is indistinguishable from a quiet market, which is the
+/// failure the whole project is organised against.
+fn price_batch(
+    client: &Client,
+    mints: &[String],
+    from: Option<&str>,
+    to: Option<&str>,
+) -> std::collections::BTreeMap<String, prices::Prices> {
+    let (Some(from), Some(to)) = (from, to) else {
+        return std::collections::BTreeMap::new();
+    };
+    match client.query::<PriceRow>(&prices::query_for_mints(mints, from, to)) {
+        Ok(rows) => prices::to_prices(&rows),
+        Err(e) => {
+            eprintln!("  prices unavailable for this batch, recording without: {e}");
+            std::collections::BTreeMap::new()
+        }
+    }
+}
+
 fn measure(args: &Args) -> Result<(), String> {
     let client = Client::default();
     let reader = Reader::open(&args.store);
@@ -569,6 +621,8 @@ fn measure(args: &Args) -> Result<(), String> {
         .filter(|t| !t.is_empty() && !t.starts_with("1970"))
         .ok_or("could not resolve a timestamp for the earliest launch slot")?;
 
+    let (price_from, price_to) = price_window(&client, measured_at, &since);
+
     let total_known = launches.len();
     let due = due_for_measurement(&launches, &already, measured_at);
 
@@ -588,6 +642,7 @@ fn measure(args: &Args) -> Result<(), String> {
 
     let mut writer = Writer::open(&args.store, 20_000).map_err(|e| e.to_string())?;
     let (mut written, mut stillborn, mut with_activity) = (0u64, 0u64, 0u64);
+    let (mut priced_batches, mut with_price) = (0u64, 0u64);
 
     for batch in launches.chunks(outcomes::MINTS_PER_BATCH) {
         let mints: Vec<String> = batch.iter().map(|(m, _)| m.to_string()).collect();
@@ -595,13 +650,20 @@ fn measure(args: &Args) -> Result<(), String> {
             .query(&outcomes::query_for_mints(&mints, &since))
             .map_err(|e| e.to_string())?;
 
+        let priced = price_batch(&client, &mints, price_from.as_deref(), price_to.as_deref());
+        priced_batches += u64::from(!priced.is_empty());
+
         let measured = outcomes::outcomes_from_rows(&rows, batch, measured_at, &graduated);
+        let measured = prices::apply(measured, &priced);
         for outcome in measured {
             if outcome.appears_stillborn() {
                 stillborn += 1;
             }
             if outcome.transfers > 0 {
                 with_activity += 1;
+            }
+            if outcome.first_price.is_some() {
+                with_price += 1;
             }
             writer.append_outcome(outcome).map_err(|e| e.to_string())?;
             written += 1;
@@ -616,6 +678,7 @@ fn measure(args: &Args) -> Result<(), String> {
 --- measured {written} tokens as of slot {measured_at} ---"
     );
     println!("  with any transfer     : {with_activity}");
+    println!("  with a measured price : {with_price} (from {priced_batches} priced batch(es))");
     println!("  apparently stillborn  : {stillborn}");
     if written > 0 {
         #[expect(clippy::cast_precision_loss, reason = "a display ratio")]

@@ -54,6 +54,17 @@ pub fn schema_for(table: Table) -> Arc<Schema> {
             // lets "same block as launch" and "three days later" stay different
             // outcomes instead of collapsing into one boolean.
             Field::new("graduated_at", DataType::UInt64, true),
+            // Prices: lamports per base unit scaled by `PRICE_SCALE`. All
+            // nullable, because a token that never traded has no price and a
+            // measurement taken before prices were recorded has none either —
+            // and neither is a price of zero.
+            Field::new("first_price", DataType::UInt64, true),
+            Field::new("last_price", DataType::UInt64, true),
+            Field::new("peak_price", DataType::UInt64, true),
+            Field::new("trough_price", DataType::UInt64, true),
+            Field::new("vwap", DataType::UInt64, true),
+            // Not nullable: zero fills is a real, informative measurement.
+            Field::new("fills", DataType::UInt64, false),
         ]));
     }
 

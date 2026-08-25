@@ -137,6 +137,14 @@ pub fn outcomes_from_rows(
             unique_senders: row.and_then(|r| parse(&r.uniq_src)).unwrap_or(0),
             unique_receivers: row.and_then(|r| parse(&r.uniq_dst)).unwrap_or(0),
             graduated_at: graduated.get(mint).copied(),
+            // Filled by the price pass, which is a separate query against a
+            // different table. Absent here means "not priced yet", never zero.
+            first_price: None,
+            last_price: None,
+            peak_price: None,
+            trough_price: None,
+            vwap: None,
+            fills: 0,
         });
     }
     out

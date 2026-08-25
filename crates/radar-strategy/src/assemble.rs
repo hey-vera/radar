@@ -298,6 +298,12 @@ mod tests {
             unique_senders: transfers,
             unique_receivers: transfers,
             graduated_at: graduated_after.map(|d| Slot(1_000 + d)),
+            first_price: None,
+            last_price: None,
+            peak_price: None,
+            trough_price: None,
+            vwap: None,
+            fills: 0,
         }
     }
 

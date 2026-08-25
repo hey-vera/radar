@@ -22,6 +22,7 @@ fn candidate() -> Candidate {
         mint: Address::new([7u8; 32]),
         creator: Address::new([8u8; 32]),
         launch_slot: Slot(1_000),
+        coordination: None,
         as_of: AsOf::at(NOW),
         exit: Some(ExitReport {
             mint: Address::new([7u8; 32]),

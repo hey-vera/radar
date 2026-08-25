@@ -192,6 +192,9 @@ impl Universe {
             as_of: self.as_of,
             exit,
             creator_record: self.creator_record(&facts.creator),
+            // Not looked at. The caller adds it with
+            // [`Candidate::with_coordination`] if it paid for the look.
+            coordination: None,
             sol_price_micro_usd: sol_price,
             token_observed_at: facts.observed_at,
             creator_observed_at: self.creator_observed_at(&facts.creator, facts.slot),

@@ -23,6 +23,7 @@ radar-sim = { path = "crates/radar-sim", version = "0.0.1" }
 radar-strategy = { path = "crates/radar-strategy", version = "0.0.1" }
 radar-research = { path = "crates/radar-research", version = "0.0.1" }
 radar-graph = { path = "crates/radar-graph", version = "0.0.1" }
+radar-backfill = { path = "crates/radar-backfill", version = "0.0.1" }
 radar-store = { path = "crates/radar-store", version = "0.0.1" }
 
 # Kept deliberately small. Every dependency here is one more thing that can be

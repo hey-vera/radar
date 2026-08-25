@@ -51,6 +51,18 @@ pub enum PassReason {
     /// launches a day — so this refuses a population that is measurably worse
     /// rather than one that looks disreputable.
     CreatorLaunchesTooFast,
+    /// The launch block has the shape of an arranged buy-out.
+    ///
+    /// Measured in `docs/research/0008`: 68% of launches that graduated within
+    /// three slots had exactly six recipients in their own launch block, against
+    /// 5% of launches that never graduated.
+    ///
+    /// It is a refusal rather than an entry, and that is the whole point. The
+    /// same observation makes an *instant* graduation 11.7x likelier, and an
+    /// instant graduation means the curve was bought out by people who were
+    /// ready before the token existed. They hold the supply; the only role left
+    /// is to be who they sell to.
+    LaunchLooksCoordinated,
     /// The creator has never graduated a token.
     CreatorNeverGraduated,
     /// The creator graduates tokens, but below the threshold in force.
@@ -164,6 +176,7 @@ mod tests {
             as_of: AsOf::at(Slot(10_000)),
             exit,
             creator_record: CreatorRecord::default(),
+            coordination: None,
             sol_price_micro_usd: Some(MicroUsd::from_dollars(200.0)),
             token_observed_at: Slot(9_900),
             creator_observed_at: Slot(9_900),

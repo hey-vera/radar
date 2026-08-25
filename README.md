@@ -78,6 +78,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-sim` | Exit analysis. Structural disqualification from the mint account, then a measured sell curve — never a single liquidity number. |
 | `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
 | `radar-strategy` | Deterministic strategies. They emit proposals, which are inert data, and assemble candidates in one place so look-ahead is prevented once rather than per strategy. |
+| `radar-graph` | Coordination detection. Scores what a launch block contained, and refuses on the shape that 68% of instantly-graduating launches share and 5% of ordinary ones do. |
 | `radar-research` | Replay. Re-runs a recorded decision at its original watermark and separates a store that gained history from a strategy that is not a pure function of its inputs. |
 | `radar-signer` | A separate process holding the key. Re-decodes every transaction and trusts nothing the caller said about it. |
 | `radar-exec` | Route, gate, sign, submit, reconcile. The last stage, and the one holding the least authority. |

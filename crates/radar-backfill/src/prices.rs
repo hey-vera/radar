@@ -98,6 +98,18 @@ pub struct Prices {
     pub trough: Option<u64>,
 }
 
+/// How small a transaction may be and still count as a trade, as a divisor of
+/// the mint's own median.
+///
+/// A transaction qualifies only if it moves at least a tenth of the median
+/// trade's tokens **and** a tenth of its median lamports. Both sides, because
+/// the contamination is two-sided and guarding one leaves the other.
+///
+/// Relative to the mint rather than absolute: a floor in base units would depend
+/// on the token's decimals and supply, which is the kind of constant that is
+/// right for the token it was chosen on and wrong afterwards.
+pub const TRADE_SIZE_FLOOR_DIVISOR: i64 = 10;
+
 /// Builds the price query for a batch of mints over one window.
 ///
 /// The window is bounded at both ends, unlike the outcomes query. Prices are a
@@ -117,15 +129,69 @@ pub struct Prices {
 /// whatever SOL happened to move in the creation transaction, which is 44x the
 /// average real fill on the same token. Being the earliest event, it became
 /// `first_price`, and every excursion was then measured against the supply mint
-/// rather than against a trade.
+/// rather than against a trade. Recorded as LEARNINGS entry 12.
 ///
-/// The effect was not subtle and was still easy to miss, because a wrong price
-/// looks like a number rather than like an error. Over 188 tokens the unfiltered
-/// aggregate reported a median MFE of **7,054%** and a 90th percentile of
-/// **1,081,162%**. Filtered to `Transfer` and `TransferChecked`, the same cohort
-/// reports a median MFE of 23.7% and a median held-to-end of **-13.4%** — which
-/// is consistent with the base rate `AGENTS.md` opens with, where the first set
-/// was consistent with nothing.
+/// # A price is only a price at a size somebody could trade
+///
+/// Filtering `transfer_type` fixed one instance of a general problem and left
+/// the rest, which is why LEARNINGS entry 14 exists.
+///
+/// `lam` is the largest SOL balance change in the transaction, attributed to
+/// whatever tokens moved in it. When those two are unrelated — a dust transfer
+/// alongside incidental SOL — the quotient is not a price. Because `peak_price`
+/// is `max(lam/tok)` and `trough_price` is `min`, **the aggregate selects
+/// precisely those transactions**: they are the extremes by construction.
+///
+/// Measured on the chain, the worst case was a transfer of **one base unit**
+/// priced at 3,935,002 lamports per unit, against a normal fill of about 0.5 —
+/// roughly eight million times too high. Across three mints the ratio of the
+/// maximum price to the median ran from 765,000x to 8 billion x, while the 99th
+/// percentile sat at 4.5x to 44x. The bulk of the distribution was fine and only
+/// the extremes were destroyed, which is why this survived: `vwap` is
+/// size-weighted and looked sane, and `first`/`last` are chosen by *timestamp*
+/// rather than by price, so the median held-to-end figure — the one research
+/// 0009 leads with — was very nearly right.
+///
+/// The floor is stated as a share of the mint's own median trade on both sides.
+/// Over an unbiased cohort of forty launches it keeps **97.2%** of transactions
+/// and moves the aggregate from impossible to plausible:
+///
+/// | | before | after |
+/// |---|---|---|
+/// | median MFE | 10,485 bps | 4,380 bps |
+/// | p90 MFE | 10,206,630 bps | 708,009 bps |
+/// | largest MFE | 10,546,871,214 bps | 5,650,838 bps |
+/// | largest held-to-end | 1,387,455 bps | 7,917 bps |
+/// | median held-to-end | −218 bps | **−218 bps** |
+///
+/// The last row is the one to read twice. The median is unchanged, so 0009's
+/// headline is undisturbed; every figure that came from an extreme moved by
+/// orders of magnitude. Three of the forty still report an MFE above 1000x, and
+/// those are not claimed to be clean — a blunt floor removes gross
+/// contamination, not all of it.
+///
+/// # `first` and `last` must break ties, or nothing reproduces
+///
+/// `ts` is `min(block_timestamp)` for the transaction, and many fills land in
+/// the same block, so ties are ordinary rather than rare. `argMin(lam / tok, ts)`
+/// picks an **arbitrary** row among tied keys, and it does not pick the same one
+/// twice.
+///
+/// Running one unchanged query three times against a closed window, over forty
+/// launches: **11 of the 40 returned a different `first_price` each time**, one
+/// of them ranging over 3.3x. `first_price` is the denominator of MFE, MAE and
+/// held-to-end, so every return figure this system produces was varying by up to
+/// a factor of three between identical runs of the same query over the same
+/// data.
+///
+/// That is not a precision problem, it is the replay guarantee. AGENTS.md rule 2
+/// exists so a recorded verdict can be re-derived and compared; a measurement
+/// that disagrees with itself cannot be re-derived at all, and a replay
+/// mismatch would have been indistinguishable from a leak.
+///
+/// Ordering by `(ts, sig)` makes the choice total: the signature is unique per
+/// transaction, so no two rows tie on the pair. Verified the same way it was
+/// found — three identical runs, zero differences.
 ///
 /// # The signature pushdown is load-bearing
 ///
@@ -142,6 +208,7 @@ pub fn query_for_mints(mints: &[String], from: &str, to: &str) -> String {
         .map(|m| format!("'{m}'"))
         .collect::<Vec<_>>()
         .join(",");
+    let floor = TRADE_SIZE_FLOOR_DIVISOR;
 
     format!(
         "WITH sigs AS (\
@@ -149,24 +216,37 @@ pub fn query_for_mints(mints: &[String], from: &str, to: &str) -> String {
                   sum(toInt128(value)) AS tok \
            FROM solana.token_transfers \
            WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}' \
-             AND mint IN ({list}) AND value > 0              AND transfer_type IN ('Transfer', 'TransferChecked') \
+             AND mint IN ({list}) AND value > 0 \
+             AND transfer_type IN ('Transfer', 'TransferChecked') \
            GROUP BY mint, tx_signature\
          ), per_tx AS (\
            SELECT s.mint AS mint, s.ts AS ts, s.tok AS tok, \
+                  s.tx_signature AS sig, \
                   arrayMax(arrayMap(x -> toInt128(x.3 - x.2), tx.balance_changes)) AS lam \
            FROM sigs AS s \
            INNER JOIN (SELECT signature, balance_changes FROM solana.transactions \
                        WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}' \
                          AND signature IN (SELECT tx_signature FROM sigs)) AS tx \
-             ON s.tx_signature = tx.signature\
+             ON s.tx_signature = tx.signature \
+           WHERE s.tok > 0\
+         ), typical AS (\
+           SELECT mint, quantileExact(0.5)(tok) AS tok_med, \
+                  quantileExact(0.5)(lam) AS lam_med \
+           FROM per_tx WHERE lam > 0 GROUP BY mint\
+         ), trades AS (\
+           SELECT p.mint AS mint, p.ts AS ts, p.tok AS tok, p.lam AS lam, \
+                  p.sig AS sig \
+           FROM per_tx AS p INNER JOIN typical AS t ON p.mint = t.mint \
+           WHERE p.lam > 0 \
+             AND p.tok * {floor} >= t.tok_med AND p.lam * {floor} >= t.lam_med\
          ) \
          SELECT mint, toString(count()) AS fills, \
                 toString(toUInt64(sum(lam) / sum(tok) * {PRICE_SCALE})) AS vwap, \
-                toString(toUInt64(argMin(lam / tok, ts) * {PRICE_SCALE})) AS first_price, \
-                toString(toUInt64(argMax(lam / tok, ts) * {PRICE_SCALE})) AS last_price, \
+                toString(toUInt64(argMin(lam / tok, (ts, sig)) * {PRICE_SCALE})) AS first_price, \
+                toString(toUInt64(argMax(lam / tok, (ts, sig)) * {PRICE_SCALE})) AS last_price, \
                 toString(toUInt64(max(lam / tok) * {PRICE_SCALE})) AS peak_price, \
                 toString(toUInt64(min(lam / tok) * {PRICE_SCALE})) AS trough_price \
-         FROM per_tx WHERE tok > 0 AND lam > 0 GROUP BY mint"
+         FROM trades GROUP BY mint"
     )
 }
 
@@ -477,6 +557,65 @@ mod tests {
             "no lamport rescaling belongs in this query: {q}"
         );
         assert!(q.contains("toInt128(x.3 - x.2)"));
+    }
+
+    #[test]
+    fn only_trades_of_a_meaningful_size_are_priced() {
+        // `lam` is the largest SOL movement in the transaction, attributed to
+        // whatever tokens moved in it. When the two are unrelated -- a dust
+        // transfer beside incidental SOL -- the quotient is not a price, and
+        // because peak is `max` and trough is `min` the aggregate selects
+        // exactly those rows. Measured on chain: a one-base-unit transfer priced
+        // at 3,935,002 lamports per unit against a normal fill near 0.5.
+        //
+        // Structural rather than numerical, like the transfer_type assertion
+        // beside it and for the same reason: neither changes a value in a way a
+        // hand-written fixture would notice.
+        let q = query_for_mints(&["M".to_owned()], "a", "b");
+        assert!(
+            q.contains("quantileExact(0.5)(tok) AS tok_med"),
+            "the floor must scale to the mint's own trading, not to a constant \
+             in base units, which would depend on decimals and supply: {q}"
+        );
+        assert!(q.contains("quantileExact(0.5)(lam) AS lam_med"), "{q}");
+        assert!(
+            q.contains(&format!("p.tok * {TRADE_SIZE_FLOOR_DIVISOR} >= t.tok_med")),
+            "{q}"
+        );
+        assert!(
+            q.contains(&format!("p.lam * {TRADE_SIZE_FLOOR_DIVISOR} >= t.lam_med")),
+            "the contamination is two-sided -- guarding only the token side \
+             leaves `min(lam/tok)` picking a large transfer with trivial SOL, \
+             which is how MAE reported -100.00%: {q}"
+        );
+    }
+
+    #[test]
+    fn first_and_last_are_chosen_by_a_total_order() {
+        // Many fills share a block, so `ts` ties are ordinary. argMin over a
+        // tied key picks arbitrarily and does not pick the same row twice: one
+        // unchanged query run three times over a closed window returned a
+        // different first_price for 11 of 40 mints, one varying by 3.3x.
+        //
+        // first_price is the denominator of every return in this system, so
+        // that is the replay guarantee rather than a rounding concern -- a
+        // measurement that disagrees with itself cannot be re-derived, and a
+        // replay mismatch would look exactly like a leak.
+        let q = query_for_mints(&["M".to_owned()], "a", "b");
+        assert!(q.contains("argMin(lam / tok, (ts, sig))"), "{q}");
+        assert!(q.contains("argMax(lam / tok, (ts, sig))"), "{q}");
+        assert!(
+            !q.contains("argMin(lam / tok, ts)") && !q.contains("argMax(lam / tok, ts)"),
+            "ordering by ts alone is the non-deterministic form: {q}"
+        );
+        assert!(
+            q.contains("s.tx_signature AS sig"),
+            "the tie-break needs the signature carried through per_tx: {q}"
+        );
+        assert!(
+            q.contains("p.sig AS sig"),
+            "...and through trades, or it is not in scope at the aggregate: {q}"
+        );
     }
 
     #[test]

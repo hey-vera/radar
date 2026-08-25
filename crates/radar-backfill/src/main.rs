@@ -128,6 +128,8 @@ struct Args {
     scope: Scope,
     follow: bool,
     outcomes: bool,
+    /// Replace recorded price paths instead of folding onto them.
+    reprice: bool,
 }
 
 fn usage() -> &'static str {
@@ -136,6 +138,7 @@ fn usage() -> &'static str {
    radar-backfill --follow --store <dir> [--window-minutes N]
 
    radar-backfill --outcomes --store <dir>
+   radar-backfill --outcomes --reprice --store <dir>
 
 --outcomes measures what became of every token already in the store: how long it
 kept trading, how many transfers, how many distinct accounts. Those are the
@@ -156,6 +159,7 @@ fn parse_args() -> Result<Args, String> {
     let mut scope = Scope::default();
     let mut follow = false;
     let mut measure_outcomes = false;
+    let mut reprice = false;
 
     let mut it = std::env::args().skip(1);
     while let Some(flag) = it.next() {
@@ -183,6 +187,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--follow" => follow = true,
             "--outcomes" => measure_outcomes = true,
+            "--reprice" => reprice = true,
             "-h" | "--help" => return Err(usage().to_owned()),
             other => return Err(format!("unknown flag {other}\n{}", usage())),
         }
@@ -208,6 +213,7 @@ fn parse_args() -> Result<Args, String> {
             scope,
             follow,
             outcomes: measure_outcomes,
+            reprice,
         });
     }
 
@@ -231,6 +237,7 @@ fn parse_args() -> Result<Args, String> {
         scope,
         follow,
         outcomes: measure_outcomes,
+        reprice,
     })
 }
 
@@ -578,6 +585,38 @@ fn price_batch(
     }
 }
 
+/// The recorded price path that a new measurement is folded onto.
+///
+/// Normally this is what each mint was last priced at, so a six-hour window can
+/// extend what is known about a token older than six hours instead of replacing
+/// it.
+///
+/// `--reprice` returns nothing, and it exists because **the fold is a ratchet**.
+/// `peak` folds with `max` and `trough` with `min`, so a wrong extreme can never
+/// be lowered by a later, better measurement. The price query admitted dust
+/// transactions until LEARNINGS 14, and every mint priced before that fix
+/// carries an extreme that no correct pass can undo. Repricing replaces the path
+/// instead of extending it.
+///
+/// It reaches a token only while that token is still due for a checkpoint, so it
+/// repairs what is still in flight rather than the whole store. Saying which is
+/// the point: a repair that looked complete and was not would be worse than
+/// none.
+fn baseline_prices(
+    already: &[radar_store::Outcome],
+    reprice: bool,
+) -> BTreeMap<String, prices::Prices> {
+    if reprice {
+        println!(
+            "--reprice: replacing recorded price paths rather than folding onto them.
+               Reaches only tokens still due for a checkpoint; anything already
+               settled keeps whatever it was last measured with."
+        );
+        return BTreeMap::new();
+    }
+    prices::prior_prices(already)
+}
+
 fn measure(args: &Args) -> Result<(), String> {
     let client = Client::default();
     let reader = Reader::open(&args.store);
@@ -622,9 +661,7 @@ fn measure(args: &Args) -> Result<(), String> {
         .ok_or("could not resolve a timestamp for the earliest launch slot")?;
 
     let (price_from, price_to) = price_window(&client, measured_at, &since);
-    // What each mint was last priced at, so a six-hour window can describe a
-    // token older than six hours instead of replacing what is known about it.
-    let prior = prices::prior_prices(&already);
+    let prior = baseline_prices(&already, args.reprice);
 
     let total_known = launches.len();
     let due = due_for_measurement(&launches, &already, measured_at);
@@ -722,6 +759,71 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_usage_text_names_every_flag_the_parser_accepts() {
+        // Not style. `--reprice` was added to the parser and very nearly shipped
+        // undocumented, and a flag that exists but is not in `--help` is a flag
+        // nobody finds. Mutation testing caught that nothing at all constrained
+        // this string: blanking `usage()` entirely left the suite green.
+        let u = usage();
+        for flag in [
+            "--from",
+            "--to",
+            "--store",
+            "--window-minutes",
+            "--scope",
+            "--follow",
+            "--outcomes",
+            "--reprice",
+        ] {
+            assert!(u.contains(flag), "usage() does not mention {flag}:\n{u}");
+        }
+    }
+
+    #[test]
+    fn repricing_drops_the_baseline_so_a_bad_extreme_can_be_undone() {
+        // The fold is a ratchet: `peak` combines with `max`, so a contaminated
+        // extreme survives every later correct measurement. That is how a dust
+        // transaction admitted before LEARNINGS 14 became permanent, and why
+        // fixing the query repairs nothing that is already recorded.
+        let contaminated = radar_store::Outcome {
+            mint: radar_types::Address::new([3u8; 32]),
+            measured_at: radar_types::Slot(9_000),
+            launch_slot: radar_types::Slot(0),
+            first_transfer_slot: None,
+            last_transfer_slot: None,
+            transfers: 12,
+            unique_senders: 4,
+            unique_receivers: 5,
+            graduated_at: None,
+            first_price: Some(1_000),
+            last_price: Some(900),
+            // Eight million times the first price -- the shape a one-base-unit
+            // transfer produces when the SOL beside it is unrelated.
+            peak_price: Some(8_000_000_000),
+            trough_price: Some(1),
+            vwap: Some(950),
+            fills: 40,
+        };
+        let already = vec![contaminated];
+        let key = radar_types::Address::new([3u8; 32]).to_string();
+
+        let folded = baseline_prices(&already, false);
+        assert_eq!(
+            folded.get(&key).and_then(|p| p.peak),
+            Some(8_000_000_000),
+            "the ordinary path carries the recorded extreme forward, which is \
+             correct for a real path and fatal for a wrong one"
+        );
+
+        let replaced = baseline_prices(&already, true);
+        assert!(
+            replaced.is_empty(),
+            "repricing must hand `apply` nothing to fold onto, or `max` keeps \
+             the bad extreme however correct the new measurement is"
+        );
+    }
+
     use super::*;
 
     #[test]

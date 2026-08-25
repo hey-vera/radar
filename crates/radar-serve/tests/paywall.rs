@@ -83,7 +83,7 @@ async fn a_payment_that_cannot_be_verified_is_never_served() {
     // The one that matters. The facilitator is unreachable, so nothing can
     // establish that this caller paid — and an unverifiable payment must be
     // refused rather than trusted.
-    let payment = radar_signer::b64::encode(br#"{"scheme":"exact"}"#);
+    let payment = radar_types::b64::encode(br#"{"scheme":"exact"}"#);
     let (status, body) = post(
         configured(),
         "/x402/v1/instruments/creator_history",
@@ -126,7 +126,7 @@ async fn an_unknown_instrument_is_not_found_rather_than_charged_for() {
 async fn the_paid_route_never_answers_200_without_a_settled_payment() {
     // Stated as its own test because it is the property, and because a future
     // refactor that adds an early return is exactly how it would be lost.
-    let payment = radar_signer::b64::encode(br#"{"scheme":"exact"}"#);
+    let payment = radar_types::b64::encode(br#"{"scheme":"exact"}"#);
     for header in [None, Some(payment.as_str()), Some("garbage")] {
         let (status, body) =
             post(configured(), "/x402/v1/instruments/creator_history", header).await;

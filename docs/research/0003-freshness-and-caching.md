@@ -7,8 +7,8 @@ negotiation.
 
 ## The insight from ClawNet
 
-ClawNet's internal design (`internal/active/cache-layers-distinction.md`,
-`soma-check-header-spec.md`) separates two layers that are usually conflated:
+ClawNet's internal design (`claw-net:internal/active/cache-layers-distinction.md`,
+`claw-net:internal/active/soma-check-header-spec.md`) separates two layers that are usually conflated:
 
 | | ClawNet cache (L1/L2) | Soma Check (ETag) |
 |---|---|---|
@@ -39,7 +39,7 @@ output survives:
 
 - `dist/core/credits.js` (dated 11 Apr) and `dist/core/credits.d.ts` (16 Mar) contain
   `creditCostForEndpoint`, `x402SurchargeCredits`, `cacheCreditCost`, `CREDITS_PER_USD` and
-  `COST_MARKUP_FACTOR` — so the logic `docs/reference/billing.md` documents did exist.
+  `COST_MARKUP_FACTOR` — so the logic `claw-net:docs/reference/billing.md` documents did exist.
 - `src/core/credits.ts` is **not in the working tree**, and `git ls-files` does not list it
   under any path. It was never committed, or was untracked before deletion.
 - `dist/` is in `.gitignore`, so the only surviving copy is untracked build output on one
@@ -50,7 +50,7 @@ output survives:
 
 `src/routes/soma-check.ts` and `soma-check-billing.ts` are absent from both `src/` and `dist/`,
 so Soma Check appears never to have been built — only specified, in
-`internal/active/soma-check-header-spec.md`.
+`claw-net:internal/active/soma-check-header-spec.md`.
 
 **The correction that matters:** an earlier reading of this said the cache economics were
 "designed but not built". That was wrong. They were built, and the source is gone. Worth raising

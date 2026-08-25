@@ -19,6 +19,16 @@
 
 #![forbid(unsafe_code)]
 
+/// Base64, because three crates need it and one of them must not depend on the
+/// signer to get it.
+///
+/// It lived in `radar-signer` and was used from `radar-serve`, which meant the
+/// crate holding `Key::sign` was compiled into the internet-facing process. Rule
+/// 1's "no network, no listener" was true of the signer *binary* and not of the
+/// signer *crate*, and the only thing the web server ever wanted from it was
+/// this.
+pub mod b64;
+
 mod address;
 mod money;
 mod mutability;

@@ -17,7 +17,6 @@
 //! them. Every check is against the decoded bytes; nothing the caller says
 //! about a transaction is an input.
 
-pub mod b64;
 pub mod key;
 pub mod protocol;
 pub mod tx;

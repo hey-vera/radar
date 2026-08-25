@@ -91,6 +91,22 @@ pub struct Study {
     pub later_organic: u64,
     /// Creators grouped by what was known about them at the pivot.
     pub groups: Vec<Group>,
+    /// Later organic rate against prior launch count, over every creator.
+    ///
+    /// Finer bands than [`strata`](Self::strata) can support, because it does
+    /// not split each band in two — so the cells stay large enough to see where
+    /// the gradient actually turns, which is what a threshold has to be set
+    /// from. Setting one off three coarse bands would be picking a number and
+    /// calling it measured.
+    pub frequency_curve: Vec<Group>,
+    /// Candidate thresholds, each splitting creators into below and above.
+    ///
+    /// A rule needs a number, and the number has to come from somewhere. Reading
+    /// it off a curve by eye picks whichever band boundary looks best on this
+    /// sample, which is how a threshold gets fitted to noise. Testing every
+    /// candidate cut and reporting which ones actually separate is the same
+    /// choice made in a way that can be checked and re-run.
+    pub cuts: Vec<Cut>,
     /// The same comparison, held at a fixed launch frequency.
     ///
     /// The control for the confound the headline table cannot address. See
@@ -354,6 +370,8 @@ fn summarise(pivot: Slot, head: Slot, splits: &BTreeMap<Address, Split>) -> Stud
         pivot,
         head,
         strata: stratify(splits),
+        frequency_curve: frequency_curve(splits),
+        cuts: cuts(splits),
         creators: splits.len(),
         prior_launches: splits.values().map(|s| s.prior_launches).sum(),
         prior_measured: splits.values().map(|s| s.prior_measured).sum(),
@@ -361,6 +379,89 @@ fn summarise(pivot: Slot, head: Slot, splits: &BTreeMap<Address, Split>) -> Stud
         later_organic: splits.values().map(|s| s.later_organic).sum(),
         groups,
     }
+}
+
+/// One candidate threshold on prior launch count.
+#[derive(Clone, Debug, Serialize)]
+pub struct Cut {
+    /// Creators with fewer than this many prior launches fall below it.
+    pub at: u64,
+    /// Everyone below the cut.
+    pub below: Group,
+    /// Everyone at or above it.
+    pub above: Group,
+}
+
+impl Cut {
+    /// Whether the quieter half is clearly better than the busier half.
+    ///
+    /// The condition a refusal threshold needs. Below it the cut is a
+    /// preference, not a finding.
+    #[must_use]
+    pub fn separates(&self) -> bool {
+        self.below.clearly_above(&self.above)
+    }
+}
+
+/// Cut points to test.
+const CUT_POINTS: [u64; 6] = [10, 15, 20, 30, 50, 100];
+
+/// Splits the population at each candidate threshold.
+fn cuts(splits: &BTreeMap<Address, Split>) -> Vec<Cut> {
+    CUT_POINTS
+        .iter()
+        .map(|at| {
+            let tally = |members: Vec<&Split>, label: &'static str| Group {
+                label,
+                creators: members.len(),
+                later_launches: members.iter().map(|s| s.later_launches).sum(),
+                later_organic: members.iter().map(|s| s.later_organic).sum(),
+            };
+            Cut {
+                at: *at,
+                below: tally(
+                    splits.values().filter(|s| s.prior_launches < *at).collect(),
+                    "below",
+                ),
+                above: tally(
+                    splits
+                        .values()
+                        .filter(|s| s.prior_launches >= *at)
+                        .collect(),
+                    "above",
+                ),
+            }
+        })
+        .collect()
+}
+
+/// Finer launch-count bands, for finding where the gradient turns.
+const CURVE_BANDS: [(&str, u64, u64); 6] = [
+    ("5-9", 5, 9),
+    ("10-19", 10, 19),
+    ("20-49", 20, 49),
+    ("50-99", 50, 99),
+    ("100-249", 100, 249),
+    ("250+", 250, u64::MAX),
+];
+
+/// Later organic rate by prior launch count, over every creator in the study.
+fn frequency_curve(splits: &BTreeMap<Address, Split>) -> Vec<Group> {
+    CURVE_BANDS
+        .iter()
+        .map(|(label, lo, hi)| {
+            let members: Vec<&Split> = splits
+                .values()
+                .filter(|s| s.prior_launches >= *lo && s.prior_launches <= *hi)
+                .collect();
+            Group {
+                label,
+                creators: members.len(),
+                later_launches: members.iter().map(|s| s.later_launches).sum(),
+                later_organic: members.iter().map(|s| s.later_organic).sum(),
+            }
+        })
+        .collect()
 }
 
 /// Launch-frequency bands, as (label, inclusive lower, inclusive upper).
@@ -586,6 +687,8 @@ mod tests {
             prior_launches: 100,
             prior_measured: 100,
             strata: Vec::new(),
+            frequency_curve: Vec::new(),
+            cuts: Vec::new(),
             later_launches: 500,
             later_organic: 15,
             groups: Vec::new(),
@@ -602,6 +705,8 @@ mod tests {
             prior_launches: 0,
             prior_measured: 0,
             strata: Vec::new(),
+            frequency_curve: Vec::new(),
+            cuts: Vec::new(),
             later_launches: 0,
             later_organic: 0,
             groups: Vec::new(),

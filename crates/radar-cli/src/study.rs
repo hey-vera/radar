@@ -122,7 +122,106 @@ Nothing had been measured about these creators by slot {pivot}, so every
 
     verdict(&study.groups);
     frequency_control(&study.strata);
+    curve(&study.frequency_curve);
+    thresholds(&study.cuts, study.pivot, earliest);
     Ok(())
+}
+
+/// Tests every candidate threshold and says which ones the data supports.
+///
+/// A rule needs a number. Choosing it by looking at a curve picks whichever
+/// boundary flatters this sample; this asks the same question of every candidate
+/// and reports the answer, so the choice can be re-run when there is more data.
+fn thresholds(cuts: &[study::Cut], pivot: Slot, earliest: Slot) {
+    // The count is only meaningful against the window it was counted over, so
+    // the per-day equivalent travels with it. A threshold of twenty launches
+    // means something different over two days than over two months, and a rule
+    // that stores the bare count silently changes meaning as the store grows.
+    let span_slots = pivot.get().saturating_sub(earliest.get());
+    #[expect(clippy::cast_precision_loss, reason = "display of a slot count")]
+    let days = (span_slots as f64 / SLOTS_PER_DAY).max(0.01);
+
+    println!(
+        "
+
+Candidate thresholds on prior launch count
+"
+    );
+    println!(
+        "  measured over {days:.2} days of chain before the pivot
+"
+    );
+    println!(
+        "  {:<8}  {:>7}  {:>24}  {:>24}",
+        "CUT", "PER DAY", "BELOW (quieter)", "AT OR ABOVE (busier)"
+    );
+    for c in cuts {
+        #[expect(clippy::cast_precision_loss, reason = "display of a small integer")]
+        let per_day = c.at as f64 / days;
+        println!(
+            "  {:<8}  {:>7.1}  {:>24}  {:>24}{}",
+            c.at,
+            per_day,
+            cell_rate(&c.below),
+            cell_rate(&c.above),
+            if c.separates() { "  separates" } else { "" }
+        );
+    }
+
+    let supported: Vec<&study::Cut> = cuts.iter().filter(|c| c.separates()).collect();
+    println!();
+    if supported.is_empty() {
+        println!("No candidate threshold separates. Launch count leans the right way but");
+        println!("this sample cannot support a refusal rule built on it, and shipping one");
+        println!("anyway would be a preference wearing a measurement's clothes.");
+        return;
+    }
+    println!(
+        "{} of {} candidate thresholds separate at 95%. The lowest that does is {}",
+        supported.len(),
+        cuts.len(),
+        supported[0].at
+    );
+    println!("launches, which is the least aggressive rule the data actually supports.");
+}
+
+/// Slots in a day, at the nominal 2.5 a second. The measured rate varies by 14%
+/// across days, so this is a scale for reading, never for arithmetic that matters.
+const SLOTS_PER_DAY: f64 = 216_000.0;
+
+/// Prints later organic rate against prior launch count, over every creator.
+///
+/// The shape a threshold has to be read off. Split cells are too small to see
+/// where a gradient turns; these are not split, so they are.
+fn curve(bands: &[study::Group]) {
+    println!(
+        "
+
+Later organic rate by prior launch count, all creators
+"
+    );
+    println!(
+        "  {:<10}  {:>9}  {:>9}  {:>8}  RATE",
+        "LAUNCHES", "CREATORS", "LAUNCHES", "ORGANIC"
+    );
+    for b in bands {
+        println!(
+            "  {:<10}  {:>9}  {:>9}  {:>8}  {}",
+            b.label,
+            b.creators,
+            b.later_launches,
+            b.later_organic,
+            cell_rate(b)
+        );
+    }
+}
+
+/// A rate with its interval, or why there is none.
+fn cell_rate(g: &study::Group) -> String {
+    match (g.later_organic_bps(), g.later_organic_ci_bps()) {
+        (Some(r), Some((lo, hi))) => format!("{} [{} - {}]", bps(r), bps(lo), bps(hi)),
+        _ => "(too few creators)".to_owned(),
+    }
 }
 
 /// Prints the same comparison with launch frequency held roughly fixed.

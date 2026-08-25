@@ -43,6 +43,14 @@ pub enum PassReason {
     CreatorUnproven,
     /// The creator's measured launches mostly died.
     CreatorMostlyStillborn,
+    /// The creator launches faster than the measured threshold.
+    ///
+    /// Not a judgement about spam as such. Measured over 638 creators, tokens
+    /// from creators who launch more graduate less often *per launch*, and the
+    /// separation holds across every threshold between about six and seventeen
+    /// launches a day — so this refuses a population that is measurably worse
+    /// rather than one that looks disreputable.
+    CreatorLaunchesTooFast,
     /// The creator has never graduated a token.
     CreatorNeverGraduated,
     /// The creator graduates tokens, but below the threshold in force.

@@ -117,6 +117,17 @@ pub struct CreatorRecord {
     /// of the intent — so the rate that gates a proposal counts only
     /// [`GraduationMode::Organic`](radar_store::GraduationMode::Organic).
     pub graduated_organic: u64,
+    /// Launches per day across this creator's observed activity, if measurable.
+    ///
+    /// A **negative** signal, and the only one in this record that is. Measured
+    /// over 638 creators in `docs/research/0007`: creators who launch more
+    /// graduate less *per launch*, and every candidate threshold between roughly
+    /// six and seventeen launches a day separated the two populations at 95%.
+    ///
+    /// `None` when the creator's activity spans too little chain to divide by —
+    /// not zero, which would read as the quietest possible creator and is the
+    /// opposite of what an unmeasurable span means.
+    pub launches_per_day: Option<u64>,
 }
 
 impl CreatorRecord {
@@ -150,6 +161,19 @@ impl CreatorRecord {
     #[must_use]
     pub const fn graduated_instant(&self) -> u64 {
         self.graduated.saturating_sub(self.graduated_organic)
+    }
+
+    /// Whether this creator launches faster than the measured threshold.
+    ///
+    /// `false` when the rate could not be measured. A refusal needs evidence,
+    /// and "we could not tell" is not evidence — the sample floor already
+    /// refuses creators nobody knows anything about.
+    #[must_use]
+    pub const fn launches_too_fast(&self, limit_per_day: u64) -> bool {
+        match self.launches_per_day {
+            Some(rate) => rate > limit_per_day,
+            None => false,
+        }
     }
 
     /// Stillbirths per ten thousand measured launches.
@@ -254,6 +278,7 @@ mod tests {
             stillborn: 6,
             graduated: 2,
             graduated_organic: 2,
+            launches_per_day: None,
         };
         assert_eq!(r.graduation_bps(), Some(2_500));
         assert_eq!(r.stillborn_bps(), Some(7_500));

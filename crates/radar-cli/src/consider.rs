@@ -186,7 +186,20 @@ fn paid_tier<'a>(
         }
 
         let structure = rpc.mint_structure(mint).ok();
-        let exit = radar_sim::probe(quoter, mint, structure, 1_000_000_000);
+        // Discovered, not assumed. This used to quote a hardcoded 1_000_000_000
+        // base units for every token — roughly 0.00005% of a pump.fun supply —
+        // so the "capacity" it measured was worth a fraction of a cent and every
+        // candidate was refused as CapacityBelowFloor. Zero proposals read as a
+        // fact about the market and was a fact about the probe. LEARNINGS 10.
+        let exit = radar_sim::discover_capacity(
+            quoter,
+            mint,
+            structure,
+            radar_sim::Search {
+                max_impact_bps: strategy.thresholds.capacity_impact_bps,
+                ..radar_sim::Search::DEFAULT
+            },
+        );
         let Some(candidate) = universe.candidate(mint, Some(exit), Some(sol_price)) else {
             continue;
         };

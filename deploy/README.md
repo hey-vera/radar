@@ -17,6 +17,32 @@ key to a host running Cortex and Pulse would put those services one workflow
 compromise away from a stranger, and the benefit is saving one `scp`. The
 artifact is downloaded and placed by whoever already has that access.
 
+## What is actually running right now (2026-08-25)
+
+**This section exists because the rest of this file described a deployment that
+did not match the box.** An adversarial review found the difference; the runbook
+below is correct, and the live host has not caught up with it yet.
+
+- `radar-follow.service` — installed and active. Correct.
+- `radar-brief.timer` — installed and active. Correct.
+- `radar-serve` — **running, but not as a service.** It is a hand-started process
+  reparented to init, in an SSH login-session scope
+  (`/user.slice/user-1000.slice/session-NNNNNN.scope`). `systemctl status
+  radar-serve` answers *"Unit radar-serve.service could not be found."*
+
+  So it has none of `Restart=always`, `MemoryMax=`, `ProtectSystem=strict` or
+  `NoNewPrivileges=` from [`radar-serve.service`](radar-serve.service). **It will
+  not survive a reboot, and `loginctl terminate-session` kills it.** Step 2 of
+  *First install* has never been run on this host and still needs to be.
+
+- **Name collision, do not be fooled by it.** `/etc/systemd/system/` also holds
+  `radar-hosted.service`, which is inactive and is **not Radar** — it is an
+  unrelated Node service for `radar.claw-net.org` (`npx tsx hosted/server.ts`).
+  Enabling or restarting it does nothing useful and will not start the API.
+
+Until step 2 is run, `radar brief`'s `serving` check is the thing standing between
+a dead API and nobody noticing.
+
 ## First install
 
 Three steps need a human, because each one changes something Radar does not own.
@@ -116,6 +142,12 @@ ssh guardian-vps-tail '
   sudo systemctl restart radar-serve radar-follow &&
   sleep 3 && curl -sS localhost:8402/health'
 ```
+
+**This fails today with `Unit radar-serve.service not found`** — see *What is
+actually running right now*. Until the unit is installed, the running server is a
+session-scoped process and restarting it means killing the old one by pid and
+starting a new one by hand, which is exactly the fragility the unit removes. Do
+step 2 of *First install* rather than building a habit around the workaround.
 
 The `curl` is the point. A deploy that does not end by asking the service what it
 thinks it is running has not been verified, and `/health` reports the version,

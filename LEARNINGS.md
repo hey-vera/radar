@@ -306,3 +306,137 @@ now sits inside one partition and fails when the filter is removed.
 A test written against correct code cannot tell you whether it tests anything.
 Only breaking the code can, and it took ninety seconds to find that one of these
 four was decorative.
+
+---
+
+## 10. A hardcoded probe size that made the answer a constant
+
+**Found:** 2026-08-25, during an adversarial review, by running the decision lane
+against production and asking why the number was round.
+
+`radar consider` reported `0 proposal(s) raised` over 41,254 candidates, with
+`CapacityBelowFloor` on 20 of the 25 candidates that survived every free filter.
+Read as a market observation that is a finding about liquidity. It is not a
+market observation. It is a constant.
+
+`consider.rs` called `radar_sim::probe(quoter, mint, structure, 1_000_000_000)`.
+That fourth argument is an intended position in **raw token units**, hardcoded,
+used for every token regardless of supply, decimals or price. Probe multiples are
+`[1, 2, 5]`, so the largest size ever quoted was 5e9 raw units.
+
+A pump.fun token has six decimals and a supply around 1–2e15 raw units. So the
+probe asked what it could get for roughly **0.00005% of the supply**. Measured
+live against a token the run had just refused: 1e9 raw units quoted at **4,000
+lamports** — about $0.0004 — at 0.59 bps of impact. A thousand times more moved
+the price less than one basis point, so the token had ample depth and the probe
+never went near it.
+
+Carried through: capacity ≤ ~20,000 lamports ≈ $0.002; `capacity_share_bps` of
+2,000 takes a fifth, giving a notional of ~$0.0004 against a `min_notional` of
+$1.00. **The maximum notional the pipeline could ever propose was 2,457× below the
+floor it had to clear.** No token, in any market, at any time, could have produced
+a proposal.
+
+**Cost:** none in money, because the lane is shut. The cost was in belief. Two
+claims rested on this: that the trading lane was "built and tested end to end",
+and that `Policy::CLOSED` was what stood between Radar and a trade. Neither was
+true — the lane was shut four stages upstream of the policy, and the policy had
+never been handed a proposal to refuse.
+
+**The general shape, for the third time:** a broken instrument does not produce
+less data, it produces a **selected** sample, and a selected sample supports
+confident conclusions about the selection. Entry 7 was a filter that selected
+degenerate migrations and got written up as "graduation is inherently instant".
+This one selected nothing at all and read as "these tokens are too thin to trade".
+Both times the store was internally consistent and entirely wrong, and both times
+the only thing that found it was asking the outside world what the answer should
+be and comparing.
+
+**What made it invisible** is worth recording separately.
+`radar-strategy/tests/pipeline.rs` exists precisely to catch this class of bug —
+its own doc comment says *"a strategy whose proposals the kernel always refuses is
+a broken pipeline that both halves' tests call green"*. It missed it, because its
+fixture supplies a synthetic `ExitReport` with `out_lamports` in the hundreds of
+millions while the real probe returns four thousand. The test written to catch the
+bug was immunised against it by a fixture five orders of magnitude away from
+anything the system can measure. A fixture that cannot be produced by the code
+under test is a fixture that tests a different system.
+
+**What catches a recurrence:** `discover_capacity` removes the constant entirely
+— it searches for the size at which impact reaches the budget, scaled to the
+token's own supply rather than to a number somebody picked. `the_search_is_scale_free`
+holds the property the old code violated, and a mutant restoring the fixed 1e9
+rung fails it. `pipeline.rs`'s fixture is now produced by running the real search
+instead of hand-written, so it cannot drift out of reach again.
+
+Fixing this was **not enough on its own** — the funnel still raised zero
+proposals afterwards, for a second, unrelated reason. See entry 11, which was
+found only by re-running rather than declaring this done.
+
+The guard that would have caught it earliest is not a test but a habit: **a funnel
+that reports zero is reporting about itself until something has passed through it
+at least once.** `0 proposals` becomes a claim about the market only after a
+proposal has been observed. Worth applying to every counter in the system, not
+just this one.
+
+---
+
+## 11. A vendor's derived field, trusted as a measurement
+
+**Found:** 2026-08-25, by fixing entry 10 and re-running the funnel anyway.
+
+Fixing the hardcoded probe size did not change the answer. `radar consider` still
+raised **zero proposals** against the live store, still on `CapacityBelowFloor`.
+The probe fix was necessary and not sufficient, and only re-running said so.
+
+`impact_to_bps` reads Jupiter's `priceImpactPct`. For pump.fun bonding-curve
+routes **that field does not vary with size**. Measured on `Q5QRogEuf…pump`:
+
+| size (base units) | out (lamports) | lamports/unit | `priceImpactPct` |
+|---|---|---|---|
+| 1e8  | 2,759 | 0.00002759 | 0.0391 |
+| 1e12 | 27,583,797 | 0.00002758 | 0.0393 |
+| 1e13 | 273,545,706 | 0.00002735 | 0.0473 |
+| 1e14 | 2,525,575,447 | 0.00002526 | 0.1203 |
+
+It moves from 0.039 to 0.048 across a hundredfold increase in size. It is a fee
+or a spread, not impact, and it carries no information about depth. Read as a
+fraction it is ~395 bps at every size — permanently past the 100 bps budget — so
+**`capacity_lamports` returned `None` for every token in the universe**, which
+falls through to `CapacityBelowFloor`. That was the real mechanism behind zero
+proposals; the probe size was only the first of two.
+
+The realised price says what the vendor's derived field does not. Priced against
+the dust quote, the same token shows 2 bps of real impact at 1e12, **85 bps at
+1e13**, 846 at 1e14 and 2,180 at 3e14. That is a depth curve, it was recoverable
+from quotes already being fetched, and it puts real capacity at $31 — a $6.27
+notional against a $1.00 floor.
+
+**Cost:** none in money. The cost was another day of `0 proposals` reading as a
+market fact, on top of entry 10, from a different cause with identical symptoms.
+
+**The general shape:** this is [ADR 0001](docs/adr/0001-decode-locally-never-buy-parsed-transactions.md)
+one level up. That record says never buy parsed transactions, because decoding is
+where a vendor charges fifty times the raw material price. The same argument
+applies to *derived* fields: `outAmount` is raw material and `priceImpactPct` is a
+derivation, and the derivation is the step the vendor gets wrong. Radar already
+owned decoding. It had not noticed it was buying arithmetic.
+
+**What made it survive:** the test fixture had the same defect as the vendor. Its
+`Quoter` returned a constant price per unit while reporting a size-varying
+`impact_bps` — a pool whose stated impact contradicted its own returns, which is
+precisely Jupiter's behaviour inverted. A fixture cannot detect a bug it shares.
+
+**What catches a recurrence:** `discover_capacity` derives impact from the
+realised price and never reads the router's field. The test pools are now real
+constant-product curves that **deliberately report a constant, wrong
+`impact_bps`**, with a compile-time assertion that the lie exceeds the budget — so
+a search that trusted the field would find no capacity and fail. Both halves were
+mutation-checked: reverting to the router's number, and forcing realised impact
+to zero, each fail. `the_measured_pumpfun_curve_reproduces` pins the live numbers
+above as a unit test.
+
+**The habit worth keeping:** entry 10's guard said a funnel reporting zero is
+reporting about itself until something has passed through it. That is what
+prompted re-running after the first fix instead of declaring it done, and it is
+the only reason this was found.

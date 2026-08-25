@@ -26,6 +26,11 @@ radar-store.workspace = true
 radar-types.workspace = true
 serde_json.workspace = true
 
+# The brief's serving check asks the public surface how it is. Already in the
+# workspace tree via radar-sim, radar-serve and radar-backfill, so this adds a
+# dependency edge rather than a dependency.
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
 [dev-dependencies]
 tempfile = "3"
 

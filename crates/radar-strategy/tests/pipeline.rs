@@ -5,6 +5,21 @@
 //! shape of failure worth guarding against: a strategy whose proposals the
 //! kernel always refuses is a broken pipeline that both halves' tests call
 //! green. These tests run one real candidate all the way through.
+//!
+//! # The fixture is produced, not written
+//!
+//! This file used to hand-write its `ExitReport`: one curve point returning 2.4
+//! SOL, and `can_be_stopped: false` beside `structure: None` — a combination
+//! [`ExitReport::build`] never produces, since unread structure means unknown
+//! rather than safe. The live probe was returning four thousand lamports at the
+//! time, five orders of magnitude away, and the test written to catch exactly
+//! that mismatch could not see it because its fixture was unreachable
+//! (LEARNINGS entry 10).
+//!
+//! So the exit here is now built by running the real capacity search against a
+//! stub quoter. If `discover_capacity` cannot produce a report of this shape,
+//! this file stops compiling or stops passing — which is the only way a fixture
+//! can keep being evidence about the system rather than about itself.
 
 use std::collections::BTreeMap;
 
@@ -17,6 +32,78 @@ use radar_types::{Address, MicroUsd, Slot, SlotDelta};
 
 const NOW: Slot = Slot(10_000);
 
+/// A pool with depth expressed relative to the token's own supply.
+///
+/// Impact rises linearly with size and the route runs out past the pool, which
+/// is close enough to a bonding curve for the search to behave as it does live.
+struct Pool {
+    depth_tokens: u64,
+}
+
+impl radar_sim::Quoter for Pool {
+    fn quote_sell(
+        &self,
+        _mint: &Address,
+        size_tokens: u64,
+    ) -> Result<QuotePoint, radar_sim::QuoteError> {
+        let reserve_tokens = u128::from(self.depth_tokens.max(1));
+        let reserve_lamports = reserve_tokens / 40;
+        let x = u128::from(size_tokens);
+        let out = reserve_lamports * x / (reserve_tokens + x);
+        Ok(QuotePoint {
+            size_tokens,
+            out_lamports: u64::try_from(out).unwrap_or(u64::MAX),
+            // Constant and wrong, exactly as Jupiter reports it for pump.fun
+            // routes. The search derives real impact from the realised price, so
+            // a fixture that reported an honest number here would not be
+            // exercising the thing that broke.
+            impact_bps: 395,
+        })
+    }
+}
+
+/// A mint account with a realistic pump.fun supply and nothing that can stop a
+/// sale: six decimals, mint authority present, no freeze authority.
+fn structure() -> radar_sim::MintStructure {
+    let mut data = vec![0u8; 82];
+    data[36..44].copy_from_slice(&SUPPLY.to_le_bytes());
+    data[44] = 6;
+    data[45] = 1;
+    radar_sim::MintStructure::parse(&data, radar_sim::mint::TOKEN_PROGRAM).expect("parses")
+}
+
+/// 1e9 tokens at six decimals.
+const SUPPLY: u64 = 1_000_000_000_000_000;
+
+/// An exit report the real search actually produced.
+fn measured_exit() -> ExitReport {
+    let report = radar_sim::discover_capacity(
+        &Pool {
+            depth_tokens: SUPPLY / 100,
+        },
+        &Address::new([7u8; 32]),
+        Some(structure()),
+        radar_sim::Search::DEFAULT,
+    );
+    // If these stop holding, the search changed in a way that breaks the premise
+    // of every test below, and that is worth failing loudly rather than quietly
+    // running them against a candidate that can no longer propose.
+    assert_eq!(
+        report.confidence,
+        Confidence::Measured,
+        "the fixture must be a measured exit"
+    );
+    assert!(report.is_exitable(), "the fixture must be exitable");
+    assert!(
+        report
+            .capacity_lamports(100)
+            .is_some_and(|c| c > 1_000_000_000),
+        "the fixture needs enough capacity to propose against, got {:?}",
+        report.capacity_lamports(100)
+    );
+    report
+}
+
 fn candidate() -> Candidate {
     Candidate {
         mint: Address::new([7u8; 32]),
@@ -24,19 +111,7 @@ fn candidate() -> Candidate {
         launch_slot: Slot(1_000),
         coordination: None,
         as_of: AsOf::at(NOW),
-        exit: Some(ExitReport {
-            mint: Address::new([7u8; 32]),
-            structure: None,
-            curve: vec![QuotePoint {
-                size_tokens: 5_000_000,
-                out_lamports: 2_400_000_000,
-                impact_bps: 80,
-            }],
-            no_route_at: Vec::new(),
-            structural_threats: Vec::new(),
-            can_be_stopped: false,
-            confidence: Confidence::Measured,
-        }),
+        exit: Some(measured_exit()),
         creator_record: CreatorRecord {
             launches: 20,
             measured: 20,

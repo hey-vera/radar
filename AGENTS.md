@@ -25,11 +25,26 @@ Two facts set the tone, and both are load-bearing:
 So the first deliverable is not a trade. It is a **recorder with a point-in-time
 guarantee**, because the dataset only accumulates forward.
 
-The trading lane exists and is shut. `radar-strategy`, `radar-risk`,
-`radar-signer` and `radar-exec` are built and tested end to end; the shipped
-policy is `Policy::CLOSED`, which refuses every proposal. Nothing is missing and
-nothing is armed. If you are changing that value, you are making a decision about
-money — make it deliberately, and not as a side effect of something else.
+The trading lane exists and is shut, and it is worth being exact about *where*
+it is shut, because an earlier version of this paragraph was not.
+
+`radar-strategy`, `radar-risk`, `radar-signer` and `radar-exec` are each built and
+tested. They are **not tested end to end**: no crate depends on `radar-exec`, no
+test composes it with anything upstream, and the longest chain any test runs is
+strategy → risk in
+[`crates/radar-strategy/tests/pipeline.rs`](crates/radar-strategy/tests/pipeline.rs).
+
+The shipped policy is `Policy::CLOSED`, which refuses every proposal. But the lane
+is shut a long way upstream of that too: on 2026-08-25 a live run over 41,254
+candidates raised **zero proposals**, and the cause was a hardcoded exit-probe size
+that made a proposal arithmetically impossible rather than a market that offered
+nothing. `Policy::CLOSED` has never refused a real proposal, because it has never
+been handed one. See [LEARNINGS](LEARNINGS.md) entry 10.
+
+If you are changing `Policy::CLOSED`, you are making a decision about money — make
+it deliberately, and not as a side effect of something else. Note that opening it
+before the funnel has been exercised with a real proposal would be opening a path
+nothing has ever tested.
 
 ## Build and test
 
@@ -114,9 +129,19 @@ compiles and the tests pass — in which case the tests are also wrong.
    always go to a direct RPC endpoint.
 
 8. **Deny by default when config is missing.** A spend meter with no budget
-   loaded refuses everything, a signer with no allowlist refuses everything, and
-   a paywall with no facilitator serves nothing rather than serving free.
-   Spending nothing is always recoverable.
+   loaded refuses everything, a signer with no allowlist refuses everything, a
+   paywall with no facilitator serves nothing rather than serving free, and
+   `radar brief` with no serving endpoint configured reports that it cannot see
+   rather than that nothing is wrong. Spending nothing is always recoverable.
+
+   **The spend-meter half is currently aspirational, and saying so is the point.**
+   `radar-provider` implements the budget, the commitment and the refusal — and
+   nothing depends on it. Every component that actually spends money
+   (`radar-backfill` on CryptoHouse, `radar-sim` on Jupiter and RPC, `radar-serve`
+   on the facilitator) holds its own HTTP agent and passes through no meter at
+   all. There is no daily ceiling in the running system. Wiring it is Phase 3 of
+   the current plan; until then this rule is enforced for the signer and the
+   paywall and *not* for spend.
 
 9. **Absent is not zero, and unknown is not safe.** A missing price impact is
    `u32::MAX`, not `0`. A capacity that could not be measured is `None`, and
@@ -148,5 +173,13 @@ build output survives. That is the failure mode to avoid, and
   including the data-sourcing landscape and the freshness/caching design.
 - [`docs/adr/`](docs/adr/) — decisions, with what each one costs.
 - `crates/radar-provider` — the metered, cached, health-aware data plane. Pure
-  policy: no HTTP, no clock, no async. Read its module docs first; the rest of
-  the system's economics fall out of it.
+  policy: no HTTP, no clock, no async.
+
+  **Read it as a design, not as the running system.** Nothing depends on this
+  crate. The economics that actually run are a separate, static cost model in
+  [`radar-instruments`](crates/radar-instruments/src/spec.rs), where each
+  instrument *declares* its cost by hand ("a promise, not a measurement") and the
+  x402 price is derived from that declaration. So the price Radar charges is not
+  connected to what Radar spends, and nothing notices if the two diverge. This is
+  the second time a documented-as-central economics layer has turned out to be
+  unreachable; see [LEARNINGS](LEARNINGS.md) entries 1 and 9 for the pattern.

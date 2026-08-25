@@ -175,6 +175,26 @@ impl Universe {
     /// so they are passed in — and both are `Option`, because a strategy must be
     /// able to see that they are missing rather than be handed a default.
     ///
+    /// # What `token_observed_at` means
+    ///
+    /// It is when the token's *mutable* state was last read, and that is not the
+    /// same as when its launch was recorded. A launch slot is immutable: it does
+    /// not go stale, ever, and treating it as a freshness reading refuses
+    /// candidates for the age of a fact that cannot age.
+    ///
+    /// That is what it did. `max_token_age` is 6,000 slots (~40 minutes) and the
+    /// decision lane considers a 24-hour window, so **97.6% of a live run — 40,281
+    /// of 41,254 candidates — was refused as `TokenReadingTooOld`** while the exit
+    /// probe backing each one had been fetched seconds earlier. This is the same
+    /// mistake the token/creator staleness split was introduced to fix, left
+    /// standing on the other half.
+    ///
+    /// So: when an exit is supplied it was measured at the watermark, and the
+    /// token's reading is as fresh as the watermark. With no exit, nothing mutable
+    /// has been read, and the launch observation is the most recent thing known —
+    /// which correctly reads as stale, because a candidate nobody has priced is
+    /// one nobody should act on.
+    ///
     /// Returns `None` if the mint was not launched at or before the watermark,
     /// which is the same as saying it does not exist yet.
     #[must_use]
@@ -185,6 +205,7 @@ impl Universe {
         sol_price: Option<MicroUsd>,
     ) -> Option<Candidate> {
         let facts = self.launches.get(mint)?;
+        let exit_measured = exit.is_some();
         Some(Candidate {
             mint: *mint,
             creator: facts.creator,
@@ -196,7 +217,13 @@ impl Universe {
             // [`Candidate::with_coordination`] if it paid for the look.
             coordination: None,
             sol_price_micro_usd: sol_price,
-            token_observed_at: facts.observed_at,
+            // See the note above: an exit is measured at the watermark, so a
+            // candidate carrying one has been read now, not when it launched.
+            token_observed_at: if exit_measured {
+                self.as_of.slot()
+            } else {
+                facts.observed_at
+            },
             creator_observed_at: self.creator_observed_at(&facts.creator, facts.slot),
         })
     }
@@ -364,6 +391,54 @@ mod tests {
             .candidate(&Address::new([1u8; 32]), None, None)
             .expect("launched");
         assert_eq!(c.token_observed_at, Slot(9_500));
+    }
+
+    #[test]
+    fn a_live_exit_makes_the_token_reading_as_fresh_as_the_watermark() {
+        // The bug this fixes refused 40,281 of 41,254 live candidates as
+        // TokenReadingTooOld while the exit backing each one had been fetched
+        // seconds earlier. A launch slot is immutable and cannot go stale; using
+        // it as a freshness reading is measuring the age of a fact that does not
+        // age.
+        let u = universe_of(&[(1, 9, 1_000)], &[], 10_000);
+        let c = u
+            .candidate(&Address::new([1u8; 32]), Some(an_exit()), None)
+            .expect("launched");
+        assert_eq!(
+            c.token_observed_at,
+            Slot(10_000),
+            "an exit measured at the watermark is a reading at the watermark"
+        );
+    }
+
+    #[test]
+    fn without_an_exit_the_token_reading_is_still_only_as_fresh_as_the_store() {
+        // The other direction, and the one that keeps the rule honest: nothing
+        // mutable has been read, so the candidate must not claim to be current.
+        // Without this, the test above is also satisfied by always answering
+        // "fresh", which would disable the staleness gate entirely.
+        let u = universe_of(&[(1, 9, 1_000)], &[], 10_000);
+        let c = u
+            .candidate(&Address::new([1u8; 32]), None, None)
+            .expect("launched");
+        assert_eq!(c.token_observed_at, Slot(1_000));
+        assert_ne!(c.token_observed_at, u.as_of.slot());
+    }
+
+    /// A minimal exit report, for tests that only care that one is present.
+    fn an_exit() -> ExitReport {
+        ExitReport::build(
+            Address::new([1u8; 32]),
+            None,
+            vec![(
+                1_000,
+                Ok(radar_sim::QuotePoint {
+                    size_tokens: 1_000,
+                    out_lamports: 1_000,
+                    impact_bps: 10,
+                }),
+            )],
+        )
     }
 
     #[test]

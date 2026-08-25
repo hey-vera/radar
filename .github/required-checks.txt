@@ -16,3 +16,12 @@ fmt             = just fmt
 licence-headers = just licence-headers
 cargo-deny      = just cargo-deny
 msrv            = github-only: pinned toolchain, no local recipe (the host may not have 1.90 for its triple)
+mutants         = just mutants   -- NOT YET IN THE RULESET; see below
+
+# `mutants` runs on every pull request and is not yet a required status check,
+# because making it one is a change to the `main` ruleset and only a repository
+# admin can make it. Until then it reports and does not block, which is the
+# weaker half of what it is for -- ADR-style gate-gaming resistance needs the
+# check to be one a contribution cannot land without.
+#
+# Add `mutants` to the required checks on `main` to close that.

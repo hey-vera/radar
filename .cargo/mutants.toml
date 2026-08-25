@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Mutants that survive because they are *equivalent*, not because a test is
+# missing.
+#
+# This file is the place where "we looked and it does not matter" is written
+# down. It has to stay short. Every entry is a claim that a mutation cannot
+# change behaviour, and a wrong claim here is indistinguishable from a missing
+# test — which is the whole failure mode `just mutants` exists to catch.
+#
+# The rule for adding one: apply the mutation by hand, run the suite, and work
+# out *why* it passes. If the answer is "no test covers it", write the test. Only
+# if the answer is "both versions do the same thing" does it belong here, with
+# the reason.
+#
+# Patterns match the mutant names `cargo mutants --list` prints, which read
+# "delete ! in known_files" -- the operation first and the function second. Two
+# runs were spent on regexes written the other way round, which failed silently
+# by excluding nothing, and a third on one written `replace . with .` which
+# failed the other way: it quietly excluded every arithmetic mutant in the
+# function rather than the one that had been examined.
+#
+# Entries are TOML *literal* strings (single quotes) so that `\+` reaches the
+# regex engine as an escaped plus rather than being eaten as a string escape.
+# A pattern that is too broad is worse than no pattern, because it removes
+# coverage without removing the line that says coverage exists.
+
+exclude_re = [
+    # `known_files`: inverting the emptiness guard makes a successful
+    # `git ls-files` fall through to walking the tree instead of returning what
+    # git said. Both produce a usable list. The branches differ only in
+    # *provenance* — tracked versus merely present — and inside a checkout where
+    # everything present is also tracked, nothing can observe the difference.
+    # Verified by hand: the suite passes either way.
+    'delete ! in known_files',
+
+    # `code_span_paths`: advancing by `end` rather than `end + 1` leaves the
+    # closing backtick at the front of the remaining text, where the next
+    # iteration immediately consumes it as the *opening* delimiter. With balanced
+    # backticks the spans re-pair and the extracted set is identical. Verified by
+    # hand, after an argument that it should fail turned out to have dropped an
+    # iteration.
+    'replace \+ with \* in code_span_paths',
+]

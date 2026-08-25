@@ -2,3 +2,7 @@
 /data
 *.log
 .env
+
+# cargo-mutants working output, rewritten on every run.
+mutants.out/
+mutants.out.old/

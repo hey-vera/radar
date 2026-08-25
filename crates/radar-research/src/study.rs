@@ -91,6 +91,72 @@ pub struct Study {
     pub later_organic: u64,
     /// Creators grouped by what was known about them at the pivot.
     pub groups: Vec<Group>,
+    /// The same comparison, held at a fixed launch frequency.
+    ///
+    /// The control for the confound the headline table cannot address. See
+    /// [`Stratum`].
+    pub strata: Vec<Stratum>,
+}
+
+/// One band of launch frequency, split by whether the creator had graduated.
+///
+/// **The confound this exists for.** A creator with four hundred launches is
+/// more likely to have graduated at least one token than a creator with five,
+/// purely by having more attempts. So "has a prior organic graduation" partly
+/// encodes "launches a lot", and if launch frequency itself predicts the later
+/// rate, the headline result could be entirely that in disguise.
+///
+/// Holding frequency roughly fixed and comparing inside the band separates the
+/// two. If creators with a prior graduation still do better than equally
+/// prolific creators without one, frequency is not the explanation. If the gap
+/// disappears inside every band, it was.
+#[derive(Clone, Debug, Serialize)]
+pub struct Stratum {
+    /// The band, for a person reading the table.
+    pub label: String,
+    /// Creators in the band who had no known organic graduation at the pivot.
+    pub without_prior: Group,
+    /// Creators in the band who had at least one.
+    pub with_prior: Group,
+}
+
+impl Stratum {
+    /// Whether both halves of this band have enough creators to be compared.
+    ///
+    /// Most bands will not, on a store holding days. Saying so is the point:
+    /// a band that cannot speak must not be counted as agreement.
+    #[must_use]
+    pub fn can_compare(&self) -> bool {
+        self.without_prior.later_organic_bps().is_some()
+            && self.with_prior.later_organic_bps().is_some()
+    }
+
+    /// Whether the prior-graduation half is clearly better at this frequency.
+    ///
+    /// Clearly, meaning the intervals do not overlap. This is the strong claim.
+    #[must_use]
+    pub fn separates(&self) -> bool {
+        self.with_prior.clearly_above(&self.without_prior)
+    }
+
+    /// Whether the prior-graduation half merely *leads* at this frequency.
+    ///
+    /// Reported apart from [`separates`](Self::separates) because they answer
+    /// different questions and conflating them loses information in both
+    /// directions. A band can lead without separating — too few creators to
+    /// prove a real gap — and a set of bands that all lead is evidence even when
+    /// none of them separates alone, because consistent direction across
+    /// independent bands is itself unlikely by chance.
+    #[must_use]
+    pub fn direction_holds(&self) -> bool {
+        match (
+            self.with_prior.later_organic_bps(),
+            self.without_prior.later_organic_bps(),
+        ) {
+            (Some(w), Some(n)) => w > n,
+            _ => false,
+        }
+    }
 }
 
 /// One band of prior record, and what its creators did next.
@@ -287,6 +353,7 @@ fn summarise(pivot: Slot, head: Slot, splits: &BTreeMap<Address, Split>) -> Stud
     Study {
         pivot,
         head,
+        strata: stratify(splits),
         creators: splits.len(),
         prior_launches: splits.values().map(|s| s.prior_launches).sum(),
         prior_measured: splits.values().map(|s| s.prior_measured).sum(),
@@ -294,6 +361,52 @@ fn summarise(pivot: Slot, head: Slot, splits: &BTreeMap<Address, Split>) -> Stud
         later_organic: splits.values().map(|s| s.later_organic).sum(),
         groups,
     }
+}
+
+/// Launch-frequency bands, as (label, inclusive lower, inclusive upper).
+///
+/// Coarse and few, because every extra band halves the creators in each cell and
+/// the strongest group in the headline table is twenty-two people. Three bands
+/// over this sample is already optimistic.
+const FREQUENCY_BANDS: [(&str, u64, u64); 3] = [
+    ("5-9 launches", 5, 9),
+    ("10-29 launches", 10, 29),
+    ("30+ launches", 30, u64::MAX),
+];
+
+/// Splits every band by prior graduation, so frequency is held roughly fixed.
+fn stratify(splits: &BTreeMap<Address, Split>) -> Vec<Stratum> {
+    FREQUENCY_BANDS
+        .iter()
+        .map(|(label, lo, hi)| {
+            let in_band = |s: &&Split| s.prior_launches >= *lo && s.prior_launches <= *hi;
+            let tally = |members: Vec<&Split>, name: &'static str| Group {
+                label: name,
+                creators: members.len(),
+                later_launches: members.iter().map(|s| s.later_launches).sum(),
+                later_organic: members.iter().map(|s| s.later_organic).sum(),
+            };
+            Stratum {
+                label: (*label).to_owned(),
+                without_prior: tally(
+                    splits
+                        .values()
+                        .filter(in_band)
+                        .filter(|s| s.prior_organic == 0)
+                        .collect(),
+                    "without",
+                ),
+                with_prior: tally(
+                    splits
+                        .values()
+                        .filter(in_band)
+                        .filter(|s| s.prior_organic >= 1)
+                        .collect(),
+                    "with",
+                ),
+            }
+        })
+        .collect()
 }
 
 /// The latest measurement per mint, which is what was known at that watermark.
@@ -425,6 +538,43 @@ mod tests {
         assert!(!tiny.clearly_above(&group(500, 7_000, 70)));
     }
 
+    fn stratum(without_prior: Group, with_prior: Group) -> Stratum {
+        Stratum {
+            label: "band".to_owned(),
+            without_prior,
+            with_prior,
+        }
+    }
+
+    #[test]
+    fn a_band_with_one_side_too_small_cannot_be_compared() {
+        // And must not be counted as agreement. A control that silently treats
+        // "no data" as "confirms the hypothesis" is worse than no control.
+        let s = stratum(group(500, 7_000, 70), group(MIN_GROUP - 1, 30, 3));
+        assert!(!s.can_compare());
+        assert!(!s.separates());
+        assert!(!s.direction_holds());
+    }
+
+    #[test]
+    fn a_band_can_lead_without_separating() {
+        // 1.20% against 2.31% with overlapping intervals -- the real 10-29 band.
+        let without = group(216, 5_000, 60);
+        let with_prior = group(30, 1_000, 23);
+        let s = stratum(without, with_prior);
+        assert!(s.can_compare());
+        assert!(s.direction_holds(), "the prior-graduation half leads");
+        assert!(!s.separates(), "but the intervals overlap");
+    }
+
+    #[test]
+    fn a_band_that_reverses_neither_leads_nor_separates() {
+        let s = stratum(group(200, 5_000, 200), group(30, 1_000, 5));
+        assert!(s.can_compare());
+        assert!(!s.direction_holds());
+        assert!(!s.separates());
+    }
+
     #[test]
     fn the_base_rate_is_over_the_studied_population_not_the_whole_store() {
         // Every group rate is read against this, so it has to describe the same
@@ -435,6 +585,7 @@ mod tests {
             creators: 10,
             prior_launches: 100,
             prior_measured: 100,
+            strata: Vec::new(),
             later_launches: 500,
             later_organic: 15,
             groups: Vec::new(),
@@ -450,6 +601,7 @@ mod tests {
             creators: 0,
             prior_launches: 0,
             prior_measured: 0,
+            strata: Vec::new(),
             later_launches: 0,
             later_organic: 0,
             groups: Vec::new(),

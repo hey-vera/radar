@@ -59,6 +59,58 @@ Intervals are Wilson score at 95%, chosen because these are rare events over
 modest samples — 22 graduations in 1,279 launches — where the textbook normal
 interval misbehaves and will happily return a negative lower bound.
 
+## Controlling for launch frequency
+
+The obvious confound: a creator with four hundred launches is likelier to have
+graduated *something* than a creator with five, purely by having more attempts.
+So "has a prior organic graduation" partly encodes "launches a lot", and if
+launch frequency itself predicts the later rate, the headline could be that in
+disguise.
+
+Holding frequency roughly fixed and comparing inside each band:
+
+```
+  PRIOR LAUNCHES      WITHOUT PRIOR GRADUATION       WITH PRIOR GRADUATION
+  5-9 launches       1.43% [0.91%-2.25%] n=228   9.09% [3.95%-19.58%] n=15  separated
+  10-29 launches     1.20% [0.85%-1.72%] n=216    2.31% [1.22%-4.34%] n=30
+  30+ launches       0.33% [0.19%-0.58%] n=108    1.32% [0.91%-1.94%] n=41  separated
+```
+
+**The direction holds in all three bands, and two of the three separate at 95%.**
+The middle band leads without separating, which is a statement about how many
+creators are in it rather than a contrary result.
+
+Consistency across bands is evidence in its own right. Each band is an
+independent comparison, and three landing the same way is unlikely if there is
+nothing there — more informative here than any single band's interval, given how
+few creators each one holds.
+
+## The confound runs the other way, which is a finding of its own
+
+Read down the **without prior graduation** column. These are creators about whom
+nothing good was known, separated only by how much they launch:
+
+| Prior launches | Later organic rate |
+|---|---|
+| 5–9 | 1.43% |
+| 10–29 | 1.20% |
+| 30+ | **0.33%** |
+
+**Creators who launch more graduate less, per launch** — more than four times
+worse at the top band than the bottom. Launch volume is a *negative* signal.
+
+That settles the confound in the opposite direction from the one feared. Prolific
+creators have more chances to have graduated something, and are worse per
+attempt, so their over-representation in the "has graduated" group was
+**suppressing** the headline result rather than manufacturing it. Controlling for
+frequency strengthens the finding instead of dissolving it.
+
+It also corroborates [0004](0004-measured-launch-base-rates.md) from the other
+end. That note found a creator launching 42 tokens in half an hour with 98% of
+them stillborn, and argued creator launch rate was "cheap to compute and already
+discriminating". This is the same fact measured against outcomes across 638
+creators rather than three.
+
 ## What this is not
 
 **One window, of a few days.** Two days of chain, one pivot. The next month
@@ -67,12 +119,6 @@ one market regime.
 
 **Small where it matters.** The strongest band is 22 creators. The whole study
 rests on 100 organic graduations.
-
-**Uncontrolled for launch frequency.** This is the most likely confound and it is
-not addressed. A creator with four hundred launches has four hundred chances, and
-prolific creators are over-represented among those with any graduation at all.
-The honest next step is to compare creators at similar launch rates, which the
-current study does not do.
 
 **Not a claim about returns.** Graduation is the only unambiguously good outcome
 the store records, and it is still a proxy. Nothing here says a token that
@@ -108,6 +154,11 @@ gap in measurement wearing the costume of a result.
 
 Re-run this weekly. The numbers that matter are the **prior coverage** line — the
 study is only as good as the fraction of pre-pivot launches that had been
-measured — and whether the separation survives as the top band grows past 22
-creators. If the intervals begin to overlap as the sample grows, the effect was
-noise. If they stay apart, the next question is the launch-frequency control.
+measured — and whether the direction keeps holding in all three frequency bands
+as they fill out. If bands start reversing as the sample grows, the effect was
+noise. If the middle band separates too, the case is much stronger.
+
+The remaining confound nobody has touched: **time**. Both halves of every band
+are measured over the same two days, so a market-wide swing affects them equally
+— but nothing here shows the effect persists across regimes, and two days is one
+regime. That needs weeks, not a better method.

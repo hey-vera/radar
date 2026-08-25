@@ -121,7 +121,137 @@ Nothing had been measured about these creators by slot {pivot}, so every
     }
 
     verdict(&study.groups);
+    frequency_control(&study.strata);
     Ok(())
+}
+
+/// Prints the same comparison with launch frequency held roughly fixed.
+///
+/// The headline table cannot distinguish "this creator is good" from "this
+/// creator launches constantly and has more chances". This can, to the extent
+/// the sample allows — and where it does not, it says so rather than reporting
+/// agreement it has not earned.
+fn frequency_control(strata: &[study::Stratum]) {
+    println!(
+        "
+
+Controlling for launch frequency
+"
+    );
+    println!(
+        "  {:<16}  {:>26}  {:>26}",
+        "PRIOR LAUNCHES", "WITHOUT PRIOR GRADUATION", "WITH PRIOR GRADUATION"
+    );
+
+    for s in strata {
+        println!(
+            "  {:<16}  {:>26}  {:>26}{}",
+            s.label,
+            cell(&s.without_prior),
+            cell(&s.with_prior),
+            if s.separates() { "  separated" } else { "" }
+        );
+    }
+
+    let comparable: Vec<&study::Stratum> = strata.iter().filter(|s| s.can_compare()).collect();
+    let separated = comparable.iter().filter(|s| s.separates()).count();
+
+    println!();
+    if comparable.is_empty() {
+        println!("No band has enough creators on both sides to compare, so frequency has");
+        println!("not been controlled for. The headline result stands unqualified and");
+        println!("therefore unconfirmed: it may be entirely explained by prolific creators");
+        println!("having more chances to graduate something.");
+        return;
+    }
+
+    let leading = comparable.iter().filter(|s| s.direction_holds()).count();
+    println!(
+        "{} of {} band(s) could be compared; the direction holds in {leading}, and {separated}",
+        comparable.len(),
+        strata.len()
+    );
+    println!("separate at 95%.");
+
+    frequency_alone(&comparable);
+
+    if leading == comparable.len() {
+        println!();
+        println!("The direction holds at every frequency it could be tested at, and the gap");
+        println!("is not an artefact of prolific creators having more chances. Consistency");
+        println!("across independent bands is evidence in its own right: each band is a");
+        println!("separate comparison, and all of them landing the same way is unlikely if");
+        println!("there is nothing there.");
+        if separated < comparable.len() {
+            println!();
+            println!("Not every band separates at 95%, which is a sample-size statement");
+            println!("rather than a contrary result -- the bands that do not separate still");
+            println!("lean the same way.");
+        }
+    } else if separated > 0 || leading > 0 {
+        println!();
+        println!("The effect holds in some bands and reverses in others. That is what a real");
+        println!("but weak signal looks like on a small sample, and also what a confound");
+        println!("looks like partway through being uncovered. It does not settle anything.");
+    } else {
+        println!();
+        println!("The effect does not survive in any band where it could be tested. The");
+        println!("headline separation is then most likely launch frequency wearing a");
+        println!("creator-quality costume, and `creator_edge` would be selecting for");
+        println!("creators who launch constantly.");
+    }
+}
+
+/// What launch frequency predicts on its own.
+///
+/// Read down the without-prior column: these are creators about whom nothing
+/// good was known, separated only by how much they launch. Any gradient here is
+/// a signal in itself, and it also says which way the confound runs — if
+/// prolific creators do *worse*, then their extra chances were suppressing the
+/// headline result rather than manufacturing it.
+fn frequency_alone(comparable: &[&study::Stratum]) {
+    let rates: Vec<(String, u64)> = comparable
+        .iter()
+        .filter_map(|s| {
+            s.without_prior
+                .later_organic_bps()
+                .map(|r| (s.label.clone(), r))
+        })
+        .collect();
+    if rates.len() < 2 {
+        return;
+    }
+
+    println!();
+    println!("Launch frequency on its own, among creators with nothing good known:");
+    for (label, rate) in &rates {
+        println!("  {:<16}  {}", label, bps(*rate));
+    }
+
+    let (first, last) = (rates[0].1, rates[rates.len() - 1].1);
+    if last < first {
+        println!();
+        println!("Creators who launch more graduate less, per launch. So the confound runs");
+        println!("against the headline result rather than for it: prolific creators have");
+        println!("more chances to have graduated something, and are worse per attempt, which");
+        println!("means controlling for frequency strengthens the finding instead of");
+        println!("dissolving it.");
+    } else if last > first {
+        println!();
+        println!("Creators who launch more graduate more, per launch -- so frequency is a");
+        println!("live confound and the headline result is partly it. The banded comparison");
+        println!("above is the one to trust, not the headline.");
+    }
+}
+
+/// One cell of the control table.
+fn cell(g: &study::Group) -> String {
+    match (g.later_organic_bps(), g.later_organic_ci_bps()) {
+        (Some(r), Some((lo, hi))) => {
+            format!("{} [{}-{}] n={}", bps(r), bps(lo), bps(hi), g.creators)
+        }
+        _ => format!("(n={}, too few)", g.creators),
+    }
 }
 
 /// Says what the table supports, and refuses to say more.

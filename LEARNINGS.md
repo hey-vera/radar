@@ -589,3 +589,118 @@ described three times, and the first (entry 1, a design documented as
 canonical with its source lost) produced a check that genuinely works. The
 lesson is not "write another check". It is that the two failures are different
 in kind, and only one of them has a mechanical fix.
+
+---
+
+## 14. A fix for one instance of a problem, mistaken for a fix for the problem
+
+**Found:** 2026-08-25, by picking the token with the largest recorded excursion
+and asking the chain which transaction produced it.
+
+Entry 12 found that `token_transfers` carries a `MintTo` row at launch holding
+the entire supply, and that it was becoming `first_price`. The fix filtered
+`transfer_type` to `Transfer` and `TransferChecked`, the numbers became
+plausible, and the entry was closed.
+
+The numbers were plausible and still wrong. `MintTo` was an *instance*. The
+problem was that **`lam` — the largest SOL balance change in the transaction —
+is not necessarily the counterparty of the tokens that moved in it.** A supply
+mint is one way for those two to be unrelated. A dust transfer beside incidental
+SOL is another, and it survived the filter because a dust transfer is a
+`Transfer`.
+
+The store's largest recorded excursion was **56,632,867%**. The transaction
+behind it moved **one base unit** of the token against 3,935,002 lamports:
+
+| | tokens moved | lamports | price |
+|---|---|---|---|
+| the peak-price transaction | 1 | 3,935,002 | 3,935,002 |
+| an ordinary fill on the same token | ~5e11 | ~2e6 | ~0.5 |
+
+**What made it survive a second time** is worth more than the instance.
+`peak_price` is `max(lam/tok)` and `trough_price` is `min`. Those are the two
+functions guaranteed to find the contamination: **an aggregate over extremes
+selects its own worst errors, by construction.** Meanwhile `vwap` is
+size-weighted and looked sane, and `first` and `last` are chosen by *timestamp*
+rather than by price — so the one figure anybody quoted, research 0009's median
+held-to-end of −13.4%, was very nearly right. Across three mints the ratio of
+maximum price to median ran from 765,000x to 8 billion x while the 99th
+percentile sat at 4.5x to 44x. The distribution was fine and only its edges were
+destroyed, which is the hardest version of entry 12's shape: not a wrong number
+that looks like a number, but a *mostly right* set of numbers with two wrong
+ones inside it.
+
+0009 published a 90th-percentile MFE of **2,306,382 bps** and nothing objected,
+including the review that merged it.
+
+**What catches a recurrence:** the floor is a share of the mint's own median
+trade, applied to **both** sides. One side is not enough — guarding only tokens
+leaves `min(lam/tok)` picking a large transfer with trivial SOL, which is how
+MAE was reporting −100.00%. Relative rather than absolute, because a floor in
+base units depends on the token's decimals and supply and would be right for the
+token it was chosen on.
+
+---
+
+### The second bug, found only by not shrugging at four rows
+
+Verifying the fix meant running the query the Rust *generates* beside the
+hand-written one that had actually been measured — because validating a
+prototype and then shipping different code is its own failure. Four of forty
+mints differed. Identical fill counts, identical peak, identical trough; only
+`first_price` moved.
+
+That should not have been possible, so it was worth a second look rather than a
+shrug about live data. `ts` is `min(block_timestamp)` for the transaction and
+many fills land in the same block, so ties are ordinary rather than rare.
+`argMin(lam / tok, ts)` picks an **arbitrary** row among tied keys, and does not
+pick the same one twice.
+
+One unchanged query, three runs, one closed window, forty launches:
+
+```
+11 of the 40 returned a different first_price each time, one over a 3.3x range
+```
+
+`first_price` is the denominator of MFE, MAE and held-to-end. **Every return
+figure this system produces was varying by up to a factor of three between
+identical runs over identical data.**
+
+That is not precision, it is the replay guarantee. `AGENTS.md` rule 2 exists so
+a recorded verdict can be re-derived and compared against its recording, and a
+measurement that disagrees with itself cannot be re-derived at all — a replay
+mismatch would have been indistinguishable from a leak. Ordering by `(ts, sig)`
+makes the choice total, verified the way it was found: three identical runs,
+zero differences.
+
+**What catches a recurrence:** a structural assertion that the ordering key is
+the pair and specifically *not* `ts` alone. It cannot be numerical — a fixture
+cannot contain a tie whose resolution is arbitrary, because the arbitrariness
+lives in the server.
+
+---
+
+**The general shape, and it is three things:**
+
+1. **A fix aimed at an instance leaves the class.** Entry 12's filter was
+   correct and complete for `MintTo` and silent about every other way two
+   quantities in one transaction can be unrelated. Ask what the instance was an
+   instance *of*, and fix that.
+2. **An aggregate over extremes selects its own worst errors.** `max` and `min`
+   are not neutral summaries of a distribution; they are searches for the tail,
+   and a contaminated tail is what they will find. A median hides the same
+   corruption completely, which is why the headline figure stayed right while
+   everything beside it was nonsense.
+3. **Four rows out of forty is a finding.** The temptation was to attribute it
+   to live data and move on — the first comparison genuinely *was* confounded by
+   an open window, which made the excuse available and plausible. Closing the
+   window and re-running is what turned a dismissable discrepancy into the more
+   serious of the two bugs.
+
+**Fixing the query repairs nothing already recorded.** The fold is a ratchet —
+`peak` combines with `max`, `trough` with `min` — so a contaminated extreme
+survives every later correct measurement, which is entry 12's ratchet
+observation in a different field. `--reprice` replaces a recorded path instead
+of extending it, and reaches a token only while that token is still due for a
+checkpoint. It repairs what is in flight rather than the whole store, and says
+so, because a repair that looked complete and was not would be worse than none.

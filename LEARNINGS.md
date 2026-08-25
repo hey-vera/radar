@@ -269,3 +269,40 @@ window rather than only the non-quote ones. Filtering it back down to the
 pump.fun transactions measured **slower** — 6.1s against 3.3s, because the
 subquery re-scans — so the tempting fix was the wrong one, and only measuring
 said so.
+
+---
+
+## 9. An invariant documented as stronger than its enforcement
+
+**Found:** 2026-08-24, while auditing the foundation rather than by a failure.
+
+`AGENTS.md` rule 3 said a value observed after the watermark "cannot be
+unwrapped — not 'should not', cannot", naming [`AsOf::accept`] and `Observed<T>`
+as the reason. `Observed<T>` is used **nowhere outside its own crate**. The real
+enforcement is four call sites comparing slots through `AsOf::admits`.
+
+**Cost:** none yet, and that is why it is worth recording. The code was correct;
+the claim about *why* it was correct was not. An invariant defended by "the type
+system makes this impossible" is audited very differently from one defended by
+"four functions each remember to check", and the second needs tests where the
+first does not.
+
+**What is actually true**, now written down: a **scan filters** and a **single
+observation is refused**, and those are deliberately different. A partition file
+holds slots either side of a watermark, so a read must drop rows as it goes —
+erroring would make a normal query fail. `accept` is the right shape for one
+value arriving from outside the store, and nothing needs it today.
+
+**What catches a recurrence:** `radar-store/tests/watermark_holds.rs`, which
+reads across a file that straddles the watermark and sweeps every boundary.
+
+**The part worth keeping** is how the tests were checked. All four passed on the
+first run, which proves nothing — so the filter was deleted and they were run
+again. Two failed. **The outcomes test still passed**, because its fixture
+spread measurements across partitions and the whole-file skip did all the
+filtering, so the per-row path it claimed to test was never reached. The fixture
+now sits inside one partition and fails when the filter is removed.
+
+A test written against correct code cannot tell you whether it tests anything.
+Only breaking the code can, and it took ninety seconds to find that one of these
+four was decorative.

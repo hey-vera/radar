@@ -299,6 +299,12 @@ fn store_with_one_bundler() -> (tempfile::TempDir, Reader) {
             unique_senders: 40,
             unique_receivers: 40,
             graduated_at: Some(Slot(slot + after)),
+            first_price: None,
+            last_price: None,
+            peak_price: None,
+            trough_price: None,
+            vwap: None,
+            fills: 0,
         })
         .expect("append outcome");
     }

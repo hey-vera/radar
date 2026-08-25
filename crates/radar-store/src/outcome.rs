@@ -54,6 +54,103 @@ pub struct Outcome {
     /// `None` means no graduation was recorded — which is not quite "did not
     /// graduate", since the store only knows what it has seen.
     pub graduated_at: Option<Slot>,
+
+    /// The price of the first observed fill, in [`PRICE_SCALE`] units.
+    ///
+    /// Every price here is `None` for a measurement taken before prices were
+    /// recorded at all, and for a token that never traded. Absent, never zero: a
+    /// price of zero is a claim that the token was worthless, and "nobody
+    /// measured it" is a different fact (rule 9).
+    pub first_price: Option<u64>,
+    /// The price of the last observed fill.
+    pub last_price: Option<u64>,
+    /// The highest price any fill traded at — maximum favourable excursion.
+    ///
+    /// The number an exit rule is fit against. A position's best possible
+    /// outcome is bounded by this, and the gap between it and `last_price` is
+    /// what a take-profit rule is for.
+    pub peak_price: Option<u64>,
+    /// The lowest price any fill traded at — maximum adverse excursion.
+    ///
+    /// What a stop would have had to survive. A strategy whose MAE routinely
+    /// exceeds its stop is one that would have been stopped out of its winners.
+    pub trough_price: Option<u64>,
+    /// Volume-weighted average price across every observed fill.
+    pub vwap: Option<u64>,
+    /// Fills the prices above were computed from.
+    ///
+    /// Carried because a peak drawn from three fills and one drawn from three
+    /// hundred are different evidence, and an MFE from a single trade is a
+    /// quote rather than a market.
+    pub fills: u64,
+}
+
+/// Prices are lamports per base unit, scaled by 10^18.
+///
+/// Integer, because a threshold compared as a float compares differently on a
+/// replay. The scale is large because the quantity is small: a pump.fun token
+/// around launch trades near 2e-5 lamports per base unit, which is 21,002,820
+/// billion at this scale and nowhere near overflowing a `u64`.
+///
+/// The ceiling is ~18 lamports per base unit, which a six-decimal token would
+/// reach at roughly 18 billion lamports per whole token. Conversion saturates
+/// rather than wrapping, so a token past that reads as implausibly expensive
+/// instead of implausibly cheap.
+pub const PRICE_SCALE: u128 = 1_000_000_000_000_000_000;
+
+impl Outcome {
+    /// Maximum favourable excursion against the first observed price, in bps.
+    ///
+    /// `None` unless both ends were measured. The headline number for fitting a
+    /// take-profit: how far the price ever went in the holder's favour.
+    #[must_use]
+    pub fn mfe_bps(&self) -> Option<u64> {
+        excursion_bps(self.first_price?, self.peak_price?)
+    }
+
+    /// Maximum adverse excursion against the first observed price, in bps.
+    ///
+    /// Returned as a positive magnitude of the fall. `None` unless both ends
+    /// were measured — a token nobody priced has no drawdown, rather than none.
+    #[must_use]
+    pub fn mae_bps(&self) -> Option<u64> {
+        let (first, trough) = (self.first_price?, self.trough_price?);
+        if first == 0 {
+            return None;
+        }
+        Some(
+            u64::try_from(u128::from(first.saturating_sub(trough)) * 10_000 / u128::from(first))
+                .unwrap_or(u64::MAX),
+        )
+    }
+
+    /// Whether a position opened at the first price and held to the last one
+    /// would have ended up ahead, before costs.
+    ///
+    /// Before costs on purpose, and named so. Round-trip cost is the strategy's
+    /// to apply; folding an assumed one in here would bake a placeholder into
+    /// the measurement it is supposed to be judged against.
+    #[must_use]
+    pub fn held_to_end_gain_bps(&self) -> Option<i64> {
+        let (first, last) = (self.first_price?, self.last_price?);
+        if first == 0 {
+            return None;
+        }
+        let first = i128::from(first);
+        let last = i128::from(last);
+        i64::try_from((last - first) * 10_000 / first).ok()
+    }
+}
+
+/// Rise from `from` to `to`, in basis points. `None` if the base is zero.
+fn excursion_bps(from: u64, to: u64) -> Option<u64> {
+    if from == 0 {
+        return None;
+    }
+    Some(
+        u64::try_from(u128::from(to.saturating_sub(from)) * 10_000 / u128::from(from))
+            .unwrap_or(u64::MAX),
+    )
 }
 
 /// How a token reached the AMM.
@@ -161,6 +258,12 @@ mod tests {
             unique_senders: 3,
             unique_receivers: 2,
             graduated_at: None,
+            first_price: None,
+            last_price: None,
+            peak_price: None,
+            trough_price: None,
+            vwap: None,
+            fills: 0,
         }
     }
 

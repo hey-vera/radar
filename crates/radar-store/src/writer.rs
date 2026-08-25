@@ -288,6 +288,9 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
     let mut transfers = UInt64Builder::new();
     let (mut senders, mut receivers) = (UInt64Builder::new(), UInt64Builder::new());
     let mut graduated_at = UInt64Builder::new();
+    let (mut first_price, mut last_price) = (UInt64Builder::new(), UInt64Builder::new());
+    let (mut peak_price, mut trough_price) = (UInt64Builder::new(), UInt64Builder::new());
+    let (mut vwap, mut fills) = (UInt64Builder::new(), UInt64Builder::new());
 
     for o in outcomes {
         mint.append_value(o.mint.to_string());
@@ -299,6 +302,12 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
         senders.append_value(o.unique_senders);
         receivers.append_value(o.unique_receivers);
         graduated_at.append_option(o.graduated_at.map(radar_types::Slot::get));
+        first_price.append_option(o.first_price);
+        last_price.append_option(o.last_price);
+        peak_price.append_option(o.peak_price);
+        trough_price.append_option(o.trough_price);
+        vwap.append_option(o.vwap);
+        fills.append_value(o.fills);
     }
 
     RecordBatch::try_new(
@@ -313,6 +322,12 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
             Arc::new(senders.finish()),
             Arc::new(receivers.finish()),
             Arc::new(graduated_at.finish()),
+            Arc::new(first_price.finish()),
+            Arc::new(last_price.finish()),
+            Arc::new(peak_price.finish()),
+            Arc::new(trough_price.finish()),
+            Arc::new(vwap.finish()),
+            Arc::new(fills.finish()),
         ],
     )
     .map_err(StoreError::from)

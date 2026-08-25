@@ -57,6 +57,12 @@ fn outcome(
         unique_senders: 30,
         unique_receivers: 30,
         graduated_at: graduated_after.map(|d| Slot(launch_slot + d)),
+        first_price: None,
+        last_price: None,
+        peak_price: None,
+        trough_price: None,
+        vwap: None,
+        fills: 0,
     }
 }
 

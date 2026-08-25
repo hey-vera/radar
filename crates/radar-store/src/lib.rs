@@ -36,7 +36,7 @@ mod writer;
 pub use cursor::{CURSOR_FILE, from_epoch, now_epoch, read_cursor, to_epoch, write_cursor};
 pub use error::StoreError;
 pub use event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
-pub use outcome::{GraduationMode, INSTANT_WITHIN_SLOTS, Outcome};
+pub use outcome::{GraduationMode, INSTANT_WITHIN_SLOTS, Outcome, PRICE_SCALE};
 pub use reader::Reader;
 pub use schema::schema_for;
 pub use writer::{SLOTS_PER_PARTITION, Writer, partition_of};

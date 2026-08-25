@@ -166,6 +166,17 @@ impl Reader {
                 let senders = u64_col(&batch, "unique_senders")?;
                 let receivers = u64_col(&batch, "unique_receivers")?;
                 let graduated_at = u64_col(&batch, "graduated_at")?;
+                // Optional by column, not just by row. A file written before
+                // prices existed simply has no such column, and that must read
+                // as "not measured" rather than fail the whole read -- the live
+                // store held 29 outcome files, 142,826 measurements, when these
+                // were added.
+                let first_price = optional_u64_col(&batch, "first_price");
+                let last_price = optional_u64_col(&batch, "last_price");
+                let peak_price = optional_u64_col(&batch, "peak_price");
+                let trough_price = optional_u64_col(&batch, "trough_price");
+                let vwap = optional_u64_col(&batch, "vwap");
+                let fills = optional_u64_col(&batch, "fills");
 
                 for i in 0..batch.num_rows() {
                     let measured_at = Slot(measured.value(i));
@@ -184,6 +195,12 @@ impl Reader {
                         graduated_at: graduated_at
                             .is_valid(i)
                             .then(|| Slot(graduated_at.value(i))),
+                        first_price: cell(first_price, i),
+                        last_price: cell(last_price, i),
+                        peak_price: cell(peak_price, i),
+                        trough_price: cell(trough_price, i),
+                        vwap: cell(vwap, i),
+                        fills: cell(fills, i).unwrap_or(0),
                     });
                 }
             }
@@ -335,6 +352,30 @@ macro_rules! typed_col {
 }
 
 typed_col!(u64_col, UInt64Array);
+
+/// A `u64` column if the file has one, or `None` if it does not.
+///
+/// Distinct from [`u64_col`], which errors, and both are right for different
+/// things: a column the writer has always emitted going missing is a corrupted
+/// file and should fail loudly, while a column added later is simply absent from
+/// older files and must read as "not measured". Using the erroring form for a new
+/// column would make one schema change unreadable for every file written before
+/// it.
+fn optional_u64_col<'a>(
+    batch: &'a arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Option<&'a UInt64Array> {
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+}
+
+/// One cell of an optional column, absent if either the column or the value is.
+fn cell(column: Option<&UInt64Array>, i: usize) -> Option<u64> {
+    let column = column?;
+    column.is_valid(i).then(|| column.value(i))
+}
 typed_col!(u32_col, UInt32Array);
 typed_col!(bool_col, BooleanArray);
 typed_col!(str_col, StringArray);

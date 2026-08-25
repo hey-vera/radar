@@ -19,6 +19,7 @@ pub mod cryptohouse;
 pub mod extract;
 pub mod launch_block;
 pub mod outcomes;
+pub mod prices;
 
 pub use cryptohouse::{Client, QueryError};
 pub use extract::{Row, Scope, Skipped, Stats, events_from_rows, query_for_window};

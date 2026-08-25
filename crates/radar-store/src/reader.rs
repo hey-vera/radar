@@ -74,6 +74,34 @@ impl Reader {
         Ok(highest)
     }
 
+    /// The lowest slot the store holds.
+    ///
+    /// The other end of [`watermark`](Self::watermark), and it answers a
+    /// different question: how much chain is behind the data, which is what
+    /// decides whether a study has room to split the record at all.
+    ///
+    /// `None` for an empty store, for the same reason as `watermark`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if the store cannot be read.
+    pub fn earliest(&self) -> Result<Option<Slot>, StoreError> {
+        let mut lowest: Option<Slot> = None;
+        for table in Table::ALL {
+            let column = if *table == Table::Outcomes {
+                "measured_at"
+            } else {
+                "slot"
+            };
+            for path in self.files(*table)? {
+                for slot in slots_in(&path, column)? {
+                    lowest = Some(lowest.map_or(slot, |l: Slot| l.min(slot)));
+                }
+            }
+        }
+        Ok(lowest)
+    }
+
     /// Reads every event in a table whose slot is at or before `as_of`.
     ///
     /// The watermark is applied here rather than left to the caller. A reader

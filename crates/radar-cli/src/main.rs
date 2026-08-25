@@ -15,6 +15,7 @@ mod brief;
 mod consider;
 mod graduations;
 mod replay;
+mod study;
 
 use radar_sim::{JupiterQuoter, RpcClient};
 use radar_store::{Event, Reader, Table};
@@ -43,6 +44,9 @@ commands:
                                  record what the strategy decides now
   replay --store <dir> --check <file>
                                  re-derive those decisions and report what moved
+  study --store <dir> [--pivot N]
+                                 does a creator's record predict their next
+                                 launch; splits the store and compares
 "
 }
 
@@ -503,6 +507,13 @@ fn brief_report(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Runs the event study over recorded data.
+fn event_study(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let pivot = flag(args, "--pivot").and_then(|v| v.parse().ok());
+    study::run(&reader, pivot)
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -519,6 +530,7 @@ fn main() -> ExitCode {
         "graduations" => graduation_report(&args),
         "consider" => decision_lane(&args),
         "replay" => replay_lane(&args),
+        "study" => event_study(&args),
         "tools" => {
             tools();
             Ok(())

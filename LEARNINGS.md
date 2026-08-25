@@ -362,16 +362,81 @@ bug was immunised against it by a fixture five orders of magnitude away from
 anything the system can measure. A fixture that cannot be produced by the code
 under test is a fixture that tests a different system.
 
-**What catches a recurrence: nothing yet, and this entry is written before the
-fix rather than after it.** The probe still takes a caller-chosen size. The
-planned fix removes the constant entirely — search for the size at which impact
-reaches the budget, denominated in SOL, reading the token's decimals rather than
-assuming them — and re-points `pipeline.rs`'s fixture at a curve the real probe
-can produce. Until both land, this entry is the only thing standing between Radar
-and the same silence.
+**What catches a recurrence:** `discover_capacity` removes the constant entirely
+— it searches for the size at which impact reaches the budget, scaled to the
+token's own supply rather than to a number somebody picked. `the_search_is_scale_free`
+holds the property the old code violated, and a mutant restoring the fixed 1e9
+rung fails it. `pipeline.rs`'s fixture is now produced by running the real search
+instead of hand-written, so it cannot drift out of reach again.
+
+Fixing this was **not enough on its own** — the funnel still raised zero
+proposals afterwards, for a second, unrelated reason. See entry 11, which was
+found only by re-running rather than declaring this done.
 
 The guard that would have caught it earliest is not a test but a habit: **a funnel
 that reports zero is reporting about itself until something has passed through it
 at least once.** `0 proposals` becomes a claim about the market only after a
 proposal has been observed. Worth applying to every counter in the system, not
 just this one.
+
+---
+
+## 11. A vendor's derived field, trusted as a measurement
+
+**Found:** 2026-08-25, by fixing entry 10 and re-running the funnel anyway.
+
+Fixing the hardcoded probe size did not change the answer. `radar consider` still
+raised **zero proposals** against the live store, still on `CapacityBelowFloor`.
+The probe fix was necessary and not sufficient, and only re-running said so.
+
+`impact_to_bps` reads Jupiter's `priceImpactPct`. For pump.fun bonding-curve
+routes **that field does not vary with size**. Measured on `Q5QRogEuf…pump`:
+
+| size (base units) | out (lamports) | lamports/unit | `priceImpactPct` |
+|---|---|---|---|
+| 1e8  | 2,759 | 0.00002759 | 0.0391 |
+| 1e12 | 27,583,797 | 0.00002758 | 0.0393 |
+| 1e13 | 273,545,706 | 0.00002735 | 0.0473 |
+| 1e14 | 2,525,575,447 | 0.00002526 | 0.1203 |
+
+It moves from 0.039 to 0.048 across a hundredfold increase in size. It is a fee
+or a spread, not impact, and it carries no information about depth. Read as a
+fraction it is ~395 bps at every size — permanently past the 100 bps budget — so
+**`capacity_lamports` returned `None` for every token in the universe**, which
+falls through to `CapacityBelowFloor`. That was the real mechanism behind zero
+proposals; the probe size was only the first of two.
+
+The realised price says what the vendor's derived field does not. Priced against
+the dust quote, the same token shows 2 bps of real impact at 1e12, **85 bps at
+1e13**, 846 at 1e14 and 2,180 at 3e14. That is a depth curve, it was recoverable
+from quotes already being fetched, and it puts real capacity at $31 — a $6.27
+notional against a $1.00 floor.
+
+**Cost:** none in money. The cost was another day of `0 proposals` reading as a
+market fact, on top of entry 10, from a different cause with identical symptoms.
+
+**The general shape:** this is [ADR 0001](docs/adr/0001-decode-locally-never-buy-parsed-transactions.md)
+one level up. That record says never buy parsed transactions, because decoding is
+where a vendor charges fifty times the raw material price. The same argument
+applies to *derived* fields: `outAmount` is raw material and `priceImpactPct` is a
+derivation, and the derivation is the step the vendor gets wrong. Radar already
+owned decoding. It had not noticed it was buying arithmetic.
+
+**What made it survive:** the test fixture had the same defect as the vendor. Its
+`Quoter` returned a constant price per unit while reporting a size-varying
+`impact_bps` — a pool whose stated impact contradicted its own returns, which is
+precisely Jupiter's behaviour inverted. A fixture cannot detect a bug it shares.
+
+**What catches a recurrence:** `discover_capacity` derives impact from the
+realised price and never reads the router's field. The test pools are now real
+constant-product curves that **deliberately report a constant, wrong
+`impact_bps`**, with a compile-time assertion that the lie exceeds the budget — so
+a search that trusted the field would find no capacity and fail. Both halves were
+mutation-checked: reverting to the router's number, and forcing realised impact
+to zero, each fail. `the_measured_pumpfun_curve_reproduces` pins the live numbers
+above as a unit test.
+
+**The habit worth keeping:** entry 10's guard said a funnel reporting zero is
+reporting about itself until something has passed through it. That is what
+prompted re-running after the first fix instead of declaring it done, and it is
+the only reason this was found.

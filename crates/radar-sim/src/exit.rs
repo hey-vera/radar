@@ -225,6 +225,47 @@ const REFERENCE_DIVISOR: u64 = 10_000_000;
 /// beyond this buys nothing and costs a quote.
 const BRACKET_TIGHT_X100: u64 = 125;
 
+/// Impact at `size`, measured against what a dust quote actually returned.
+///
+/// # Why this is computed rather than read
+///
+/// Jupiter reports `priceImpactPct`, and for pump.fun bonding-curve routes **that
+/// field does not vary with size**. Measured on one live token across a 10,000×
+/// range of sizes it moved from 0.0391 to 0.0393 — it is a fee or a spread, not
+/// impact, and it carries no information about depth at all. Read as a fraction
+/// it lands around 395 bps at every size, permanently past a 100 bps budget, so
+/// nothing ever qualified as capacity and [`ExitReport::capacity_lamports`]
+/// returned `None` for every token in the live universe.
+///
+/// The realised price says what the router's derived field does not. On that same
+/// token, lamports-per-unit was flat from 1e8 to 1e12 base units and then fell:
+/// 85 bps of real impact at 1e13, 846 at 1e14, 2,180 at 3e14. That is the depth
+/// curve, and it is recoverable from quotes already being fetched.
+///
+/// This is [ADR 0001](https://github.com/hey-vera/radar) one level up: the
+/// derived number is exactly the step a vendor gets wrong, so it is the step
+/// Radar owns.
+///
+/// Returns 0 when the price held or improved. A better price at a larger size is
+/// rounding or a better route, not negative impact, and reporting it as a bonus
+/// would let a big size look cheaper than a small one.
+#[must_use]
+pub fn realised_impact_bps(reference: (u64, u64), size: u64, out_lamports: u64) -> u32 {
+    let (ref_size, ref_out) = reference;
+    if ref_size == 0 || ref_out == 0 || size == 0 {
+        return u32::MAX;
+    }
+    // Cross-multiplied so the comparison of two ratios needs no division:
+    //   impact = 1 - (out / size) / (ref_out / ref_size)
+    let ideal = u128::from(size) * u128::from(ref_out);
+    let actual = u128::from(out_lamports) * u128::from(ref_size);
+    if actual >= ideal {
+        return 0;
+    }
+    let bps = (ideal - actual) * 10_000 / ideal;
+    u32::try_from(bps).unwrap_or(u32::MAX)
+}
+
 /// Finds the largest size that can be sold within an impact budget.
 ///
 /// This answers a different question from [`probe`], and the difference is the
@@ -262,9 +303,30 @@ pub fn discover_capacity<Q: Quoter + ?Sized>(
     // leave, which is exactly what the budget is about.
     let mut fits: Option<u64> = None;
     let mut fails: Option<u64> = None;
+    // The dust quote every later size is priced against. See
+    // [`realised_impact_bps`] for why the router's own number cannot be used.
+    let mut reference: Option<(u64, u64)> = None;
 
     for _ in 0..search.max_quotes {
-        let outcome = quoter.quote_sell(mint, size);
+        let outcome = quoter.quote_sell(mint, size).map(|point| match reference {
+            // The first successful quote defines the undisturbed price, so its
+            // own impact against itself is zero by construction. The first rung
+            // is a ten-millionth of supply, which is small enough for that to be
+            // very nearly true and is why this is only done here and not in
+            // `probe`, whose first size is chosen by the caller and may already
+            // be moving the market.
+            None => {
+                reference = Some((point.size_tokens, point.out_lamports));
+                QuotePoint {
+                    impact_bps: 0,
+                    ..point
+                }
+            }
+            Some(r) => QuotePoint {
+                impact_bps: realised_impact_bps(r, point.size_tokens, point.out_lamports),
+                ..point
+            },
+        });
         results.push((size, outcome.clone()));
 
         match outcome {
@@ -464,29 +526,111 @@ mod tests {
             .max()
     }
 
-    /// A pool whose depth is expressed relative to the token's own supply.
+    /// A constant-product pool with a token reserve of `depth_tokens`.
+    ///
+    /// Selling `x` returns `sol_reserve * x / (token_reserve + x)`, so the price
+    /// per unit genuinely falls as size grows and real impact works out to
+    /// `x / (reserve + x)` — about 100 bps at a hundredth of the reserve.
+    ///
+    /// **It reports a constant, wrong `impact_bps`, on purpose.** That is what
+    /// Jupiter does for pump.fun routes: 0.039 at every size across four orders
+    /// of magnitude, which read as a fraction is ~395 bps and sits permanently
+    /// past any budget. A fixture that reported honest impact would pass whether
+    /// or not the search trusted it, and would have hidden the bug that made
+    /// every live candidate report no capacity at all.
     struct RelativePool {
         depth_tokens: u64,
     }
 
+    /// What the router claims, regardless of size. Over any budget used here.
+    const ROUTER_LIES_AT_BPS: u32 = 395;
+
+    /// Checked at compile time, because a fixture that agreed with the budget
+    /// would pass whether or not the search trusted the router's field, and the
+    /// tests below would prove nothing.
+    const _: () = assert!(
+        ROUTER_LIES_AT_BPS > Search::DEFAULT.max_impact_bps,
+        "the fixture must contradict the budget"
+    );
+
     impl Quoter for RelativePool {
         fn quote_sell(&self, _mint: &Address, size_tokens: u64) -> Result<QuotePoint, QuoteError> {
-            if size_tokens > self.depth_tokens {
-                return Err(QuoteError::NoRoute { size_tokens });
-            }
-            let impact_bps = u32::try_from(
-                u128::from(size_tokens) * 10_000 / u128::from(self.depth_tokens.max(1)),
-            )
-            .unwrap_or(u32::MAX);
+            let reserve_tokens = u128::from(self.depth_tokens.max(1));
+            // A price of roughly a thousandth of a lamport per base unit at rest.
+            let reserve_lamports = reserve_tokens / 1_000;
+            let x = u128::from(size_tokens);
+            let out = reserve_lamports * x / (reserve_tokens + x);
             Ok(QuotePoint {
                 size_tokens,
-                out_lamports: size_tokens / 1_000,
-                impact_bps,
+                out_lamports: u64::try_from(out).unwrap_or(u64::MAX),
+                impact_bps: ROUTER_LIES_AT_BPS,
             })
         }
     }
 
     const TEST_SUPPLY: u64 = 1_000_000_000_000_000;
+
+    #[test]
+    fn realised_impact_is_the_price_you_actually_got() {
+        // The reference: a dust quote at one lamport per base unit.
+        let reference = (1_000u64, 1_000u64);
+
+        // Same price at a thousand times the size: no impact.
+        assert_eq!(realised_impact_bps(reference, 1_000_000, 1_000_000), 0);
+        // Ten percent worse: 1,000 bps.
+        assert_eq!(realised_impact_bps(reference, 1_000_000, 900_000), 1_000);
+        // One percent worse: 100 bps, the budget the strategy sizes against.
+        assert_eq!(realised_impact_bps(reference, 1_000_000, 990_000), 100);
+        // Half the price: 5,000 bps.
+        assert_eq!(realised_impact_bps(reference, 1_000_000, 500_000), 5_000);
+    }
+
+    #[test]
+    fn a_better_price_at_a_larger_size_is_zero_impact_not_a_bonus() {
+        // Rounding, or a genuinely better route. Reporting it as negative impact
+        // would let a large size look cheaper than a small one and win the
+        // `capacity_lamports` maximum on a technicality.
+        let reference = (1_000u64, 1_000u64);
+        assert_eq!(realised_impact_bps(reference, 1_000_000, 1_100_000), 0);
+    }
+
+    #[test]
+    fn an_unusable_reference_is_maximum_impact_rather_than_none() {
+        // Rule 9. A reference that divides by zero means impact could not be
+        // measured, and unmeasured must never read as "no impact" to something
+        // sizing a position — u32::MAX is past every budget, so it refuses.
+        assert_eq!(realised_impact_bps((0, 1_000), 10, 10), u32::MAX);
+        assert_eq!(realised_impact_bps((1_000, 0), 10, 10), u32::MAX);
+        assert_eq!(realised_impact_bps((1_000, 1_000), 0, 10), u32::MAX);
+    }
+
+    #[test]
+    fn the_measured_pumpfun_curve_reproduces() {
+        // The numbers this whole change came from, quoted live on
+        // Q5QRogEuf…pump on 2026-08-25. The router reported 0.039 at every one
+        // of these sizes; the realised price says what it does not.
+        let reference = (100_000_000u64, 2_759u64);
+        // Near-flat across four orders of magnitude: 2 bps, against the ~395 the
+        // router's field implies at the very same size.
+        assert_eq!(
+            realised_impact_bps(reference, 1_000_000_000_000, 27_583_797),
+            2
+        );
+        // And then it is not flat at all.
+        let at_1e13 = realised_impact_bps(reference, 10_000_000_000_000, 273_545_706);
+        let at_1e14 = realised_impact_bps(reference, 100_000_000_000_000, 2_525_575_447);
+        assert!(
+            (80..=90).contains(&at_1e13),
+            "expected ~85 bps at 1e13, got {at_1e13}"
+        );
+        assert!(
+            (840..=850).contains(&at_1e14),
+            "expected ~846 bps at 1e14, got {at_1e14}"
+        );
+        // The load-bearing consequence: 1e13 fits a 100 bps budget and 1e14 does
+        // not, so this token has real capacity and the router's field hid it.
+        assert!(at_1e13 <= 100 && at_1e14 > 100);
+    }
 
     #[test]
     fn capacity_is_discovered_rather_than_assumed() {
@@ -505,15 +649,19 @@ mod tests {
         );
 
         let found = qualifying_size(&report, 100).expect("a token with depth has capacity");
-        // The true 100 bps size is depth/100 = 1e11. The search must land near it.
+        // The true 100 bps size on this curve is about depth/100 = 1e11.
         assert!(
-            found > 50_000_000_000 && found <= 100_000_000_000,
+            found > 50_000_000_000 && found <= 150_000_000_000,
             "expected capacity near 1e11, got {found}"
         );
         assert!(
             found > 10_000_000_000,
             "the old fixed probe would have reported 1e9 or less; got {found}"
         );
+        // And it got there while the router insisted every size was past the
+        // budget — see the const assertion beside `ROUTER_LIES_AT_BPS`. Gating on
+        // the reported field returns None for the whole universe, which is
+        // exactly what the live run did.
     }
 
     #[test]
@@ -603,9 +751,10 @@ mod tests {
                 }
                 Ok(QuotePoint {
                     size_tokens,
+                    // Flat price: nothing here refuses on impact, so the route
+                    // running out is the only signal that a size is too big.
                     out_lamports: size_tokens / 1_000,
-                    // Always well inside any budget, so impact never refuses.
-                    impact_bps: 10,
+                    impact_bps: ROUTER_LIES_AT_BPS,
                 })
             }
         }

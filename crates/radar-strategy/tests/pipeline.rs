@@ -46,16 +46,18 @@ impl radar_sim::Quoter for Pool {
         _mint: &Address,
         size_tokens: u64,
     ) -> Result<QuotePoint, radar_sim::QuoteError> {
-        if size_tokens > self.depth_tokens {
-            return Err(radar_sim::QuoteError::NoRoute { size_tokens });
-        }
-        let impact_bps =
-            u32::try_from(u128::from(size_tokens) * 10_000 / u128::from(self.depth_tokens.max(1)))
-                .unwrap_or(u32::MAX);
+        let reserve_tokens = u128::from(self.depth_tokens.max(1));
+        let reserve_lamports = reserve_tokens / 40;
+        let x = u128::from(size_tokens);
+        let out = reserve_lamports * x / (reserve_tokens + x);
         Ok(QuotePoint {
             size_tokens,
-            out_lamports: size_tokens / 40,
-            impact_bps,
+            out_lamports: u64::try_from(out).unwrap_or(u64::MAX),
+            // Constant and wrong, exactly as Jupiter reports it for pump.fun
+            // routes. The search derives real impact from the realised price, so
+            // a fixture that reported an honest number here would not be
+            // exercising the thing that broke.
+            impact_bps: 395,
         })
     }
 }

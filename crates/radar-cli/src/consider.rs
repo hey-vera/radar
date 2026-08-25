@@ -155,9 +155,14 @@ fn paid_tier<'a>(
     let mut refused_on_shape = 0usize;
     // Counted apart from "looked and found clean". A fetch that fails leaves the
     // verdict absent, the strategy correctly declines to refuse on an absence,
-    // and the gate is then silently off. Without this line a broken source and a
+    // and the gate is then silently off. Without this a broken source and a
     // clean population produce identical output.
-    let (mut looked, mut look_failed) = (0usize, 0usize);
+    //
+    // The shapes are kept rather than counted, because the count alone had the
+    // same defect one level up: `read: 25, unreadable: 0` is what a detector
+    // whose constant has moved prints too. See [`render_shapes`].
+    let mut shapes = radar_graph::Distribution::new();
+    let mut look_failed = 0usize;
 
     for mint in mints {
         // The launch-block look runs first because it is the cheaper of the two
@@ -167,7 +172,7 @@ fn paid_tier<'a>(
         let coordination = match universe.launches.get(mint) {
             Some(facts) => match blocks.shape_at(mint, facts.slot) {
                 Ok(shape) => {
-                    looked += 1;
+                    shapes.observe(shape);
                     Some(radar_graph::assess(shape).coordination)
                 }
                 Err(e) => {
@@ -212,10 +217,7 @@ fn paid_tier<'a>(
         report_one(strategy, &candidate, &mut proposals);
     }
 
-    println!(
-        "
-launch blocks read: {looked}, unreadable: {look_failed}"
-    );
+    print!("{}", render_shapes(&shapes, look_failed));
     if refused_on_shape > 0 {
         println!(
             "{refused_on_shape} candidate(s) refused on shape before any exit probe was paid for."
@@ -223,12 +225,109 @@ launch blocks read: {looked}, unreadable: {look_failed}"
     }
     if look_failed > 0 {
         println!(
-            "A candidate whose launch block could not be read carries no verdict, and the
-             strategy will not refuse on an absence — so those passed this gate without
-             being examined rather than by being clean."
+            "  A candidate whose launch block could not be read carries no verdict,
+               and the strategy will not refuse on an absence — so those passed this
+               gate without being examined rather than by being clean."
         );
     }
     proposals
+}
+
+/// The widest bar drawn, in characters.
+const BAR_WIDTH: usize = 28;
+
+/// Renders what the sampled launch blocks looked like.
+///
+/// **Every row of the band is printed, at zero if that is what was observed.**
+/// Their absence is the thing worth noticing: [`radar_graph::BUNDLE_CENTRE`] is
+/// a bundler tool's default setting, and when that default moves the detector
+/// goes quiet without saying so. A histogram that omitted empty rows would
+/// report a moved constant exactly the way it reports a clean population, which
+/// is the failure LEARNINGS 5 names — a check that reports absence the same way
+/// it reports success is not a check.
+///
+/// The two rates at the foot are the comparison that makes decay visible at all.
+fn render_shapes(dist: &radar_graph::Distribution, unreadable: usize) -> String {
+    use core::fmt::Write as _;
+
+    let mut out = String::new();
+    let _ = write!(
+        out,
+        "\nlaunch blocks read: {}, unreadable: {unreadable}\n",
+        dist.total()
+    );
+
+    if dist.is_empty() {
+        // Never "0 at the centre". Nothing was looked at, so nothing is known,
+        // and saying otherwise is the exact confusion this function exists to
+        // prevent.
+        out.push_str(
+            "  No launch block was read, so the coordination gate did not run.\n\
+             \x20 That is not the same as finding nothing.\n",
+        );
+        return out;
+    }
+
+    // The band always appears; observed values are merged in.
+    let mut rows: std::collections::BTreeMap<u64, usize> = radar_graph::BUNDLE_BAND
+        .clone()
+        .map(|r| (r, dist.count(r)))
+        .collect();
+    for (recipients, count) in dist.iter() {
+        rows.insert(recipients, count);
+    }
+
+    let peak = rows.values().copied().max().unwrap_or(0).max(1);
+    out.push_str("  recipients  observed\n");
+    for (recipients, count) in rows {
+        let filled = count * BAR_WIDTH / peak;
+        let note = if recipients == radar_graph::BUNDLE_CENTRE {
+            "  <- centre, refused"
+        } else if radar_graph::BUNDLE_BAND.contains(&recipients) {
+            "  <- band"
+        } else {
+            ""
+        };
+        let _ = writeln!(
+            out,
+            "  {recipients:>10}  {:<width$} {count:>4}{note}",
+            "#".repeat(filled),
+            width = BAR_WIDTH
+        );
+    }
+
+    let v = dist.verdicts();
+    let centre = dist.centre_rate_bps().unwrap_or(0);
+    let band = dist.band_rate_bps().unwrap_or(0);
+    let _ = write!(
+        out,
+        "
+  at the centre: {} of {} ({centre} bps)
+  in the band  : {} of {} ({band} bps)
+",
+        v.likely,
+        dist.total(),
+        v.likely + v.suspected,
+        dist.total(),
+    );
+    // Stated as a different population rather than as a target, because it is
+    // one. 0008 measured across *all* launches; everything here has already
+    // survived the creator filters, so the shapes should differ and a reader
+    // comparing the two numbers directly would be drawing a conclusion about
+    // the selection -- the trap LEARNINGS 7, 10 and 11 each record. Only a
+    // sustained collapse is evidence about the detector.
+    let _ = write!(
+        out,
+        "  0008 measured {} bps at the centre and {} bps in the band, over all
+           launches. These have already survived the creator filters, so a
+           different shape is expected; a sustained zero is what would suggest
+           the bundler default has moved off {}.
+",
+        radar_graph::MEASURED_CENTRE_RATE_BPS,
+        radar_graph::MEASURED_BAND_RATE_BPS,
+        radar_graph::BUNDLE_CENTRE,
+    );
+    out
 }
 
 /// Prints what the strategy made of one paid-for candidate.
@@ -319,6 +418,163 @@ mod tests {
         // exists. The whole-dollar half stays exact well past any real balance.
         let large = MicroUsd(u64::MAX);
         assert!(price_dollars(large) > 1.0e12);
+    }
+
+    fn dist(recipients: &[u64]) -> radar_graph::Distribution {
+        let mut d = radar_graph::Distribution::new();
+        for r in recipients {
+            d.observe(radar_graph::LaunchBlockShape {
+                recipients: *r,
+                transactions: 4,
+            });
+        }
+        d
+    }
+
+    #[test]
+    fn nothing_read_does_not_render_as_nothing_found() {
+        // The whole reason this function exists. Before it, `read: 25,
+        // unreadable: 0` was printed for both a healthy gate on a clean sample
+        // and a gate whose constant had moved, and the two were byte-identical.
+        let unread = render_shapes(&dist(&[]), 0);
+        let clean = render_shapes(&dist(&[1, 2, 2, 3, 3, 3]), 0);
+
+        assert_ne!(unread, clean);
+        assert!(
+            unread.contains("did not run"),
+            "an unread sample must say so: {unread}"
+        );
+        assert!(
+            !unread.contains("at the centre"),
+            "no sample means no rate to report: {unread}"
+        );
+        assert!(
+            clean.contains("at the centre: 0 of 6"),
+            "a clean sample has a rate and it is zero: {clean}"
+        );
+    }
+
+    #[test]
+    fn the_band_is_printed_even_when_empty() {
+        // A moved bundler default shows up as holes where the band used to be.
+        // Omitting zero rows would hide exactly that.
+        let out = render_shapes(&dist(&[1, 1, 2, 2, 3]), 0);
+        for recipients in radar_graph::BUNDLE_BAND {
+            assert!(
+                out.lines()
+                    .any(|l| l.trim_start().starts_with(&format!("{recipients} "))),
+                "band row {recipients} missing from:\n{out}"
+            );
+        }
+        assert!(out.contains("<- centre, refused"), "{out}");
+        assert!(out.contains("<- band"), "{out}");
+    }
+
+    #[test]
+    fn the_measured_baseline_is_shown_beside_the_observed_rate() {
+        // The comparison is the decay check. A rate with nothing to compare it
+        // against is a number nobody can act on.
+        let out = render_shapes(&dist(&[6, 1, 1, 1, 1, 1, 1, 1, 1, 1]), 0);
+        assert!(out.contains("1000 bps"), "observed rate missing: {out}");
+        assert!(
+            out.contains(&format!(
+                "{} bps at the centre",
+                radar_graph::MEASURED_CENTRE_RATE_BPS
+            )),
+            "measured baseline missing: {out}"
+        );
+        assert!(
+            out.contains("survived the creator filters"),
+            "the baseline is a different population and the output must say so,              or a reader compares a selected sample against an unselected one: {out}"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_block_is_reported_separately_from_a_read_one() {
+        // A source that failed leaves the verdict absent and the gate silently
+        // off. It must never be folded into the read count.
+        let out = render_shapes(&dist(&[1, 2, 3]), 7);
+        assert!(out.contains("read: 3, unreadable: 7"), "{out}");
+    }
+
+    #[test]
+    fn the_centre_marker_sits_on_the_centre_row_and_nowhere_else() {
+        // Asserting only that both labels appear somewhere is not evidence: with
+        // the comparison inverted, every ordinary row gets "centre" and the
+        // centre row gets "band", and both strings are still present. A mutant
+        // doing exactly that survived the first version of this test.
+        let out = render_shapes(&dist(&[1, 5, 6, 7, 40]), 0);
+        let mut rows_checked = 0;
+        // Only the histogram block. Scanning the whole output for "a line
+        // starting with a number" caught the footer, because `"0008".parse()`
+        // is `Ok(8)` -- a reminder that a loose heuristic in a test is a way to
+        // assert something other than what was meant.
+        for line in out
+            .lines()
+            .skip_while(|l| !l.contains("recipients  observed"))
+            .skip(1)
+            .take_while(|l| !l.trim().is_empty())
+        {
+            let Some(first) = line.split_whitespace().next() else {
+                continue;
+            };
+            let recipients: u64 = first
+                .parse()
+                .unwrap_or_else(|_| panic!("histogram row is not numeric: {line}"));
+            rows_checked += 1;
+            assert_eq!(
+                line.contains("<- centre"),
+                recipients == radar_graph::BUNDLE_CENTRE,
+                "row {recipients}: {line}"
+            );
+            assert_eq!(
+                line.contains("<- band"),
+                radar_graph::BUNDLE_BAND.contains(&recipients)
+                    && recipients != radar_graph::BUNDLE_CENTRE,
+                "row {recipients}: {line}"
+            );
+        }
+        assert_eq!(rows_checked, 5, "expected one row per distinct count");
+    }
+
+    #[test]
+    fn the_bar_is_proportional_to_the_count() {
+        // Not merely "within the width". A bar that is always empty, or that
+        // shrinks as the count grows, also fits inside the width and tells the
+        // reader nothing -- two arithmetic mutants survived a width-only
+        // assertion.
+        let out = render_shapes(&dist(&[1, 1, 1, 1, 2, 2, 3]), 0);
+        let bar_of = |r: u64| -> usize {
+            let want = r.to_string();
+            out.lines()
+                .find(|l| l.split_whitespace().next() == Some(want.as_str()))
+                .map_or_else(
+                    || panic!("no row for {r} in\n{out}"),
+                    |l| l.matches('#').count(),
+                )
+        };
+
+        assert_eq!(
+            bar_of(1),
+            BAR_WIDTH,
+            "the most frequent count fills the width"
+        );
+        assert!(
+            bar_of(1) > bar_of(2),
+            "four observations must draw wider than two"
+        );
+        assert!(bar_of(2) > bar_of(3), "two must draw wider than one");
+        assert_eq!(bar_of(5), 0, "an unobserved band row draws nothing");
+
+        // And still never overflows, including where the peak is one.
+        for sample in [vec![1], vec![1; 500], vec![1, 6], (0..40).collect()] {
+            for line in render_shapes(&dist(&sample), 0).lines() {
+                assert!(
+                    line.matches('#').count() <= BAR_WIDTH,
+                    "bar overflowed on {sample:?}: {line}"
+                );
+            }
+        }
     }
 
     #[test]

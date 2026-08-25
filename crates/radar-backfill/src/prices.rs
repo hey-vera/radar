@@ -110,6 +110,23 @@ pub struct Prices {
 /// wrong by a factor of a billion. It was wrong by exactly that in the first
 /// draft, and only cross-checking against an independent quote caught it.
 ///
+/// # Only transfers between accounts are trades
+///
+/// `transfer_type` must be filtered or the aggregate is meaningless. A launch
+/// emits one `MintTo` carrying the **entire supply** — 1e15 base units against
+/// whatever SOL happened to move in the creation transaction, which is 44x the
+/// average real fill on the same token. Being the earliest event, it became
+/// `first_price`, and every excursion was then measured against the supply mint
+/// rather than against a trade.
+///
+/// The effect was not subtle and was still easy to miss, because a wrong price
+/// looks like a number rather than like an error. Over 188 tokens the unfiltered
+/// aggregate reported a median MFE of **7,054%** and a 90th percentile of
+/// **1,081,162%**. Filtered to `Transfer` and `TransferChecked`, the same cohort
+/// reports a median MFE of 23.7% and a median held-to-end of **-13.4%** — which
+/// is consistent with the base rate `AGENTS.md` opens with, where the first set
+/// was consistent with nothing.
+///
 /// # The signature pushdown is load-bearing
 ///
 /// `signature IN (SELECT tx_signature FROM sigs)` is what makes this affordable.
@@ -132,7 +149,7 @@ pub fn query_for_mints(mints: &[String], from: &str, to: &str) -> String {
                   sum(toInt128(value)) AS tok \
            FROM solana.token_transfers \
            WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}' \
-             AND mint IN ({list}) AND value > 0 \
+             AND mint IN ({list}) AND value > 0              AND transfer_type IN ('Transfer', 'TransferChecked') \
            GROUP BY mint, tx_signature\
          ), per_tx AS (\
            SELECT s.mint AS mint, s.ts AS ts, s.tok AS tok, \
@@ -460,6 +477,21 @@ mod tests {
             "no lamport rescaling belongs in this query: {q}"
         );
         assert!(q.contains("toInt128(x.3 - x.2)"));
+    }
+
+    #[test]
+    fn the_query_counts_only_transfers_between_accounts() {
+        // A launch emits one `MintTo` carrying the entire supply, and it is the
+        // earliest event -- so without this filter it becomes `first_price` and
+        // every excursion is measured against the supply mint instead of a
+        // trade. Unfiltered, a 188-token cohort reported a median MFE of 7,054%;
+        // filtered, 23.7%. The first number looks like a number rather than like
+        // an error, which is why this is asserted rather than eyeballed.
+        let q = query_for_mints(&["M".to_owned()], "a", "b");
+        assert!(
+            q.contains("transfer_type IN ('Transfer', 'TransferChecked')"),
+            "mint and burn events are not fills: {q}"
+        );
     }
 
     #[test]

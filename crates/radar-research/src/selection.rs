@@ -290,6 +290,94 @@ mod tests {
     }
 
     #[test]
+    fn the_population_baseline_is_a_loss_and_stays_one() {
+        // Deleting the minus sign turns the bar Radar has to clear from -13.4%
+        // into +13.4%, which inverts every comparison this module exists to
+        // make. Nothing else in the suite reads the sign.
+        //
+        // Equality rather than `< 0`: an `assert!` over a constant is a lint,
+        // and pinning the value kills the same mutant.
+        assert_eq!(POPULATION_MEDIAN_BPS, -1_340, "-13.4%, from research 0009");
+        assert_eq!(
+            POPULATION_BEAT_COST_BPS, 890,
+            "8.9% of the population cleared an 850 bps round trip"
+        );
+    }
+
+    #[test]
+    fn breaking_even_exactly_on_costs_does_not_count_as_beating_them() {
+        // The boundary is the whole point of the figure: a round trip that
+        // returns precisely its own cost has made nothing. Counting it would
+        // overstate the share that cleared costs by every token sitting exactly
+        // on the line.
+        let cohort = Cohort {
+            decisions: 3,
+            scored: 3,
+            returns_bps: vec![849, 850, 851],
+        };
+        assert_eq!(cohort.beat_cost(850), 1, "only the 851 cleared it");
+        assert_eq!(cohort.beat_cost_bps(850), Some(3_333));
+    }
+
+    #[test]
+    fn exactly_the_minimum_cohort_is_enough_to_report() {
+        // Off by one here either withholds a result that is ready or reports one
+        // that is not. Both directions are checked, because a threshold tested
+        // on one side is a threshold half tested.
+        let cohort = |n: usize| Cohort {
+            decisions: n,
+            scored: n,
+            returns_bps: vec![100; n],
+        };
+        let report = |n: usize| Report {
+            decisions: n,
+            scored: n,
+            proposed: cohort(n),
+            refused: Cohort {
+                decisions: 0,
+                scored: 0,
+                returns_bps: Vec::new(),
+            },
+            cost_bps: 850,
+        };
+
+        assert!(
+            matches!(
+                report(MIN_COHORT - 1).verdict(),
+                Verdict::NotEnoughData { .. }
+            ),
+            "one short is not enough"
+        );
+        assert!(
+            matches!(report(MIN_COHORT).verdict(), Verdict::Measured { .. }),
+            "exactly the minimum is enough"
+        );
+    }
+
+    #[test]
+    fn an_outcome_measured_at_the_decision_slot_is_not_after_it() {
+        // The tightest boundary in the module. An outcome stamped with exactly
+        // the decision's watermark describes the market AT the decision, not
+        // what followed it -- scoring against it would measure a return of
+        // roughly nothing and dilute the cohort with non-observations.
+        let decisions = vec![decision(1, Conclusion::Proposed, Some(1_000))];
+
+        let at_the_decision = vec![outcome(1, 10_000, Some(5_000))];
+        assert_eq!(
+            evaluate(&decisions, &at_the_decision, 850).proposed.scored,
+            0,
+            "an observation at the decision's own watermark says nothing about what followed"
+        );
+
+        let one_slot_later = vec![outcome(1, 10_001, Some(5_000))];
+        assert_eq!(
+            evaluate(&decisions, &one_slot_later, 850).proposed.scored,
+            1,
+            "and one slot later does"
+        );
+    }
+
+    #[test]
     fn an_observation_taken_before_the_decision_does_not_score_it() {
         // The decision had not seen that market. Scoring against it would be
         // look-ahead pointing backwards, and it would usually flatter the

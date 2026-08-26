@@ -40,15 +40,29 @@
 use radar_store::{Conclusion, Decision, Outcome};
 use serde::Serialize;
 
-/// The population median held-to-end return, in basis points.
+/// The population median held-to-end return, in basis points, as research 0009
+/// measured it.
 ///
-/// Measured in research 0009 over 177 tokens and reproduced over 4,199. Any
-/// selection has to beat this to be worth making.
-pub const POPULATION_MEDIAN_BPS: i64 = -1_340;
+/// **Context, not the comparison.** It is measured a different way: entry at the
+/// token's *first fill*, exit at the last price in a six-hour window. Radar's
+/// cohort enters at the price its decision saw, around forty minutes later, and
+/// exits at whatever the outcome pass last observed. Those two numbers cannot be
+/// subtracted from each other, and an earlier version of this module put them
+/// side by side as though they could.
+///
+/// It also moves with the cohort. The same query over 4,199 priced mints gave
+/// −1,340; over 59,647 it gives −863, because `last_price` depends on which
+/// checkpoint a token was last measured at, and the mix of checkpoint ages
+/// changes as the store grows. A constant cannot track that.
+///
+/// The real comparison is [`Report::refused`] — the tokens Radar looked at,
+/// priced the same way, in the same passes, and declined.
+pub const POPULATION_MEDIAN_BPS_0009: i64 = -1_340;
 
-/// The share of the population that finished above an 850 bps round trip, per
-/// ten thousand.
-pub const POPULATION_BEAT_COST_BPS: u64 = 890;
+/// The share of research 0009's population that finished above an 850 bps round
+/// trip, per ten thousand. Context, on the same caveat as
+/// [`POPULATION_MEDIAN_BPS_0009`].
+pub const POPULATION_BEAT_COST_BPS_0009: u64 = 890;
 
 /// The smallest cohort worth reporting percentiles for.
 ///
@@ -135,21 +149,30 @@ pub enum Verdict {
         /// How many are needed.
         needed: usize,
     },
-    /// The selection's median return, beside the population's.
+    /// The proposed cohort's median return, beside the refused cohort's.
+    ///
+    /// Both are priced the same way — entry at the watermark the decision was
+    /// taken, exit at the last observation after it — and both come from the
+    /// same passes over the same universe. That is what makes a difference
+    /// between them attributable to the selection rather than to the
+    /// measurement.
     ///
     /// Deliberately not phrased as "better" or "worse". A median above the
-    /// population's over a few hundred tokens in one regime is not an edge, and
+    /// control's over a few hundred tokens in one regime is not an edge, and
     /// naming it one here would put the conclusion where the reader expects the
     /// evidence.
     Measured {
-        /// The selection's median return in basis points, net of costs.
+        /// The proposed cohort's median return in basis points, net of costs.
         selection_median_bps: i64,
-        /// The population's, from research 0009.
-        population_median_bps: i64,
-        /// The share of the selection clearing costs, per ten thousand.
+        /// The refused cohort's, net of costs — the matched control.
+        ///
+        /// `None` when too few refusals were scoreable to compare against, which
+        /// is a different state from a control that broke even.
+        control_median_bps: Option<i64>,
+        /// The share of the proposed cohort clearing costs, per ten thousand.
         selection_beat_cost_bps: u64,
-        /// The population's, from research 0009.
-        population_beat_cost_bps: u64,
+        /// The refused cohort's share, per ten thousand.
+        control_beat_cost_bps: Option<u64>,
     },
 }
 
@@ -181,11 +204,16 @@ impl Report {
             };
         }
         let cost = i64::try_from(self.cost_bps).unwrap_or(i64::MAX);
+        // The control is held to the same cohort floor. A "control" of four
+        // tokens would be a number with no content, and putting it beside a real
+        // one would lend it the other's credibility.
+        let control_ready = self.refused.scored >= MIN_COHORT;
         Verdict::Measured {
             selection_median_bps: self.proposed.median().unwrap_or(0) - cost,
-            population_median_bps: POPULATION_MEDIAN_BPS,
+            control_median_bps: control_ready.then(|| self.refused.median().unwrap_or(0) - cost),
             selection_beat_cost_bps: self.proposed.beat_cost_bps(self.cost_bps).unwrap_or(0),
-            population_beat_cost_bps: POPULATION_BEAT_COST_BPS,
+            control_beat_cost_bps: control_ready
+                .then(|| self.refused.beat_cost_bps(self.cost_bps).unwrap_or(0)),
         }
     }
 }
@@ -297,10 +325,13 @@ mod tests {
         //
         // Equality rather than `< 0`: an `assert!` over a constant is a lint,
         // and pinning the value kills the same mutant.
-        assert_eq!(POPULATION_MEDIAN_BPS, -1_340, "-13.4%, from research 0009");
         assert_eq!(
-            POPULATION_BEAT_COST_BPS, 890,
-            "8.9% of the population cleared an 850 bps round trip"
+            POPULATION_MEDIAN_BPS_0009, -1_340,
+            "-13.4%, from research 0009"
+        );
+        assert_eq!(
+            POPULATION_BEAT_COST_BPS_0009, 890,
+            "8.9% of that population cleared an 850 bps round trip"
         );
     }
 
@@ -478,11 +509,81 @@ mod tests {
             report.verdict(),
             Verdict::Measured {
                 selection_median_bps: 9_150,
-                population_median_bps: POPULATION_MEDIAN_BPS,
+                // No refusals were scored, so there is nothing to compare
+                // against -- and saying so beats quoting a figure measured a
+                // different way as though it were a control.
+                control_median_bps: None,
                 selection_beat_cost_bps: 10_000,
-                population_beat_cost_bps: POPULATION_BEAT_COST_BPS,
+                control_beat_cost_bps: None,
             }
         );
+    }
+
+    #[test]
+    fn the_control_is_the_refusals_priced_the_same_way() {
+        // The comparison that means something. Both cohorts enter at the price
+        // their own decision saw and exit at the last observation after it, in
+        // the same passes over the same universe -- so a difference between them
+        // is attributable to the selection rather than to the measurement.
+        //
+        // An earlier version compared against research 0009's population median,
+        // which enters at the token's FIRST FILL. Those are not the same
+        // quantity and subtracting one from the other was meaningless.
+        let mut decisions = Vec::new();
+        let mut outcomes = Vec::new();
+        for i in 0..40u8 {
+            decisions.push(decision(i, Conclusion::Proposed, Some(1_000)));
+            outcomes.push(outcome(i, 60_000, Some(1_500)));
+        }
+        for i in 40..80u8 {
+            decisions.push(decision(i, Conclusion::Passed, Some(1_000)));
+            outcomes.push(outcome(i, 60_000, Some(500)));
+        }
+
+        let report = evaluate(&decisions, &outcomes, 850);
+        let Verdict::Measured {
+            selection_median_bps,
+            control_median_bps,
+            ..
+        } = report.verdict()
+        else {
+            panic!("both cohorts clear the floor")
+        };
+        assert_eq!(
+            selection_median_bps, 4_150,
+            "+50% gross less an 850 bps trip"
+        );
+        assert_eq!(
+            control_median_bps,
+            Some(-5_850),
+            "the refusals halved, and are reported net on the same basis"
+        );
+    }
+
+    #[test]
+    fn a_control_too_small_to_mean_anything_is_withheld() {
+        // A control of four tokens beside a cohort of forty would borrow the
+        // larger one's credibility. Absent is the honest report.
+        let mut decisions: Vec<Decision> = (0..40u8)
+            .map(|i| decision(i, Conclusion::Proposed, Some(1_000)))
+            .collect();
+        let mut outcomes: Vec<Outcome> =
+            (0..40u8).map(|i| outcome(i, 60_000, Some(1_500))).collect();
+        for i in 40..44u8 {
+            decisions.push(decision(i, Conclusion::Passed, Some(1_000)));
+            outcomes.push(outcome(i, 60_000, Some(500)));
+        }
+
+        let Verdict::Measured {
+            control_median_bps,
+            control_beat_cost_bps,
+            ..
+        } = evaluate(&decisions, &outcomes, 850).verdict()
+        else {
+            panic!("the proposed cohort clears the floor")
+        };
+        assert_eq!(control_median_bps, None, "four refusals is not a control");
+        assert_eq!(control_beat_cost_bps, None);
     }
 
     #[test]

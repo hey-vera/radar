@@ -77,23 +77,43 @@ pub fn run(reader: &Reader, cost_bps: u64) -> Result<(), String> {
         }
         Verdict::Measured {
             selection_median_bps,
-            population_median_bps,
+            control_median_bps,
             selection_beat_cost_bps,
-            population_beat_cost_bps,
+            control_beat_cost_bps,
         } => {
-            println!("\n{:<28} {:>12} {:>12}", "", "selection", "population");
             println!(
-                "{:<28} {:>12} {:>12}",
-                "median return (net, bps)", selection_median_bps, population_median_bps
+                "
+{:<30} {:>12} {:>12}",
+                "", "proposed", "refused"
             );
             println!(
-                "{:<28} {:>12} {:>12}",
-                "cleared costs (bps of set)", selection_beat_cost_bps, population_beat_cost_bps
+                "{:<30} {:>12} {:>12}",
+                "median return (net, bps)",
+                selection_median_bps,
+                render(control_median_bps)
             );
             println!(
-                "\nThe population figures are research 0009's, measured over 4,199 tokens.\n\
-                 A selection median above the population's, over one regime, is not an\n\
-                 edge -- it is a reason to keep measuring. Report it as such."
+                "{:<30} {:>12} {:>12}",
+                "cleared costs (bps of set)",
+                selection_beat_cost_bps,
+                render(control_beat_cost_bps.and_then(|v| i64::try_from(v).ok()))
+            );
+            println!(
+                "
+The control is the refusals, priced the same way in the same passes:
+                 entry at the watermark each decision was taken, exit at the last
+                 observation after it. That is what makes a difference between them
+                 attributable to the selection rather than to the measurement.
+                 
+                 For context only, research 0009 measured the unselected population at
+                 {} bps median with {} bps of it clearing costs — but that enters at
+                 each token's FIRST FILL, so it is not this quantity and the two must
+                 not be subtracted.
+                 
+                 A median above the control's, over one regime, is not an edge. It is a
+                 reason to keep measuring.",
+                radar_research::selection::POPULATION_MEDIAN_BPS_0009,
+                radar_research::selection::POPULATION_BEAT_COST_BPS_0009,
             );
         }
     }

@@ -47,6 +47,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod selection;
 pub mod study;
 
 use radar_asof::AsOf;

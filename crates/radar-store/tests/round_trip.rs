@@ -576,6 +576,7 @@ fn decision(mint: u8, decided: u64) -> radar_store::Decision {
         coordination: Some("unremarkable".to_owned()),
         kernel_outcome: Some(radar_store::KernelOutcome::Refused),
         kernel_reasons: vec!["NoAutonomy".to_owned(), "InputsTooStale".to_owned()],
+        entry_price: Some(27_583_000_000),
         inputs_digest: "9f2c4a1b".to_owned(),
     }
 }

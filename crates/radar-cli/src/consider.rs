@@ -384,6 +384,32 @@ fn render_shapes(dist: &radar_graph::Distribution, unreadable: usize) -> String 
     out
 }
 
+/// What one base unit was worth when the decision was taken, scaled by
+/// [`radar_store::PRICE_SCALE`].
+///
+/// Read off the **smallest rung** of the realised price ladder the exit probe
+/// already built, so it is the price the sizing was derived from and cannot
+/// disagree with it. The smallest rung because impact grows with size: the
+/// largest rung is what a full exit would realise, and the smallest is the
+/// closest thing the ladder holds to an untouched mid.
+///
+/// Scaled to match [`radar_store::Outcome`]'s price columns exactly, because
+/// the only thing this number is for is being compared with them.
+fn entry_price_of(exit: &radar_sim::ExitReport) -> Option<u64> {
+    let rung = exit
+        .curve
+        .iter()
+        .filter(|q| q.size_tokens > 0 && q.out_lamports > 0)
+        .min_by_key(|q| q.size_tokens)?;
+    // u128 throughout: lamports times a 1e18 scale leaves u64 immediately, and a
+    // wrapped entry price would make every return computed from it nonsense in
+    // a way that still looks like a number.
+    let scaled = u128::from(rung.out_lamports)
+        .checked_mul(radar_store::PRICE_SCALE)?
+        .checked_div(u128::from(rung.size_tokens))?;
+    u64::try_from(scaled).ok()
+}
+
 /// Turns one examined candidate into the row that outlives the run.
 ///
 /// # What is recorded, and what deliberately is not
@@ -438,6 +464,7 @@ fn record_of(
         // Absent because the source could not answer, never because the launch
         // looked clean. Collapsing those would quietly clear a bundle.
         coordination: candidate.coordination.map(|c| format!("{c:?}")),
+        entry_price: candidate.exit.as_ref().and_then(entry_price_of),
         kernel_outcome: verdict.map(|v| match v {
             Verdict::Authorised(_) => radar_store::KernelOutcome::Authorised,
             Verdict::Refused { .. } => radar_store::KernelOutcome::Refused,
@@ -565,6 +592,80 @@ mod tests {
             token_observed_at: radar_types::Slot(9_900),
             creator_observed_at: radar_types::Slot(9_900),
         }
+    }
+
+    fn quote(size_tokens: u64, out_lamports: u64) -> radar_sim::exit::QuotePoint {
+        radar_sim::exit::QuotePoint {
+            size_tokens,
+            out_lamports,
+            impact_bps: 20,
+        }
+    }
+
+    fn report(curve: Vec<radar_sim::exit::QuotePoint>) -> radar_sim::ExitReport {
+        radar_sim::ExitReport {
+            mint: radar_types::Address::new([7u8; 32]),
+            structure: None,
+            curve,
+            no_route_at: Vec::new(),
+            structural_threats: Vec::new(),
+            can_be_stopped: false,
+            confidence: radar_sim::exit::Confidence::Measured,
+        }
+    }
+
+    #[test]
+    fn the_entry_price_comes_from_the_smallest_rung() {
+        // Impact grows with size, so the largest rung is what a full exit would
+        // realise and the smallest is the closest the ladder holds to an
+        // untouched price. Taking the wrong end would systematically understate
+        // the entry and overstate every return measured from it.
+        let exit = report(vec![
+            quote(1_000_000_000_000, 20_000_000),
+            quote(1_000_000_000, 30_000),
+            quote(10_000_000_000_000, 150_000_000),
+        ]);
+        // 30_000 lamports for 1e9 base units = 3e-5 lamports each, times 1e18.
+        assert_eq!(entry_price_of(&exit), Some(30_000_000_000_000));
+    }
+
+    #[test]
+    fn a_rung_with_no_route_does_not_become_a_price_of_zero() {
+        // A zero-output rung is "no route at this size", not "worthless". Taking
+        // it would record an entry price of zero, which `return_bps` then
+        // refuses -- so the decision would silently become unscoreable.
+        let exit = report(vec![quote(1_000_000_000, 0), quote(2_000_000_000, 60_000)]);
+        assert_eq!(entry_price_of(&exit), Some(30_000_000_000_000));
+    }
+
+    #[test]
+    fn an_empty_curve_has_no_entry_price() {
+        // Absent, not zero. A token with no route was never priced, and a
+        // decision about it cannot be scored later.
+        assert_eq!(entry_price_of(&report(Vec::new())), None);
+        assert_eq!(entry_price_of(&report(vec![quote(0, 0)])), None);
+    }
+
+    #[test]
+    fn the_entry_price_is_on_the_same_scale_as_a_recorded_outcome() {
+        // The only purpose of this number is to be compared with the outcome
+        // table's prices. A scale mismatch would make every return wrong by
+        // eighteen orders of magnitude while still looking like a number --
+        // which is the shape LEARNINGS 12 and 14 both record.
+        //
+        // One lamport per base unit must land exactly on PRICE_SCALE.
+        let exit = report(vec![quote(1_000, 1_000)]);
+        assert_eq!(
+            u128::from(entry_price_of(&exit).expect("priced")),
+            radar_store::PRICE_SCALE
+        );
+    }
+
+    #[test]
+    fn a_price_too_large_to_represent_is_refused_rather_than_wrapped() {
+        // A wrapped entry price produces returns that are confidently wrong.
+        let exit = report(vec![quote(1, u64::MAX)]);
+        assert_eq!(entry_price_of(&exit), None);
     }
 
     #[test]

@@ -141,6 +141,11 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             // pipeline rather than a refusal.
             Field::new("kernel_outcome", DataType::Utf8, true),
             string_list("kernel_reasons"),
+            // What one base unit was worth when the decision was taken, scaled
+            // by PRICE_SCALE. Null when no exit was probed. This is the field a
+            // return is measured from: the outcome table's first_price is the
+            // token's first fill ever, which is not where Radar entered.
+            Field::new("entry_price", DataType::UInt64, true),
             Field::new("inputs_digest", DataType::Utf8, false),
         ])),
         Table::Launches | Table::Trades | Table::Graduations => {

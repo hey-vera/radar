@@ -15,6 +15,7 @@ mod brief;
 mod consider;
 mod graduations;
 mod replay;
+mod selection;
 mod study;
 
 use radar_sim::{JupiterQuoter, RpcClient};
@@ -49,6 +50,10 @@ commands:
   study --store <dir> [--pivot N]
                                  does a creator's record predict their next
                                  launch; splits the store and compares
+  selection --store <dir> [--cost-bps N]
+                                 did the selection beat the population it
+                                 selected from; the question the project exists
+                                 to answer
 "
 }
 
@@ -494,6 +499,16 @@ fn record_target(args: &[String]) -> Option<String> {
         .or_else(|| flag(args, "--store"))
 }
 
+/// Reports whether the selection beat the population.
+fn selection_report(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let cost_bps = flag(args, "--cost-bps")
+        .and_then(|v| v.parse().ok())
+        // The measured round trip, not a placeholder. See `Thresholds`.
+        .unwrap_or(radar_strategy::creator_edge::Thresholds::DEFAULT.assumed_round_trip_bps);
+    selection::run(&reader, cost_bps)
+}
+
 /// Records or re-checks decisions, proving they reproduce.
 fn replay_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -571,6 +586,7 @@ fn main() -> ExitCode {
         "consider" => decision_lane(&args),
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
+        "selection" => selection_report(&args),
         "tools" => {
             tools();
             Ok(())

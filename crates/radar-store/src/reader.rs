@@ -236,6 +236,10 @@ impl Reader {
                 let coordination = str_col(&batch, "coordination")?;
                 let kernel = str_col(&batch, "kernel_outcome")?;
                 let digest = str_col(&batch, "inputs_digest")?;
+                // Optional by column, not just by row: a file written before
+                // entry prices existed has no such column, and that must read
+                // as "not measured" rather than fail the whole read.
+                let entry_price = optional_u64_col(&batch, "entry_price");
                 let reasons = string_list_col(&batch, "reasons")?;
                 let kernel_reasons = string_list_col(&batch, "kernel_reasons")?;
 
@@ -271,6 +275,7 @@ impl Reader {
                             _ => KernelOutcome::Refused,
                         }),
                         kernel_reasons: kernel_reasons.get(i).cloned().unwrap_or_default(),
+                        entry_price: cell(entry_price, i),
                         inputs_digest: digest.value(i).to_owned(),
                     });
                 }

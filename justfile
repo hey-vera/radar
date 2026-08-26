@@ -27,7 +27,7 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "590"
+export MIN_TESTS := "614"
 
 _default:
     @just --list --unsorted
@@ -116,6 +116,25 @@ mutants base="origin/main":
     # A real file rather than `<(...)`: process substitution hands the tool a
     # /dev/fd path, which it cannot open on every platform this recipe has to run
     # on. Verified by it failing that way first.
+    # `git diff` does not see untracked files, so a brand-new module is invisible
+    # to `--in-diff` and passes without being mutated at all. That happened: a
+    # local run reported 28 mutants and CI, where the files were committed,
+    # found 74 and four misses in the new code. A check that reports absence the
+    # same way it reports success is not a check -- LEARNINGS 5, in the tooling
+    # rather than in the code.
+    #
+    # Refusing rather than staging them, because a recipe that changes the
+    # repository it is run in is a recipe that can damage one.
+    untracked=$(git ls-files --others --exclude-standard -- '*.rs')
+    if [ -n "$untracked" ]; then
+        echo "untracked Rust files are invisible to \`git diff\` and would NOT be mutated:" >&2
+        echo "$untracked" | sed 's/^/  /' >&2
+        echo "" >&2
+        echo "Stage them first (\`git add -N <path>\` is enough), or this check" >&2
+        echo "passes without having looked at your new code." >&2
+        exit 1
+    fi
+
     diff_file=$(mktemp)
     trap 'rm -f "$diff_file"' EXIT
     # Merge-base on the left so the scope is what this branch changed rather than

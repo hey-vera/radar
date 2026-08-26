@@ -240,6 +240,11 @@ pub enum Table {
     /// Outcome measurements. Not chain events but derived observations, each
     /// stamped with the slot it was taken at.
     Outcomes,
+    /// What the decision lane concluded about a candidate, at the watermark it
+    /// concluded it. Not a chain event and not a measurement of the chain — a
+    /// record of what Radar did, which is the only thing that can later be
+    /// joined against prices to ask whether the selection was worth making.
+    Decisions,
 }
 
 impl Table {
@@ -251,6 +256,7 @@ impl Table {
         Self::Trades,
         Self::Graduations,
         Self::Outcomes,
+        Self::Decisions,
     ];
 
     /// The tables that hold chain events, which is what
@@ -266,7 +272,32 @@ impl Table {
     /// Whether this table holds chain events rather than measurements.
     #[must_use]
     pub const fn holds_events(self) -> bool {
-        !matches!(self, Self::Outcomes)
+        matches!(self, Self::Launches | Self::Trades | Self::Graduations)
+    }
+
+    /// The column holding the slot this row is ordered and watermarked by.
+    ///
+    /// Not every table calls it `slot`, and the difference is meaningful:
+    /// an event happened *at* a slot, while a measurement or a decision was
+    /// *taken as of* one. Naming them alike would hide that.
+    ///
+    /// This exists as a method because the alternative had already appeared
+    /// four times as `if table == Table::Outcomes { .. } else { .. }`, scattered
+    /// across the reader, the writer and the schema. A third table makes every
+    /// one of those silently wrong rather than loudly broken, which is
+    /// [LEARNINGS] entry 6 exactly: widening a constant is an API change to
+    /// every place that matches on it, and the compiler cannot see it. A method
+    /// makes the match exhaustive, so adding a table stops compiling until each
+    /// site is considered.
+    ///
+    /// [LEARNINGS]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
+    #[must_use]
+    pub const fn slot_column(self) -> &'static str {
+        match self {
+            Self::Launches | Self::Trades | Self::Graduations => "slot",
+            Self::Outcomes => "measured_at",
+            Self::Decisions => "decided_at",
+        }
     }
 
     /// The directory name under the store root.
@@ -277,6 +308,7 @@ impl Table {
             Self::Trades => "trades",
             Self::Graduations => "graduations",
             Self::Outcomes => "outcomes",
+            Self::Decisions => "decisions",
         }
     }
 }
@@ -328,20 +360,39 @@ mod tests {
     fn events_route_to_their_own_table() {
         assert_eq!(trade(1).table(), Table::Trades);
         assert_eq!(Table::Trades.dir(), "trades");
-        assert_eq!(Table::ALL.len(), 4);
+        // Every table appears in ALL. Derived rather than a literal, because a
+        // literal has to be bumped by whoever adds a table and is therefore
+        // exactly as reliable as their remembering to.
+        assert_eq!(
+            Table::ALL.len(),
+            Table::EVENT_TABLES.len() + Table::ALL.iter().filter(|t| !t.holds_events()).count()
+        );
     }
 
     #[test]
     fn the_event_tables_are_exactly_the_ones_read_as_events() {
         // Iterating ALL and calling read() on each compiles and fails at
-        // runtime, because outcomes have no slot column. The separate constant
-        // is what stops that being a comment nobody reads.
-        assert_eq!(Table::EVENT_TABLES.len(), Table::ALL.len() - 1);
-        assert!(!Table::EVENT_TABLES.contains(&Table::Outcomes));
-        for t in Table::EVENT_TABLES {
-            assert!(t.holds_events(), "{t:?}");
+        // runtime, because a measurement has no slot column. The separate
+        // constant is what stops that being a comment nobody reads.
+        //
+        // Stated as "EVENT_TABLES is exactly the tables that hold events",
+        // rather than as a count with a named exception. The first version said
+        // `EVENT_TABLES.len() == ALL.len() - 1` and listed Outcomes by name,
+        // which broke the moment a second non-event table arrived -- and would
+        // have passed had the new table been wrongly added to EVENT_TABLES.
+        for t in Table::ALL {
+            assert_eq!(
+                Table::EVENT_TABLES.contains(t),
+                t.holds_events(),
+                "{t:?} disagrees about whether it holds events"
+            );
         }
         assert!(!Table::Outcomes.holds_events());
+        assert!(!Table::Decisions.holds_events());
+        assert!(
+            Table::ALL.iter().any(|t| !t.holds_events()),
+            "a check over an empty set of exceptions would pass vacuously"
+        );
     }
 
     #[test]

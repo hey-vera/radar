@@ -47,7 +47,12 @@ const PAID_TIER_CAP: usize = 25;
 /// # Errors
 ///
 /// Returns a message if the store cannot be read or has recorded nothing.
-pub fn run(reader: &Reader, window: u64, cap: usize) -> Result<(), String> {
+pub fn run(
+    reader: &Reader,
+    window: u64,
+    cap: usize,
+    record_to: Option<&str>,
+) -> Result<(), String> {
     let watermark = reader
         .watermark()
         .map_err(|e| format!("cannot read the store: {e}"))?
@@ -126,15 +131,62 @@ pub fn run(reader: &Reader, window: u64, cap: usize) -> Result<(), String> {
     };
     println!("SOL price    : ${:.2}\n", price_dollars(sol_price));
 
+    let mut examined: Vec<(radar_store::Decision, Address)> = Vec::new();
     let proposals = paid_tier(
         &universe,
         &strategy,
         worth_paying_for.iter().take(budget),
         &quoter,
         sol_price,
+        watermark,
+        &mut examined,
     );
 
-    verdicts(&proposals, watermark);
+    let verdicts_by_mint = verdicts(&proposals, watermark);
+
+    if let Some(dir) = record_to {
+        // The kernel's verdict is folded in only now, because a decision is not
+        // complete until the thing with the authority has seen it.
+        for (record, mint) in &mut examined {
+            if let Some(v) = verdicts_by_mint.get(mint) {
+                record.kernel_outcome = Some(match v {
+                    Verdict::Authorised(_) => radar_store::KernelOutcome::Authorised,
+                    Verdict::Refused { .. } => radar_store::KernelOutcome::Refused,
+                });
+                if let Verdict::Refused { reasons } = v {
+                    record.kernel_reasons = reasons.iter().map(|r| format!("{r:?}")).collect();
+                }
+            }
+        }
+        write_decisions(dir, &examined)?;
+    }
+    Ok(())
+}
+
+/// Appends the examined candidates to the store.
+///
+/// # Errors
+///
+/// Returns a message if the store cannot be opened or written. A recording
+/// failure is loud rather than swallowed: the whole point of the pass is the
+/// record, so a run that printed its findings and failed to keep them has not
+/// done the job.
+fn write_decisions(dir: &str, examined: &[(radar_store::Decision, Address)]) -> Result<(), String> {
+    let mut writer = radar_store::Writer::open(dir, 512)
+        .map_err(|e| format!("cannot open the store for writing: {e}"))?;
+    for (record, _) in examined {
+        writer
+            .append_decision(record.clone())
+            .map_err(|e| format!("cannot record a decision: {e}"))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("cannot flush decisions: {e}"))?;
+    println!(
+        "
+recorded {} decision(s) to {dir}/decisions",
+        examined.len()
+    );
     Ok(())
 }
 
@@ -148,6 +200,8 @@ fn paid_tier<'a>(
     mints: impl Iterator<Item = &'a Address>,
     quoter: &JupiterQuoter,
     sol_price: MicroUsd,
+    watermark: radar_types::Slot,
+    examined: &mut Vec<(radar_store::Decision, Address)>,
 ) -> Vec<Proposal> {
     let rpc = RpcClient::default();
     let blocks = CryptoHouseBlocks::default();
@@ -214,7 +268,7 @@ fn paid_tier<'a>(
             // refuse on it, and it will not treat it as a pass either.
             None => candidate,
         };
-        report_one(strategy, &candidate, &mut proposals);
+        report_one(strategy, &candidate, &mut proposals, watermark, examined);
     }
 
     print!("{}", render_shapes(&shapes, look_failed));
@@ -330,33 +384,121 @@ fn render_shapes(dist: &radar_graph::Distribution, unreadable: usize) -> String 
     out
 }
 
+/// Turns one examined candidate into the row that outlives the run.
+///
+/// # What is recorded, and what deliberately is not
+///
+/// Only candidates that reached the **paid tier**. The line is not cost, it is
+/// **reproducibility**: a free-tier refusal is a pure function of data already
+/// in the store, so it can be re-derived at any time by replaying `disqualify`
+/// and the creator record at the same watermark. Recording 41,721 rows an hour
+/// to store an answer that is already implied would be storing a derivation.
+///
+/// A paid-tier decision cannot be re-derived. It rests on a live Jupiter price
+/// ladder and a CryptoHouse launch block, neither of which is recorded anywhere
+/// and neither of which answers the same way tomorrow. If it is not written
+/// down as it happens it is gone — which is the same argument
+/// [`radar_research`] makes for digesting inputs rather than copying them, run
+/// the other way.
+///
+/// [`radar_research`]: https://github.com/hey-vera/radar
+fn record_of(
+    candidate: &Candidate,
+    decision: &Decision,
+    strategy: &CreatorEdge,
+    verdict: Option<&Verdict>,
+    decided_at: radar_types::Slot,
+) -> radar_store::Decision {
+    let proposal = match decision {
+        Decision::Propose(p) => Some(p),
+        Decision::Pass(_) => None,
+    };
+    radar_store::Decision {
+        mint: candidate.mint,
+        creator: candidate.creator,
+        decided_at,
+        launch_slot: candidate.launch_slot,
+        strategy: strategy.name().to_owned(),
+        strategy_version: strategy.version().to_owned(),
+        conclusion: if proposal.is_some() {
+            radar_store::Conclusion::Proposed
+        } else {
+            radar_store::Conclusion::Passed
+        },
+        reasons: decision
+            .reasons()
+            .iter()
+            .map(|r| format!("{r:?}"))
+            .collect(),
+        notional_micro_usd: proposal.map(|p| p.notional.get()),
+        exit_capacity_micro_usd: proposal
+            .and_then(|p| p.simulated_exit_capacity)
+            .map(MicroUsd::get),
+        assumed_round_trip_bps: strategy.thresholds.assumed_round_trip_bps,
+        // Absent because the source could not answer, never because the launch
+        // looked clean. Collapsing those would quietly clear a bundle.
+        coordination: candidate.coordination.map(|c| format!("{c:?}")),
+        kernel_outcome: verdict.map(|v| match v {
+            Verdict::Authorised(_) => radar_store::KernelOutcome::Authorised,
+            Verdict::Refused { .. } => radar_store::KernelOutcome::Refused,
+        }),
+        kernel_reasons: match verdict {
+            Some(Verdict::Refused { reasons }) => {
+                reasons.iter().map(|r| format!("{r:?}")).collect()
+            }
+            _ => Vec::new(),
+        },
+        // The same digest a replay compares on, so a recorded decision can be
+        // checked against the store later without a separate recording file.
+        inputs_digest: radar_research::Digest::of(candidate)
+            .map_or_else(|_| String::new(), |d| d.0),
+    }
+}
+
 /// Prints what the strategy made of one paid-for candidate.
 fn report_one(
     strategy: &CreatorEdge,
     candidate: &Candidate,
     proposals: &mut Vec<radar_risk::Proposal>,
+    watermark: radar_types::Slot,
+    examined: &mut Vec<(radar_store::Decision, Address)>,
 ) {
-    match strategy.consider(candidate) {
-        Decision::Pass(reasons) => {
+    let decision = strategy.consider(candidate);
+    // Recorded before the kernel runs, and updated with its verdict afterwards.
+    // A proposal the kernel never saw is a different state from one it refused.
+    examined.push((
+        record_of(candidate, &decision, strategy, None, watermark),
+        candidate.mint,
+    ));
+    match decision {
+        Decision::Pass(ref reasons) => {
             println!("  {}  passed: {reasons:?}", candidate.mint);
         }
-        Decision::Propose(proposal) => {
+        Decision::Propose(ref proposal) => {
             println!(
                 "  {}  PROPOSED ${:.2} (exit capacity ${:.2})",
                 candidate.mint,
                 price_dollars(proposal.notional),
                 proposal.simulated_exit_capacity.map_or(0.0, price_dollars)
             );
-            proposals.push(*proposal);
+            proposals.push((**proposal).clone());
         }
     }
 }
 
 /// Puts every proposal through the kernel under the shipped policy.
-fn verdicts(proposals: &[radar_risk::Proposal], watermark: radar_types::Slot) {
-    println!("\n{} proposal(s) raised.", proposals.len());
+fn verdicts(
+    proposals: &[radar_risk::Proposal],
+    watermark: radar_types::Slot,
+) -> BTreeMap<Address, Verdict> {
+    let mut by_mint = BTreeMap::new();
+    println!(
+        "
+{} proposal(s) raised.",
+        proposals.len()
+    );
     if proposals.is_empty() {
-        return;
+        return by_mint;
     }
 
     // The shipped policy. Building the trading lane deploys no capital; only
@@ -366,7 +508,8 @@ fn verdicts(proposals: &[radar_risk::Proposal], watermark: radar_types::Slot) {
 
     println!("\nrisk kernel, under the policy this instance actually holds:");
     for proposal in proposals {
-        match evaluate(proposal, &state, &policy) {
+        let verdict = evaluate(proposal, &state, &policy);
+        match &verdict {
             Verdict::Authorised(auth) => {
                 println!(
                     "  {}  AUTHORISED up to ${:.2}",
@@ -378,11 +521,14 @@ fn verdicts(proposals: &[radar_risk::Proposal], watermark: radar_types::Slot) {
                 println!("  {}  refused: {reasons:?}", proposal.mint);
             }
         }
+        by_mint.insert(proposal.mint, verdict);
     }
     println!(
-        "\nRadar ships with Policy::CLOSED, which refuses everything. Nothing above\n\
+        "
+Radar ships with Policy::CLOSED, which refuses everything. Nothing above
          was acted on, and nothing will be until that policy is changed deliberately."
     );
+    by_mint
 }
 
 /// Micro-USD as dollars, for display only.
@@ -405,6 +551,131 @@ pub const fn default_cap() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn a_candidate() -> Candidate {
+        Candidate {
+            mint: radar_types::Address::new([7u8; 32]),
+            creator: radar_types::Address::new([8u8; 32]),
+            launch_slot: radar_types::Slot(1_000),
+            as_of: radar_asof::AsOf::at(radar_types::Slot(10_000)),
+            exit: None,
+            creator_record: radar_strategy::CreatorRecord::default(),
+            coordination: None,
+            sol_price_micro_usd: None,
+            token_observed_at: radar_types::Slot(9_900),
+            creator_observed_at: radar_types::Slot(9_900),
+        }
+    }
+
+    #[test]
+    fn a_refusal_records_the_reasons_the_kernel_gave() {
+        // Deleting this arm leaves every refusal with an empty reason list,
+        // which reads as "refused for no stated reason" -- and the reasons are
+        // the entire point of recording a refusal. A mutant doing exactly that
+        // survived the first version of these tests.
+        let strategy = CreatorEdge::default();
+        let candidate = a_candidate();
+        let decision = strategy.consider(&candidate);
+        let verdict = Verdict::Refused {
+            reasons: vec![
+                radar_risk::Refusal::NoAutonomy,
+                radar_risk::Refusal::InputsTooStale,
+            ],
+        };
+
+        let record = record_of(
+            &candidate,
+            &decision,
+            &strategy,
+            Some(&verdict),
+            radar_types::Slot(10_000),
+        );
+        assert_eq!(
+            record.kernel_reasons,
+            vec!["NoAutonomy".to_owned(), "InputsTooStale".to_owned()]
+        );
+        assert_eq!(
+            record.kernel_outcome,
+            Some(radar_store::KernelOutcome::Refused)
+        );
+    }
+
+    #[test]
+    fn a_decision_the_kernel_never_saw_carries_no_verdict_and_no_reasons() {
+        // Absent is not a refusal. A proposal that never reached the kernel is a
+        // gap in the pipeline; recording it as refused would hide that.
+        let strategy = CreatorEdge::default();
+        let candidate = a_candidate();
+        let decision = strategy.consider(&candidate);
+
+        let record = record_of(
+            &candidate,
+            &decision,
+            &strategy,
+            None,
+            radar_types::Slot(10_000),
+        );
+        assert_eq!(record.kernel_outcome, None);
+        assert!(record.kernel_reasons.is_empty());
+    }
+
+    #[test]
+    fn a_record_carries_the_watermark_and_the_cost_the_rule_assumed() {
+        // Both are what makes a decision comparable later. The assumed cost
+        // moved by a factor of four on 2026-08-25, and a decision either side of
+        // that was judged against a different bar -- comparing them without
+        // knowing which would be comparing two rules.
+        let strategy = CreatorEdge::default();
+        let candidate = a_candidate();
+        let decision = strategy.consider(&candidate);
+        let record = record_of(
+            &candidate,
+            &decision,
+            &strategy,
+            None,
+            radar_types::Slot(441_734_987),
+        );
+
+        assert_eq!(record.decided_at, radar_types::Slot(441_734_987));
+        assert_eq!(record.launch_slot, candidate.launch_slot);
+        assert_eq!(
+            record.assumed_round_trip_bps,
+            strategy.thresholds.assumed_round_trip_bps
+        );
+        assert_eq!(record.strategy, "creator_edge");
+        assert!(
+            !record.inputs_digest.is_empty(),
+            "the digest is what lets a recorded decision be checked against the store"
+        );
+    }
+
+    #[test]
+    fn an_unread_launch_block_records_as_absent_not_as_clean() {
+        // The distinction the whole coordination gate rests on: a source that
+        // could not answer must never look like a launch that looked fine.
+        let strategy = CreatorEdge::default();
+        let mut candidate = a_candidate();
+        candidate.coordination = None;
+        let unread = record_of(
+            &candidate,
+            &strategy.consider(&candidate),
+            &strategy,
+            None,
+            radar_types::Slot(10_000),
+        );
+        assert_eq!(unread.coordination, None);
+
+        let clean = candidate.with_coordination(radar_graph::Coordination::Unremarkable);
+        let looked = record_of(
+            &clean,
+            &strategy.consider(&clean),
+            &strategy,
+            None,
+            radar_types::Slot(10_000),
+        );
+        assert_eq!(looked.coordination, Some("Unremarkable".to_owned()));
+        assert_ne!(unread.coordination, looked.coordination);
+    }
 
     #[test]
     fn dollars_render_from_integers() {

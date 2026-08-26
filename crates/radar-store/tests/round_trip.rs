@@ -557,3 +557,341 @@ fn every_event_table_can_actually_be_read_as_events() {
         );
     }
 }
+
+/// A decision with every optional field populated, so a round trip that drops
+/// one is visible.
+fn decision(mint: u8, decided: u64) -> radar_store::Decision {
+    radar_store::Decision {
+        mint: Address::new([mint; 32]),
+        creator: Address::new([200u8; 32]),
+        decided_at: Slot(decided),
+        launch_slot: Slot(decided.saturating_sub(6_000)),
+        strategy: "creator_edge".to_owned(),
+        strategy_version: "0.1.0".to_owned(),
+        conclusion: radar_store::Conclusion::Proposed,
+        reasons: Vec::new(),
+        notional_micro_usd: Some(6_300_000),
+        exit_capacity_micro_usd: Some(31_520_000),
+        assumed_round_trip_bps: 850,
+        coordination: Some("unremarkable".to_owned()),
+        kernel_outcome: Some(radar_store::KernelOutcome::Refused),
+        kernel_reasons: vec!["NoAutonomy".to_owned(), "InputsTooStale".to_owned()],
+        inputs_digest: "9f2c4a1b".to_owned(),
+    }
+}
+
+#[test]
+fn a_decision_survives_a_round_trip_through_parquet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+
+    let refused = {
+        let mut d = decision(1, 500_000);
+        d.conclusion = radar_store::Conclusion::Passed;
+        d.reasons = vec![
+            "ExitCanBeStopped".to_owned(),
+            "CreatorNeverGraduated".to_owned(),
+        ];
+        d.notional_micro_usd = None;
+        d.exit_capacity_micro_usd = None;
+        d.kernel_outcome = None;
+        d.kernel_reasons = Vec::new();
+        d.coordination = None;
+        d
+    };
+    let proposed = decision(2, 500_001);
+
+    writer.append_decision(refused.clone()).expect("append");
+    writer.append_decision(proposed.clone()).expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let back = reader
+        .read_decisions(AsOf::at(Slot(1_000_000)))
+        .expect("read");
+
+    assert_eq!(back.len(), 2);
+    assert_eq!(back[0], refused, "a refusal must survive exactly");
+    assert_eq!(back[1], proposed, "and so must a proposal");
+}
+
+#[test]
+fn a_decision_taken_after_the_watermark_is_not_returned() {
+    // The point-in-time guarantee applies to decisions too. A backtest that
+    // could see what Radar decided tomorrow is not a backtest.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer
+        .append_decision(decision(3, 400_000))
+        .expect("append");
+    writer
+        .append_decision(decision(4, 900_000))
+        .expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let visible = reader
+        .read_decisions(AsOf::at(Slot(500_000)))
+        .expect("read");
+    assert_eq!(visible.len(), 1, "only the earlier decision is admitted");
+    assert_eq!(visible[0].decided_at, Slot(400_000));
+
+    // And the boundary is inclusive, matching every other read in the store.
+    let at_boundary = reader
+        .read_decisions(AsOf::at(Slot(400_000)))
+        .expect("read");
+    assert_eq!(at_boundary.len(), 1);
+}
+
+#[test]
+fn empty_reason_lists_and_populated_ones_both_survive() {
+    // A list column is the one place a round trip can silently flatten two
+    // different rows into the same shape: zero reasons and one empty reason
+    // must not become each other.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+
+    let mut none = decision(5, 500_000);
+    none.reasons = Vec::new();
+    none.kernel_reasons = Vec::new();
+    let mut many = decision(6, 500_001);
+    many.reasons = vec!["A".to_owned(), "B".to_owned(), "C".to_owned()];
+    many.kernel_reasons = vec!["D".to_owned()];
+
+    writer.append_decision(none.clone()).expect("append");
+    writer.append_decision(many.clone()).expect("append");
+    writer.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_decisions(AsOf::at(Slot(1_000_000)))
+        .expect("read");
+    assert!(back[0].reasons.is_empty());
+    assert!(back[0].kernel_reasons.is_empty());
+    assert_eq!(back[1].reasons, vec!["A", "B", "C"]);
+    assert_eq!(back[1].kernel_reasons, vec!["D"]);
+}
+
+#[test]
+fn decisions_are_written_where_reading_events_would_refuse_them() {
+    // LEARNINGS 6: adding a member to `Table::ALL` broke every caller that
+    // iterated it and called `read`. Decisions are the second table that has to
+    // stay out of that loop, and the guard is that `read` refuses by name
+    // rather than failing on a missing column.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer
+        .append_decision(decision(7, 500_000))
+        .expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let err = reader
+        .read(Table::Decisions, AsOf::at(Slot(1_000_000)))
+        .expect_err("reading decisions as events must refuse");
+    assert!(
+        err.to_string().contains("decisions"),
+        "the refusal must name the table: {err}"
+    );
+    assert!(
+        reader.read_decisions(AsOf::at(Slot(1_000_000))).is_ok(),
+        "and the right reader must work"
+    );
+}
+
+#[test]
+fn an_authorised_verdict_reads_back_as_authorised() {
+    // The reader maps "authorised" to Authorised and everything else to
+    // Refused, which is the safe direction -- but a round trip that only ever
+    // stored Refused would pass with the mapping deleted, and every recorded
+    // authorisation would silently become a refusal.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+
+    let mut authorised = decision(8, 500_000);
+    authorised.kernel_outcome = Some(radar_store::KernelOutcome::Authorised);
+    authorised.kernel_reasons = Vec::new();
+    let refused = decision(9, 500_001);
+
+    writer.append_decision(authorised.clone()).expect("append");
+    writer.append_decision(refused.clone()).expect("append");
+    writer.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_decisions(AsOf::at(Slot(1_000_000)))
+        .expect("read");
+    assert_eq!(
+        back[0].kernel_outcome,
+        Some(radar_store::KernelOutcome::Authorised)
+    );
+    assert_eq!(
+        back[1].kernel_outcome,
+        Some(radar_store::KernelOutcome::Refused)
+    );
+}
+
+#[test]
+fn decisions_in_a_later_partition_are_skipped_by_filename_not_by_row() {
+    // The partition skip is an optimisation that has to be exactly right: too
+    // eager and it drops decisions that are within the watermark, and the row
+    // filter downstream would hide the bug by producing a correct-looking
+    // shorter answer. Spanning two partitions is what makes the comparison
+    // load-bearing rather than trivially true.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    let early = 10;
+    let late = SLOTS_PER_PARTITION * 3 + 10;
+    writer.append_decision(decision(10, early)).expect("append");
+    writer.append_decision(decision(11, late)).expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    assert_eq!(
+        reader.files(Table::Decisions).expect("files").len(),
+        2,
+        "the two decisions must land in different partition files"
+    );
+
+    // A watermark inside the first partition sees only the first.
+    let early_only = reader
+        .read_decisions(AsOf::at(Slot(early + 1)))
+        .expect("read");
+    assert_eq!(early_only.len(), 1);
+    assert_eq!(early_only[0].decided_at, Slot(early));
+
+    // A watermark exactly at the later decision still sees both: the skip
+    // compares the partition's *start* slot, so `>=` there would discard a
+    // partition whose first row is admissible.
+    let both = reader.read_decisions(AsOf::at(Slot(late))).expect("read");
+    assert_eq!(both.len(), 2, "an inclusive watermark admits the later row");
+}
+
+#[test]
+fn a_full_buffer_flushes_without_being_asked() {
+    // `append_decision` flushes when the buffer fills. If that counter stops
+    // advancing, nothing reaches disk until an explicit flush -- and a run that
+    // crashed mid-pass would lose every decision it had made, which is exactly
+    // what recording exists to prevent.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 2).expect("open");
+    writer
+        .append_decision(decision(12, 500_000))
+        .expect("append");
+    writer
+        .append_decision(decision(13, 500_001))
+        .expect("append");
+
+    // No explicit flush.
+    let back = Reader::open(dir.path())
+        .read_decisions(AsOf::at(Slot(1_000_000)))
+        .expect("read");
+    assert_eq!(back.len(), 2, "the buffer must have flushed on its own");
+    assert_eq!(writer.buffered(), 0, "and the counter must have reset");
+}
+
+#[test]
+fn the_earliest_slot_sees_decisions_too() {
+    // `earliest` walks every table's own slot column. A decision recorded
+    // before any event would otherwise be invisible to it, and the whole point
+    // of `slot_column` is that each table names that column for itself.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer.append_decision(decision(14, 7_000)).expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    assert_eq!(
+        reader.earliest().expect("earliest"),
+        Some(Slot(7_000)),
+        "earliest must read the decisions table's own slot column"
+    );
+    assert_eq!(
+        Reader::watermark(&reader).expect("watermark"),
+        Some(Slot(7_000))
+    );
+}
+
+#[test]
+fn a_partition_starting_exactly_at_the_watermark_is_not_skipped() {
+    // The skip compares the partition's START slot against the watermark, and
+    // the only case that separates `>` from `>=` or `==` is equality. A
+    // partition whose first row sits exactly on the watermark holds an
+    // admissible decision, and skipping it drops a row the caller is entitled
+    // to see -- silently, because the shorter answer still looks like an answer.
+    let boundary = SLOTS_PER_PARTITION * 3;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer
+        .append_decision(decision(15, boundary))
+        .expect("append");
+    writer.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_decisions(AsOf::at(Slot(boundary)))
+        .expect("read");
+    assert_eq!(
+        back.len(),
+        1,
+        "a decision exactly on the watermark, in a partition starting there, must be returned"
+    );
+    assert_eq!(back[0].decided_at, Slot(boundary));
+}
+
+#[test]
+fn decisions_buffer_until_the_threshold_rather_than_writing_a_file_each() {
+    // Buffering is why the store does not accumulate one Parquet file per row.
+    // Flushing eagerly still gets the data to disk, so a test that only checks
+    // the data arrives cannot tell the two apart -- and on a two-core box
+    // sharing disk with two other services, a file per decision is the
+    // difference that matters.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 3).expect("open");
+    writer
+        .append_decision(decision(16, 500_000))
+        .expect("append");
+    writer
+        .append_decision(decision(17, 500_001))
+        .expect("append");
+
+    assert_eq!(
+        writer.buffered(),
+        2,
+        "below the threshold, nothing is written"
+    );
+    assert_eq!(writer.written_files(), 0);
+    assert!(
+        Reader::open(dir.path())
+            .read_decisions(AsOf::at(Slot(1_000_000)))
+            .expect("read")
+            .is_empty(),
+        "nothing should have reached disk yet"
+    );
+
+    writer
+        .append_decision(decision(18, 500_002))
+        .expect("append");
+    assert_eq!(
+        writer.buffered(),
+        0,
+        "the third append crosses the threshold"
+    );
+    assert_eq!(writer.written_files(), 1, "and writes exactly one file");
+}
+
+#[test]
+fn flushing_decisions_counts_the_rows_and_files_it_wrote() {
+    // The backfill prints these, and a counter that stays at zero reports a
+    // successful pass as having written nothing -- which is indistinguishable
+    // from a pass that genuinely wrote nothing.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    for (i, slot) in [500_000u64, 500_001, 500_002].iter().enumerate() {
+        writer
+            .append_decision(decision(20 + u8::try_from(i).expect("small"), *slot))
+            .expect("append");
+    }
+    assert_eq!(writer.written_rows(), 0, "nothing written before the flush");
+    writer.flush().expect("flush");
+
+    assert_eq!(writer.written_rows(), 3, "three decisions, three rows");
+    assert_eq!(writer.written_files(), 1, "one partition, one file");
+}

@@ -37,9 +37,11 @@ commands:
   graduations --store <dir> [-n N]
                                  every graduation recorded, and the population
                                  rate the creator signal is measured against
-  consider --store <dir> [--window N] [--cap N]
+  consider --store <dir> [--window N] [--cap N] [--record [dir]]
                                  run the whole decision lane over recorded
-                                 tokens; commits nothing
+                                 tokens; commits nothing. --record appends what
+                                 was decided to the store's decisions table,
+                                 which is what a later join against prices needs
   replay --store <dir> --record <file> [--window N] [--cohort N]
                                  record what the strategy decides now
   replay --store <dir> --check <file>
@@ -472,7 +474,24 @@ fn decision_lane(args: &[String]) -> Result<(), String> {
     let cap = flag(args, "--cap")
         .and_then(|v| v.parse().ok())
         .unwrap_or_else(consider::default_cap);
-    consider::run(&reader, window, cap)
+    let record_to = record_target(args);
+    consider::run(&reader, window, cap, record_to.as_deref())
+}
+
+/// Where `consider` should record its decisions, if anywhere.
+///
+/// `None` unless `--record` is present, because a read-only command that
+/// quietly starts writing to production is not a flag anyone should have to
+/// notice. `--record` alone writes to `--store`; `--record <dir>` writes
+/// elsewhere, which is what a dry run wants.
+fn record_target(args: &[String]) -> Option<String> {
+    if !args.iter().any(|a| a == "--record") {
+        return None;
+    }
+    // A following value that is itself a flag is the next flag, not a path.
+    flag(args, "--record")
+        .filter(|v| !v.starts_with("--"))
+        .or_else(|| flag(args, "--store"))
 }
 
 /// Records or re-checks decisions, proving they reproduce.
@@ -575,6 +594,73 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    fn argv(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|p| (*p).to_owned()).collect()
+    }
+
+    #[test]
+    fn recording_is_off_unless_asked_for() {
+        // The direction that matters. A `consider` run that silently appended to
+        // the production store would be a read-only command with a side effect,
+        // and nobody would find out until the store had rows nobody meant.
+        assert_eq!(record_target(&argv(&["consider", "--store", "s"])), None);
+    }
+
+    #[test]
+    fn record_without_a_path_writes_to_the_store_being_read() {
+        assert_eq!(
+            record_target(&argv(&["consider", "--store", "s", "--record"])),
+            Some("s".to_owned())
+        );
+        // And the next flag is a flag, not a directory named "--cap".
+        assert_eq!(
+            record_target(&argv(&[
+                "consider", "--store", "s", "--record", "--cap", "8"
+            ])),
+            Some("s".to_owned()),
+            "a following flag must not be mistaken for a path"
+        );
+    }
+
+    #[test]
+    fn record_with_a_path_writes_there_instead() {
+        // What a dry run wants: exercise the whole lane without touching the
+        // store it read from.
+        assert_eq!(
+            record_target(&argv(&[
+                "consider", "--store", "prod", "--record", "scratch"
+            ])),
+            Some("scratch".to_owned())
+        );
+    }
+
+    #[test]
+    fn the_usage_text_names_every_command_the_dispatcher_accepts() {
+        // `--record` was added and very nearly shipped undocumented; mutation
+        // testing then found that nothing constrained this string at all, so
+        // blanking it entirely left the suite green.
+        let u = usage();
+        for command in [
+            "brief",
+            "inspect",
+            "launches",
+            "creators",
+            "tools",
+            "call",
+            "exit",
+            "graduations",
+            "consider",
+            "replay",
+            "study",
+        ] {
+            assert!(
+                u.contains(command),
+                "usage() does not mention {command}:\n{u}"
+            );
+        }
+        assert!(u.contains("--record"), "the recording flag is undocumented");
+    }
+
     use super::*;
 
     #[test]

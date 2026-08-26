@@ -6,13 +6,16 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use arrow::array::{ArrayRef, BooleanBuilder, StringBuilder, UInt32Builder, UInt64Builder};
+use arrow::array::{
+    ArrayRef, BooleanBuilder, ListBuilder, StringBuilder, UInt32Builder, UInt64Builder,
+};
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use radar_types::Slot;
 
+use crate::decision::{Conclusion, Decision, KernelOutcome};
 use crate::error::StoreError;
 use crate::event::{Event, Table};
 use crate::outcome::Outcome;
@@ -49,6 +52,11 @@ pub struct Writer {
     /// no transaction position, and putting it through the same buffer would
     /// mean inventing both.
     pending_outcomes: BTreeMap<u64, Vec<Outcome>>,
+    /// Buffered decisions, by partition.
+    ///
+    /// Separate for the same reason outcomes are: a decision has no signature
+    /// and no transaction position, because nothing happened on chain.
+    pending_decisions: BTreeMap<u64, Vec<Decision>>,
     buffered: usize,
     flush_at: usize,
     written_rows: u64,
@@ -71,6 +79,7 @@ impl Writer {
             root,
             pending: BTreeMap::new(),
             pending_outcomes: BTreeMap::new(),
+            pending_decisions: BTreeMap::new(),
             buffered: 0,
             flush_at: flush_at.max(1),
             written_rows: 0,
@@ -121,6 +130,25 @@ impl Writer {
         Ok(())
     }
 
+    /// Buffers a decision, flushing if the buffer is full.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a flush fails.
+    pub fn append_decision(&mut self, decision: Decision) -> Result<(), StoreError> {
+        let slot = decision.decided_at;
+        self.highest_slot = Some(self.highest_slot.map_or(slot, |h| h.max(slot)));
+        self.pending_decisions
+            .entry(partition_of(slot))
+            .or_default()
+            .push(decision);
+        self.buffered += 1;
+        if self.buffered >= self.flush_at {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
     /// Events buffered but not yet on disk.
     #[must_use]
     pub const fn buffered(&self) -> usize {
@@ -159,6 +187,18 @@ impl Writer {
             let rows = outcomes.len() as u64;
             let batch = build_outcome_batch(&outcomes)?;
             let path = self.next_path(Table::Outcomes, partition);
+            write_parquet(&path, &batch)?;
+            self.written_rows += rows;
+            self.written_files += 1;
+        }
+
+        for (partition, decisions) in std::mem::take(&mut self.pending_decisions) {
+            if decisions.is_empty() {
+                continue;
+            }
+            let rows = decisions.len() as u64;
+            let batch = build_decision_batch(&decisions)?;
+            let path = self.next_path(Table::Decisions, partition);
             write_parquet(&path, &batch)?;
             self.written_rows += rows;
             self.written_files += 1;
@@ -218,6 +258,85 @@ fn write_parquet(path: &Path, batch: &RecordBatch) -> Result<(), StoreError> {
     writer.write(batch)?;
     writer.close()?;
     Ok(())
+}
+
+/// The item field of a reason list, matching the schema's non-null declaration.
+fn reason_item() -> Arc<arrow::datatypes::Field> {
+    Arc::new(arrow::datatypes::Field::new(
+        "item",
+        arrow::datatypes::DataType::Utf8,
+        false,
+    ))
+}
+
+/// Builds the Parquet batch for a run of decisions.
+fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreError> {
+    let (mut mint, mut creator) = (StringBuilder::new(), StringBuilder::new());
+    let (mut decided, mut launch) = (UInt64Builder::new(), UInt64Builder::new());
+    let (mut strategy, mut version) = (StringBuilder::new(), StringBuilder::new());
+    let mut conclusion = StringBuilder::new();
+    // `with_field` rather than the default: a bare ListBuilder declares its
+    // items nullable, and the schema says they are not. A reason is always a
+    // string or absent from the list entirely -- there is no such thing as a
+    // null reason -- so the schema is right and the builder has to be told.
+    let mut reasons = ListBuilder::new(StringBuilder::new()).with_field(reason_item());
+    let (mut notional, mut capacity) = (UInt64Builder::new(), UInt64Builder::new());
+    let mut cost_bps = UInt64Builder::new();
+    let (mut coordination, mut kernel) = (StringBuilder::new(), StringBuilder::new());
+    let mut kernel_reasons = ListBuilder::new(StringBuilder::new()).with_field(reason_item());
+    let mut digest = StringBuilder::new();
+
+    for d in decisions {
+        mint.append_value(d.mint.to_string());
+        creator.append_value(d.creator.to_string());
+        decided.append_value(d.decided_at.get());
+        launch.append_value(d.launch_slot.get());
+        strategy.append_value(&d.strategy);
+        version.append_value(&d.strategy_version);
+        conclusion.append_value(match d.conclusion {
+            Conclusion::Passed => "passed",
+            Conclusion::Proposed => "proposed",
+        });
+        for r in &d.reasons {
+            reasons.values().append_value(r);
+        }
+        reasons.append(true);
+        notional.append_option(d.notional_micro_usd);
+        capacity.append_option(d.exit_capacity_micro_usd);
+        cost_bps.append_value(d.assumed_round_trip_bps);
+        coordination.append_option(d.coordination.as_deref());
+        kernel.append_option(d.kernel_outcome.map(|k| match k {
+            KernelOutcome::Authorised => "authorised",
+            KernelOutcome::Refused => "refused",
+        }));
+        for r in &d.kernel_reasons {
+            kernel_reasons.values().append_value(r);
+        }
+        kernel_reasons.append(true);
+        digest.append_value(&d.inputs_digest);
+    }
+
+    RecordBatch::try_new(
+        schema_for(Table::Decisions),
+        vec![
+            Arc::new(mint.finish()) as ArrayRef,
+            Arc::new(creator.finish()),
+            Arc::new(decided.finish()),
+            Arc::new(launch.finish()),
+            Arc::new(strategy.finish()),
+            Arc::new(version.finish()),
+            Arc::new(conclusion.finish()),
+            Arc::new(reasons.finish()),
+            Arc::new(notional.finish()),
+            Arc::new(capacity.finish()),
+            Arc::new(cost_bps.finish()),
+            Arc::new(coordination.finish()),
+            Arc::new(kernel.finish()),
+            Arc::new(kernel_reasons.finish()),
+            Arc::new(digest.finish()),
+        ],
+    )
+    .map_err(StoreError::from)
 }
 
 /// Column builders shared by every table.
@@ -411,7 +530,9 @@ fn build_batch(table: Table, events: &[Event]) -> Result<RecordBatch, StoreError
             }
             cols.push(Arc::new(mint.finish()));
         }
-        Table::Outcomes => unreachable!("outcomes are not events; see build_outcome_batch"),
+        Table::Outcomes | Table::Decisions => {
+            unreachable!("not events; see build_outcome_batch / build_decision_batch")
+        }
     }
 
     RecordBatch::try_new(schema_for(table), cols).map_err(StoreError::from)

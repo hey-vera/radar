@@ -9,6 +9,7 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use radar_asof::{AsOf, PointInTime};
 use radar_types::{Address, Signature, Slot};
 
+use crate::decision::{Conclusion, Decision, KernelOutcome};
 use crate::error::StoreError;
 use crate::event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
 use crate::outcome::Outcome;
@@ -58,13 +59,9 @@ impl Reader {
     pub fn watermark(&self) -> Result<Option<Slot>, StoreError> {
         let mut highest: Option<Slot> = None;
         for table in Table::ALL {
-            // Outcomes name their slot column `measured_at`, because a
-            // measurement is a fact about when it was taken.
-            let column = if *table == Table::Outcomes {
-                "measured_at"
-            } else {
-                "slot"
-            };
+            // Not every table calls it `slot`: a measurement or a decision is
+            // stamped with when it was *taken*, not when it happened.
+            let column = table.slot_column();
             for path in self.files(*table)? {
                 for slot in slots_in(&path, column)? {
                     highest = Some(highest.map_or(slot, |h| h.max(slot)));
@@ -88,11 +85,7 @@ impl Reader {
     pub fn earliest(&self) -> Result<Option<Slot>, StoreError> {
         let mut lowest: Option<Slot> = None;
         for table in Table::ALL {
-            let column = if *table == Table::Outcomes {
-                "measured_at"
-            } else {
-                "slot"
-            };
+            let column = table.slot_column();
             for path in self.files(*table)? {
                 for slot in slots_in(&path, column)? {
                     lowest = Some(lowest.map_or(slot, |l: Slot| l.min(slot)));
@@ -208,6 +201,84 @@ impl Reader {
         out.sort_by_key(|o| (o.measured_at.get(), o.mint));
         Ok(out)
     }
+
+    /// Every decision recorded at or before the watermark.
+    ///
+    /// Read separately from events for the same reason outcomes are: a decision
+    /// has no signature and no transaction position, because nothing happened
+    /// on chain. Iterating [`Table::ALL`] and calling [`read`](Self::read) on
+    /// each would compile and fail here at runtime, which is why
+    /// [`Table::EVENT_TABLES`] exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a file cannot be read or a row is malformed.
+    pub fn read_decisions(&self, as_of: AsOf) -> Result<Vec<Decision>, StoreError> {
+        let mut out = Vec::new();
+        for path in self.files(Table::Decisions)? {
+            if start_slot_of(&path).is_some_and(|start| start > as_of.slot().get()) {
+                continue;
+            }
+            let file = fs::File::open(&path)?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+            for batch in reader {
+                let batch = batch?;
+                let mint = str_col(&batch, "mint")?;
+                let creator = str_col(&batch, "creator")?;
+                let decided = u64_col(&batch, "decided_at")?;
+                let launch = u64_col(&batch, "launch_slot")?;
+                let strategy = str_col(&batch, "strategy")?;
+                let version = str_col(&batch, "strategy_version")?;
+                let conclusion = str_col(&batch, "conclusion")?;
+                let notional = u64_col(&batch, "notional_micro_usd")?;
+                let capacity = u64_col(&batch, "exit_capacity_micro_usd")?;
+                let cost_bps = u64_col(&batch, "assumed_round_trip_bps")?;
+                let coordination = str_col(&batch, "coordination")?;
+                let kernel = str_col(&batch, "kernel_outcome")?;
+                let digest = str_col(&batch, "inputs_digest")?;
+                let reasons = string_list_col(&batch, "reasons")?;
+                let kernel_reasons = string_list_col(&batch, "kernel_reasons")?;
+
+                for i in 0..batch.num_rows() {
+                    let decided_at = Slot(decided.value(i));
+                    if !as_of.admits(decided_at) {
+                        continue;
+                    }
+                    out.push(Decision {
+                        mint: parse(mint.value(i), "mint")?,
+                        creator: parse(creator.value(i), "creator")?,
+                        decided_at,
+                        launch_slot: Slot(launch.value(i)),
+                        strategy: strategy.value(i).to_owned(),
+                        strategy_version: version.value(i).to_owned(),
+                        // An unrecognised conclusion reads as passed, never as
+                        // proposed: this table outlives the code, and the
+                        // direction that invents a trade is the expensive one.
+                        conclusion: match conclusion.value(i) {
+                            "proposed" => Conclusion::Proposed,
+                            _ => Conclusion::Passed,
+                        },
+                        reasons: reasons.get(i).cloned().unwrap_or_default(),
+                        notional_micro_usd: notional.is_valid(i).then(|| notional.value(i)),
+                        exit_capacity_micro_usd: capacity.is_valid(i).then(|| capacity.value(i)),
+                        assumed_round_trip_bps: cost_bps.value(i),
+                        coordination: coordination
+                            .is_valid(i)
+                            .then(|| coordination.value(i).to_owned()),
+                        // Same asymmetry: anything unrecognised is a refusal.
+                        kernel_outcome: kernel.is_valid(i).then(|| match kernel.value(i) {
+                            "authorised" => KernelOutcome::Authorised,
+                            _ => KernelOutcome::Refused,
+                        }),
+                        kernel_reasons: kernel_reasons.get(i).cloned().unwrap_or_default(),
+                        inputs_digest: digest.value(i).to_owned(),
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|d| (d.decided_at.get(), d.mint));
+        Ok(out)
+    }
 }
 
 impl PointInTime for Reader {
@@ -216,6 +287,41 @@ impl PointInTime for Reader {
     fn watermark(&self) -> Result<Slot, Self::Error> {
         Self::watermark(self)?.ok_or(StoreError::Empty)
     }
+}
+
+/// Reads a `List<Utf8>` column into one owned vector per row.
+///
+/// Materialised up front rather than per row because the offsets have to be
+/// walked anyway, and a per-row accessor would walk them again for every row.
+fn string_list_col(
+    batch: &arrow::record_batch::RecordBatch,
+    name: &'static str,
+) -> Result<Vec<Vec<String>>, StoreError> {
+    let Some(column) = batch.column_by_name(name) else {
+        // Absent by column, not just by row -- a file written before this
+        // column existed must read as "no reasons recorded" rather than fail
+        // the whole read, which is how the price columns were added.
+        return Ok(Vec::new());
+    };
+    let list = column
+        .as_any()
+        .downcast_ref::<arrow::array::ListArray>()
+        .ok_or(StoreError::WrongColumnType { name })?;
+
+    let mut out = Vec::with_capacity(list.len());
+    for i in 0..list.len() {
+        let values = list.value(i);
+        let strings = values
+            .as_any()
+            .downcast_ref::<arrow::array::StringArray>()
+            .ok_or(StoreError::WrongColumnType { name })?;
+        out.push(
+            (0..strings.len())
+                .map(|j| strings.value(j).to_owned())
+                .collect(),
+        );
+    }
+    Ok(out)
 }
 
 /// Parses the start slot out of a partition filename.
@@ -319,8 +425,8 @@ fn read_file(path: &Path, table: Table) -> Result<Vec<Event>, StoreError> {
                     origin,
                     mint,
                 })),
-                Table::Outcomes => {
-                    unreachable!("outcomes are read by read_outcomes, not read_file")
+                Table::Outcomes | Table::Decisions => {
+                    unreachable!("not events; read by read_outcomes / read_decisions")
                 }
             });
         }

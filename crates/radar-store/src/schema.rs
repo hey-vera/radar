@@ -37,37 +37,18 @@ fn envelope_fields() -> Vec<Field> {
 /// The Arrow schema for a table.
 #[must_use]
 pub fn schema_for(table: Table) -> Arc<Schema> {
-    // Outcomes are measurements rather than chain events: no signature, no
-    // transaction position, and `measured_at` in place of the envelope's slot.
-    // Forcing them through the envelope would mean inventing a signature.
-    if table == Table::Outcomes {
-        return Arc::new(Schema::new(vec![
-            Field::new("mint", DataType::Utf8, false),
-            Field::new("measured_at", DataType::UInt64, false),
-            Field::new("launch_slot", DataType::UInt64, false),
-            Field::new("first_transfer_slot", DataType::UInt64, true),
-            Field::new("last_transfer_slot", DataType::UInt64, true),
-            Field::new("transfers", DataType::UInt64, false),
-            Field::new("unique_senders", DataType::UInt64, false),
-            Field::new("unique_receivers", DataType::UInt64, false),
-            // The slot, not a flag. Null means no graduation recorded; a value
-            // lets "same block as launch" and "three days later" stay different
-            // outcomes instead of collapsing into one boolean.
-            Field::new("graduated_at", DataType::UInt64, true),
-            // Prices: lamports per base unit scaled by `PRICE_SCALE`. All
-            // nullable, because a token that never traded has no price and a
-            // measurement taken before prices were recorded has none either —
-            // and neither is a price of zero.
-            Field::new("first_price", DataType::UInt64, true),
-            Field::new("last_price", DataType::UInt64, true),
-            Field::new("peak_price", DataType::UInt64, true),
-            Field::new("trough_price", DataType::UInt64, true),
-            Field::new("vwap", DataType::UInt64, true),
-            // Not nullable: zero fills is a real, informative measurement.
-            Field::new("fills", DataType::UInt64, false),
-        ]));
+    // Two of the tables are not chain events: no signature, no transaction
+    // position, and their own slot column. Forcing them through the envelope
+    // would mean inventing a signature.
+    if table.holds_events() {
+        event_schema(table)
+    } else {
+        recorded_schema(table)
     }
+}
 
+/// The schema for a table of chain events.
+fn event_schema(table: Table) -> Arc<Schema> {
     let mut fields = envelope_fields();
     match table {
         Table::Launches => fields.extend([
@@ -91,9 +72,81 @@ pub fn schema_for(table: Table) -> Arc<Schema> {
             Field::new("accepted_any_price", DataType::Boolean, false),
         ]),
         Table::Graduations => fields.push(Field::new("mint", DataType::Utf8, false)),
-        Table::Outcomes => unreachable!("handled above"),
+        Table::Outcomes | Table::Decisions => {
+            unreachable!("not chain events; handled by recorded_schema")
+        }
     }
     Arc::new(Schema::new(fields))
+}
+
+/// A list of non-null strings, for the two reason columns.
+fn string_list(name: &str) -> Field {
+    Field::new(
+        name,
+        DataType::List(Arc::new(Field::new("item", DataType::Utf8, false))),
+        false,
+    )
+}
+
+/// The schema for a table recording something Radar measured or decided.
+fn recorded_schema(table: Table) -> Arc<Schema> {
+    match table {
+        Table::Outcomes => Arc::new(Schema::new(vec![
+            Field::new("mint", DataType::Utf8, false),
+            Field::new("measured_at", DataType::UInt64, false),
+            Field::new("launch_slot", DataType::UInt64, false),
+            Field::new("first_transfer_slot", DataType::UInt64, true),
+            Field::new("last_transfer_slot", DataType::UInt64, true),
+            Field::new("transfers", DataType::UInt64, false),
+            Field::new("unique_senders", DataType::UInt64, false),
+            Field::new("unique_receivers", DataType::UInt64, false),
+            // The slot, not a flag. Null means no graduation recorded; a value
+            // lets "same block as launch" and "three days later" stay different
+            // outcomes instead of collapsing into one boolean.
+            Field::new("graduated_at", DataType::UInt64, true),
+            // Prices: lamports per base unit scaled by `PRICE_SCALE`. All
+            // nullable, because a token that never traded has no price and a
+            // measurement taken before prices were recorded has none either —
+            // and neither is a price of zero.
+            Field::new("first_price", DataType::UInt64, true),
+            Field::new("last_price", DataType::UInt64, true),
+            Field::new("peak_price", DataType::UInt64, true),
+            Field::new("trough_price", DataType::UInt64, true),
+            Field::new("vwap", DataType::UInt64, true),
+            // Not nullable: zero fills is a real, informative measurement.
+            Field::new("fills", DataType::UInt64, false),
+        ])),
+        Table::Decisions => Arc::new(Schema::new(vec![
+            Field::new("mint", DataType::Utf8, false),
+            Field::new("creator", DataType::Utf8, false),
+            // The watermark the decision was taken as of, not the slot anything
+            // happened at. Conflating those is how look-ahead gets in.
+            Field::new("decided_at", DataType::UInt64, false),
+            Field::new("launch_slot", DataType::UInt64, false),
+            Field::new("strategy", DataType::Utf8, false),
+            Field::new("strategy_version", DataType::Utf8, false),
+            Field::new("conclusion", DataType::Utf8, false),
+            // Lists rather than joined strings: joining assumes no reason ever
+            // contains the separator, which is true today and is the kind of
+            // assumption that stops being true silently.
+            string_list("reasons"),
+            // Null means nothing was sized, never that zero was.
+            Field::new("notional_micro_usd", DataType::UInt64, true),
+            Field::new("exit_capacity_micro_usd", DataType::UInt64, true),
+            Field::new("assumed_round_trip_bps", DataType::UInt64, false),
+            // Null means the launch block could not be read — never that it
+            // looked clean, which is the distinction the whole gate rests on.
+            Field::new("coordination", DataType::Utf8, true),
+            // Null means the kernel never saw a proposal, which is a gap in the
+            // pipeline rather than a refusal.
+            Field::new("kernel_outcome", DataType::Utf8, true),
+            string_list("kernel_reasons"),
+            Field::new("inputs_digest", DataType::Utf8, false),
+        ])),
+        Table::Launches | Table::Trades | Table::Graduations => {
+            unreachable!("chain events; handled by event_schema")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -102,7 +155,7 @@ mod tests {
 
     #[test]
     fn every_table_has_a_schema_starting_with_the_envelope() {
-        for t in Table::ALL.iter().filter(|t| **t != Table::Outcomes) {
+        for t in Table::ALL.iter().filter(|t| t.holds_events()) {
             let s = schema_for(*t);
             let names: Vec<&str> = s
                 .fields()
@@ -126,11 +179,7 @@ mod tests {
         // carry `measured_at` instead, for the same reason.
         for t in Table::ALL {
             let schema = schema_for(*t);
-            let column = if *t == Table::Outcomes {
-                "measured_at"
-            } else {
-                "slot"
-            };
+            let column = t.slot_column();
             assert!(
                 !schema.field_with_name(column).expect(column).is_nullable(),
                 "{t:?}"

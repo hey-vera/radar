@@ -284,6 +284,7 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
     let mut cost_bps = UInt64Builder::new();
     let (mut coordination, mut kernel) = (StringBuilder::new(), StringBuilder::new());
     let mut kernel_reasons = ListBuilder::new(StringBuilder::new()).with_field(reason_item());
+    let mut entry_price = UInt64Builder::new();
     let mut digest = StringBuilder::new();
 
     for d in decisions {
@@ -313,6 +314,7 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
             kernel_reasons.values().append_value(r);
         }
         kernel_reasons.append(true);
+        entry_price.append_option(d.entry_price);
         digest.append_value(&d.inputs_digest);
     }
 
@@ -333,6 +335,7 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
             Arc::new(coordination.finish()),
             Arc::new(kernel.finish()),
             Arc::new(kernel_reasons.finish()),
+            Arc::new(entry_price.finish()),
             Arc::new(digest.finish()),
         ],
     )

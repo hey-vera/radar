@@ -117,6 +117,25 @@ pub struct Decision {
     pub kernel_outcome: Option<KernelOutcome>,
     /// Why the kernel refused, if it did.
     pub kernel_reasons: Vec<String>,
+    /// What one base unit was worth when the decision was taken, scaled by
+    /// [`PRICE_SCALE`](crate::PRICE_SCALE).
+    ///
+    /// **This is the field that makes a decision joinable to money**, and it
+    /// exists because [`Outcome::first_price`](crate::Outcome::first_price) is
+    /// the token's *first fill ever*. `creator_edge` acts around forty minutes
+    /// after launch, by which point the token has usually already moved a long
+    /// way — research 0009 says so in as many words: *"entry at the first fill
+    /// is not Radar's entry"*. Measuring a selected cohort from the first fill
+    /// would credit Radar with a move it was not present for, in the direction
+    /// that flatters it.
+    ///
+    /// Taken from the smallest rung of the exit probe's realised price ladder,
+    /// which is the price the decision itself was sized against — so it costs
+    /// nothing extra to record and cannot disagree with the sizing.
+    ///
+    /// `None` when no exit was probed, which is every refusal that never
+    /// reached the paid tier's quote.
+    pub entry_price: Option<u64>,
     /// Digest of the candidate the decision was made from.
     ///
     /// The same digest [`radar_research`](https://github.com/hey-vera/radar)
@@ -143,6 +162,24 @@ impl Decision {
             (self.conclusion, self.kernel_outcome),
             (Conclusion::Proposed, Some(KernelOutcome::Authorised))
         )
+    }
+
+    /// The return from the decision's own entry price to a later price, in
+    /// basis points.
+    ///
+    /// Signed, and `None` unless both prices exist — a decision with no entry
+    /// price cannot be scored, and reporting it as zero would fold "not
+    /// measurable" into "broke even", which is the whole population's median
+    /// dressed up as a result.
+    #[must_use]
+    pub fn return_bps(&self, later_price: u64) -> Option<i64> {
+        let entry = self.entry_price?;
+        if entry == 0 {
+            return None;
+        }
+        let entry = i128::from(entry);
+        let delta = i128::from(later_price) - entry;
+        i64::try_from(delta.saturating_mul(10_000) / entry).ok()
     }
 
     /// How old the token was when the decision was taken.
@@ -172,6 +209,7 @@ mod tests {
             coordination: None,
             kernel_outcome: None,
             kernel_reasons: Vec::new(),
+            entry_price: None,
             inputs_digest: "abc123".to_owned(),
         }
     }
@@ -224,6 +262,70 @@ mod tests {
         d.conclusion = Conclusion::Proposed;
         d.kernel_outcome = Some(KernelOutcome::Authorised);
         assert!(d.would_have_traded());
+    }
+
+    #[test]
+    fn a_return_is_measured_from_the_price_the_decision_saw() {
+        // Not from the token's first fill. Radar acts around forty minutes after
+        // launch, and crediting it with the move before it arrived is the error
+        // that would make a selected cohort look good for free.
+        let mut d = passed(&[]);
+        d.entry_price = Some(1_000);
+        assert_eq!(d.return_bps(1_500), Some(5_000), "+50%");
+        assert_eq!(d.return_bps(500), Some(-5_000), "-50%");
+        assert_eq!(d.return_bps(1_000), Some(0), "flat");
+    }
+
+    #[test]
+    fn a_decision_with_no_entry_price_cannot_be_scored() {
+        // Absent is not zero. Returning 0 would fold "not measurable" into
+        // "broke even" -- and break-even is far better than this population's
+        // median, so the error would flatter every cohort it touched.
+        let d = passed(&["NoRoute"]);
+        assert_eq!(d.entry_price, None);
+        assert_eq!(d.return_bps(9_999), None);
+    }
+
+    #[test]
+    fn a_zero_entry_price_is_refused_rather_than_dividing() {
+        let mut d = passed(&[]);
+        d.entry_price = Some(0);
+        assert_eq!(d.return_bps(1_000), None);
+    }
+
+    #[test]
+    fn a_total_loss_reads_as_minus_ten_thousand_bps() {
+        // The floor of the scale, and the most common real outcome in this
+        // market. Worth pinning: an off-by-one here would rescale every loss.
+        let mut d = passed(&[]);
+        d.entry_price = Some(1_000);
+        assert_eq!(d.return_bps(0), Some(-10_000));
+    }
+
+    #[test]
+    fn an_absurd_gain_is_refused_rather_than_wrapped() {
+        // Prices are scaled by 1e18, so the intermediate product leaves i64 long
+        // before any real return does. The property is that it never *wraps*: a
+        // wrapped return reads as a catastrophic loss on the best outcome in the
+        // sample, which is the direction that would quietly bury a winner.
+        //
+        // The first version of this test asserted a specific figure the author
+        // had worked out by hand, and the figure was wrong -- LEARNINGS 2, an
+        // assertion on a number nobody verified. What is actually guaranteed is
+        // the sign, and that an unrepresentable answer is refused.
+        let mut d = passed(&[]);
+        d.entry_price = Some(1);
+        for later in [u64::MAX, u64::MAX / 10_000, 1 << 62] {
+            match d.return_bps(later) {
+                None => {}
+                Some(bps) => assert!(bps > 0, "a gain must never report as a loss: {bps}"),
+            }
+        }
+
+        // And a return that does fit is reported rather than refused, so the
+        // guard above is not passing by refusing everything.
+        d.entry_price = Some(1_000_000_000);
+        assert_eq!(d.return_bps(2_000_000_000), Some(10_000), "+100%");
     }
 
     #[test]

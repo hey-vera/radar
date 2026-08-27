@@ -70,6 +70,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-types` | Domain vocabulary. Slots as the only clock, integer money, mutability classes, provenance and trust tiers. |
 | `radar-asof` | Point-in-time correctness. A watermark that makes look-ahead bias a compile-time concern rather than a discipline. |
 | `radar-provider` | The metered, cached, health-aware data plane. Pure policy — no HTTP, no clock, no async — so spend control is exhaustively testable without a network. |
+| `radar-agent` | The boundary a reasoning layer sits behind. Pure policy: the model gets read-only tools, observed text is fenced as data, and its answer is text nobody parses into an action. |
 | `radar-decode` | Solana program decoders. Matches Anchor discriminator bytes, never logged instruction names; an unrecognised discriminator is a recorded value, never a guess. |
 | `radar-store` | Append-only, slot-partitioned Parquet event log. Nulls mean "not recoverable", never zero; the watermark reaches onto disk. |
 | `radar-backfill` | Bulk historical extraction from CryptoHouse, decoded by the same decoder the live recorder uses. |

@@ -435,7 +435,12 @@ mod tests {
         //
         // The rule is about which processes can hold a key, so it is checked
         // against the crates that bind a socket rather than against everything.
-        const LISTENERS: &[&str] = &["radar-serve"];
+        // `radar-agent` is here for a different reason and the same rule. It
+        // does not listen, but it is the boundary a *model* sits behind, and
+        // model judgement must never authorise capital. A path from there to the
+        // signer is the exact thing rule 1 forbids -- and it would arrive as a
+        // convenience, one `use` at a time, the way the last one did.
+        const LISTENERS: &[&str] = &["radar-serve", "radar-agent"];
 
         for listener in LISTENERS {
             let manifest = root().join("crates").join(listener).join("Cargo.toml");
@@ -445,6 +450,18 @@ mod tests {
                 !text.contains("radar-signer"),
                 "{listener} listens on a network and must not depend on radar-signer; \
                  if it needs something from there, that something belongs somewhere else"
+            );
+        }
+
+        // And the agent reaches nothing that could become an authorisation.
+        // "No path" has to mean no path: an agent able to build a `Proposal` or
+        // reach `radar-exec` is one refactor from authorising one.
+        let agent = std::fs::read_to_string(root().join("crates/radar-agent/Cargo.toml"))
+            .expect("radar-agent has a manifest");
+        for forbidden in ["radar-risk", "radar-exec", "radar-strategy"] {
+            assert!(
+                !agent.contains(forbidden),
+                "radar-agent must not depend on {forbidden}: a model that can reach                  the decision lane is a model that can reach capital, whatever the                  intention was when the dependency was added"
             );
         }
     }

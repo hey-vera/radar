@@ -1,0 +1,26 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+@import "tailwindcss";
+
+/* Dark by default. This is an operations surface read at night beside a
+   terminal, and a white page beside a black one is the thing people complain
+   about first. */
+@theme {
+  --color-ink: oklch(0.16 0.01 260);
+  --color-surface: oklch(0.21 0.012 260);
+  --color-line: oklch(0.32 0.014 260);
+  --color-text: oklch(0.93 0.005 260);
+  --color-dim: oklch(0.68 0.012 260);
+  --color-refuse: oklch(0.72 0.14 55);
+  --color-good: oklch(0.75 0.13 155);
+  --color-warn: oklch(0.78 0.15 85);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-feature-settings: "tnum" 1;
+}

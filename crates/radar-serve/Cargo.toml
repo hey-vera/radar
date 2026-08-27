@@ -19,6 +19,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 radar-asof.workspace = true
 radar-instruments.workspace = true
 radar-risk.workspace = true
+rust-embed = { version = "8", default-features = false }
 radar-store.workspace = true
 radar-types.workspace = true
 serde.workspace = true

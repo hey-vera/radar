@@ -27,7 +27,7 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "662"
+export MIN_TESTS := "665"
 
 _default:
     @just --list --unsorted
@@ -155,6 +155,14 @@ cargo-deny:
     {{ cargo }} deny check
 
 # Every source file carries an SPDX header. Cheap to check, easy to forget.
+# Every source file carries an SPDX header. Cheap to check, easy to forget.
+#
+# TypeScript is included, not exempted. The interface is compiled into the same
+# binary as everything else and ships under the same licence, and a check that
+# covered only one language would be a check that silently stopped covering the
+# repository the day a second one arrived -- which is the day it did.
+#
+# `web/dist` and `node_modules` are build output and other people's code.
 licence-headers:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -164,8 +172,29 @@ licence-headers:
             echo "missing SPDX header: $f"
             missing=1
         fi
-    done < <(find crates -name '*.rs' -not -path '*/target/*')
+    done < <(
+        find crates -name '*.rs' -not -path '*/target/*'
+        find web -name '*.ts' -o -name '*.tsx' 2>/dev/null             | grep -v node_modules | grep -v '/dist/' || true
+    )
     exit $missing
+
+# The interface: install exactly the locked dependencies, check them for known
+# advisories, type-check, and build.
+#
+# `npm ci` rather than `npm install`, because the lockfile is the point: it is
+# what makes a build reproducible and what `npm audit` has an opinion about.
+#
+# Not part of `just ci`. The Rust suite must stay runnable without a Node
+# toolchain -- backend work should not require one -- so this is a separate
+# recipe with its own CI job, and `web/dist/.gitkeep` is what lets the crate
+# compile when nobody has run it.
+web:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    cd web
+    npm ci
+    npm audit --audit-level=high
+    npm run build
 
 # --- operator commands --------------------------------------------------------
 

@@ -57,7 +57,7 @@ use radar_types::{Latch, MicroUsd, Mutability, Slot};
 use serde_json::Value;
 
 pub use cache::{Cache, CacheKey, Decision, Entry, Stats};
-pub use cost::{Budget, Commitment, Meter, Refusal};
+pub use cost::{Budget, Commitment, Ledger, Meter, Refusal};
 pub use health::{Breaker, BreakerConfig, State};
 
 /// Identifies a provider lane: a vendor endpoint, a flat-rate account, or a

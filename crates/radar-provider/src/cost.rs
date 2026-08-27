@@ -197,8 +197,176 @@ impl Meter {
     }
 }
 
+/// What a meter has to remember across a restart.
+///
+/// **A budget that forgets is not a budget.** The daily ceiling is the only
+/// thing standing between a bug in a paid call and an unbounded bill, and
+/// `radar-serve` runs under `Restart=always` — a process that crashes and comes
+/// back with a fresh allowance can spend the day's budget as many times as it
+/// can crash.
+///
+/// Serialisable rather than self-persisting, because this crate is pure policy:
+/// no clock, no network, no filesystem. The caller decides where it lives, the
+/// same way it decides what "today" means.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, serde::Serialize, serde::Deserialize)]
+pub struct Ledger {
+    /// The accounting day this covers.
+    pub day: u64,
+    /// Micro-USD committed or settled on that day.
+    pub spent: u64,
+    /// How many calls were refused for want of budget.
+    pub refusals: u64,
+}
+
+impl Meter {
+    /// What this meter would need to be rebuilt.
+    ///
+    /// Records `spent_today`, which includes **in-flight commitments** as well
+    /// as settled spend. That is deliberate and it is the conservative
+    /// direction: a process that dies mid-call cannot know whether the call
+    /// happened, and assuming it did risks under-spending while assuming it did
+    /// not risks paying twice. Spending nothing is always recoverable.
+    #[must_use]
+    pub const fn ledger(&self) -> Ledger {
+        Ledger {
+            day: self.day,
+            spent: self.spent_today().get(),
+            refusals: self.refusals,
+        }
+    }
+
+    /// Rebuilds a meter from a saved ledger.
+    ///
+    /// A ledger from an earlier day is *not* carried forward: the budget is
+    /// daily, so yesterday's spend has no claim on today's allowance. Restoring
+    /// it as though it were today's would refuse everything until midnight,
+    /// which is a different bug and a more visible one.
+    ///
+    /// The restored spend is treated as settled. There is nothing in flight
+    /// after a restart, and a commitment that outlived its process cannot be
+    /// released by anyone.
+    #[must_use]
+    pub const fn restore(budget: Budget, ledger: &Ledger, day: u64) -> Self {
+        if ledger.day != day {
+            return Self::new(budget, day);
+        }
+        Self {
+            budget,
+            day,
+            settled_today: MicroUsd(ledger.spent),
+            committed: MicroUsd::ZERO,
+            next_id: 1,
+            refusals: ledger.refusals,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn spend_survives_a_restart() {
+        // The failure this exists to stop. radar-serve runs under
+        // Restart=always: a process that crashes and comes back with a fresh
+        // allowance can spend the day's budget as many times as it can crash,
+        // and nothing about that looks wrong from inside any single process.
+        let budget = Budget {
+            per_call_max: MicroUsd::from_dollars(1.00),
+            daily_max: MicroUsd::from_dollars(5.00),
+        };
+        let mut before = Meter::new(budget, 42);
+        // Five calls of ninety cents, each inside the per-call ceiling: real
+        // spend arrives in increments, not in one lump.
+        for _ in 0..5 {
+            let c = before
+                .authorize(MicroUsd::from_dollars(0.90), 42)
+                .expect("inside both ceilings");
+            before.settle(c, MicroUsd::from_dollars(0.90));
+        }
+
+        let mut after = Meter::restore(budget, &before.ledger(), 42);
+        assert_eq!(after.spent_today(), MicroUsd::from_dollars(4.50));
+
+        // The remaining allowance is what is left, not the whole budget.
+        assert!(
+            after.authorize(MicroUsd::from_dollars(0.60), 42).is_err(),
+            "a restart must not hand back a spent allowance"
+        );
+        assert!(after.authorize(MicroUsd::from_dollars(0.40), 42).is_ok());
+    }
+
+    #[test]
+    fn an_in_flight_commitment_is_restored_as_spent() {
+        // A process that dies mid-call cannot know whether the call happened.
+        // Assuming it did risks under-spending by that amount; assuming it did
+        // not risks paying for it twice. Spending nothing is recoverable.
+        let budget = Budget {
+            per_call_max: MicroUsd::from_dollars(1.00),
+            daily_max: MicroUsd::from_dollars(5.00),
+        };
+        let mut before = Meter::new(budget, 7);
+        let _never_settled = before
+            .authorize(MicroUsd::from_dollars(0.75), 7)
+            .expect("fits");
+
+        let after = Meter::restore(budget, &before.ledger(), 7);
+        assert_eq!(
+            after.spent_today(),
+            MicroUsd::from_dollars(0.75),
+            "the commitment outlived the process and nobody can release it"
+        );
+    }
+
+    #[test]
+    fn yesterdays_ledger_does_not_consume_todays_budget() {
+        // The budget is daily. Carrying yesterday's spend forward would refuse
+        // everything until midnight, which is a different bug -- louder, but
+        // still a bug.
+        let budget = Budget {
+            per_call_max: MicroUsd::from_dollars(1.00),
+            daily_max: MicroUsd::from_dollars(5.00),
+        };
+        let mut yesterday = Meter::new(budget, 100);
+        for _ in 0..5 {
+            let c = yesterday
+                .authorize(MicroUsd::from_dollars(1.00), 100)
+                .expect("inside both ceilings");
+            yesterday.settle(c, MicroUsd::from_dollars(1.00));
+        }
+        assert_eq!(yesterday.spent_today(), MicroUsd::from_dollars(5.00));
+
+        let today = Meter::restore(budget, &yesterday.ledger(), 101);
+        assert_eq!(
+            today.spent_today(),
+            MicroUsd::ZERO,
+            "a new day, a new budget"
+        );
+    }
+
+    #[test]
+    fn a_ledger_round_trips_through_json() {
+        // It has to survive whatever the caller writes it to, and the caller is
+        // outside this crate by design -- no filesystem here.
+        let budget = Budget {
+            per_call_max: MicroUsd::from_dollars(1.00),
+            daily_max: MicroUsd::from_dollars(5.00),
+        };
+        let mut meter = Meter::new(budget, 9);
+        let c = meter
+            .authorize(MicroUsd::from_dollars(0.25), 9)
+            .expect("fits");
+        meter.settle(c, MicroUsd::from_dollars(0.25));
+        // Refuse one, so the count is not zero and a dropped field would show.
+        let _ = meter.authorize(MicroUsd::from_dollars(99.0), 9);
+
+        let ledger = meter.ledger();
+        let json = serde_json::to_string(&ledger).expect("serialises");
+        let back: Ledger = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back, ledger);
+        assert_eq!(back.day, 9);
+        assert_eq!(back.spent, MicroUsd::from_dollars(0.25).get());
+        assert!(back.refusals > 0, "refusals are part of the record");
+    }
+
     use super::*;
 
     fn budget() -> Budget {

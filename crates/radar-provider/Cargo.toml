@@ -13,6 +13,7 @@ authors.workspace = true
 blake3.workspace = true
 radar-asof.workspace = true
 radar-types.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 

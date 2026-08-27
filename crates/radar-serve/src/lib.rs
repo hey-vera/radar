@@ -17,16 +17,21 @@ pub mod mcp;
 mod ops;
 pub mod x402;
 
+use core::convert::Infallible;
+use core::time::Duration;
 use std::sync::Arc;
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use futures_util::Stream;
 use radar_asof::AsOf;
 use radar_instruments::{Context, Registry};
 use radar_store::Reader;
+use serde::Serialize;
 use serde_json::{Value, json};
 
 /// Everything the server needs to answer.
@@ -50,6 +55,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/funnel", get(funnel))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
+        .route("/v1/events", get(events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
         .route("/mcp", post(mcp_endpoint));
@@ -143,6 +149,82 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
     // The shipped policy, asked rather than assumed.
     let closed = radar_risk::Policy::CLOSED.is_closed();
     Json(api::funnel(&decisions, launches, watermark.get(), closed)).into_response()
+}
+
+/// How often the store is asked whether anything moved.
+///
+/// The recorder stays about five minutes behind the chain and the outcome and
+/// decision passes run hourly, so nothing here changes faster than this. Ten
+/// seconds is already far more often than the data does; it is short enough
+/// that a page feels live and long enough that a dozen open tabs cost nothing.
+///
+/// Affordable only because reading a watermark stopped costing 3.4 seconds. At
+/// the old price this endpoint would have pinned a core on a box shared with
+/// two other production services.
+const POLL: Duration = Duration::from_secs(10);
+
+/// What an event carries.
+///
+/// The watermark and the row counts, which is enough for a client to know
+/// *that* something changed and cheap enough to compute on a timer. What
+/// changed is a separate fetch, because sending the funnel every ten seconds
+/// would be sending the same bytes to a page that mostly did not need them.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+struct Tick {
+    /// The store's watermark.
+    as_of: u64,
+    /// Row counts by table.
+    counts: api::StoreCounts,
+}
+
+impl Tick {
+    /// Reads the current state, or `None` if the store cannot answer.
+    fn read(state: &AppState) -> Option<Self> {
+        let watermark = Reader::watermark(&state.store).ok().flatten()?;
+        let counts = api::store_counts(&state.store, AsOf::at(watermark)).ok()?;
+        Some(Self {
+            as_of: watermark.get(),
+            counts,
+        })
+    }
+}
+
+/// A stream of changes to the store.
+///
+/// **Emits only when something actually moved.** A client that reconnects gets
+/// one immediate event so a fresh page is never blank, and after that silence
+/// means nothing has happened — which is information, and is why the keep-alive
+/// comment is separate from the data.
+///
+/// The keep-alive matters more than it looks. An idle event stream through a
+/// proxy is indistinguishable from a dead one, and both Caddy and the tunnel
+/// will close a connection that says nothing for long enough.
+async fn events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    // `None` as the seed rather than the current state, so the first tick is
+    // always sent. A page that connected during a quiet minute would otherwise
+    // show nothing at all until the store moved.
+    let stream = futures_util::stream::unfold((state, None::<Tick>), |(state, last)| async move {
+        loop {
+            if let Some(tick) = Tick::read(&state)
+                && last.as_ref() != Some(&tick)
+            {
+                let event = Event::default()
+                    .event("store")
+                    .json_data(&tick)
+                    .unwrap_or_else(|_| Event::default().comment("unserialisable"));
+                return Some((Ok(event), (state, Some(tick))));
+            }
+            tokio::time::sleep(POLL).await;
+        }
+    });
+
+    Sse::new(stream).keep_alive(
+        KeepAlive::new()
+            .interval(Duration::from_secs(15))
+            .text("radar"),
+    )
 }
 
 /// Everything recorded about one token.

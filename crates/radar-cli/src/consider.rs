@@ -241,6 +241,24 @@ fn paid_tier<'a>(
         if coordination.is_some_and(radar_graph::Coordination::is_actionable) {
             refused_on_shape += 1;
             println!("  {mint}  launch block looks arranged — not probing the exit");
+            // Recorded before the `continue`, because this is a decision and it
+            // is the strongest one Radar makes. Skipping it made the decisions
+            // table structurally incapable of holding a `Likely` verdict, so a
+            // monitor counting them read 0 of 779 and reported a working
+            // detector as one that had gone quiet -- a filter selecting the
+            // sample, and the sample then supporting a confident conclusion
+            // about the selection. LEARNINGS 7 and 10, a third time.
+            if let Some(base) = universe.candidate(mint, None, Some(sol_price)) {
+                let candidate = match coordination {
+                    Some(verdict) => base.with_coordination(verdict),
+                    None => base,
+                };
+                let decision = strategy.consider(&candidate);
+                examined.push((
+                    record_of(&candidate, &decision, strategy, None, watermark),
+                    candidate.mint,
+                ));
+            }
             continue;
         }
 
@@ -381,6 +399,8 @@ fn render_shapes(dist: &radar_graph::Distribution, unreadable: usize) -> String 
         radar_graph::MEASURED_BAND_RATE_BPS,
         radar_graph::BUNDLE_CENTRE,
     );
+
+    out.push_str(&render_calibration(dist));
     out
 }
 
@@ -480,6 +500,58 @@ fn record_of(
         inputs_digest: radar_research::Digest::of(candidate)
             .map_or_else(|_| String::new(), |d| d.0),
     }
+}
+
+/// The verdict on whether the detector is still calibrated.
+///
+/// Rendered separately from the histogram because a reader should not have to
+/// derive it. The histogram says what was seen; this says whether what was seen
+/// is consistent with the measurement the threshold rests on.
+fn render_calibration(dist: &radar_graph::Distribution) -> String {
+    use core::fmt::Write as _;
+    let mut out = String::new();
+    let _ = match radar_graph::calibration(dist) {
+        radar_graph::Calibration::NotEnoughData { observed, needed } => write!(
+            out,
+            "
+  CALIBRATION: {observed} block(s) is too few to say; {needed} more.
+               Not a clean bill of health -- a detector nobody has sampled and one
+               that works look the same from here.
+"
+        ),
+        radar_graph::Calibration::Consistent { centre_rate_bps } => write!(
+            out,
+            "
+  CALIBRATION: consistent — {centre_rate_bps} bps at the centre.
+"
+        ),
+        radar_graph::Calibration::Silent {
+            centre_rate_bps,
+            expected_bps,
+            observed,
+        } => write!(
+            out,
+            "
+  CALIBRATION: SILENT — {centre_rate_bps} bps at the centre over {observed}
+               block(s), against {expected_bps} measured. The band has gone quiet, which
+               is the direction that fails permissive: a moved bundler default makes
+               `is_actionable` stop firing, and nothing raises an error.
+"
+        ),
+        radar_graph::Calibration::Elevated {
+            centre_rate_bps,
+            expected_bps,
+            observed,
+        } => write!(
+            out,
+            "
+  CALIBRATION: ELEVATED — {centre_rate_bps} bps at the centre over {observed}
+               block(s), against {expected_bps} measured. Either the market moved or this
+               sample is not what it is believed to be; both invalidate the threshold.
+"
+        ),
+    };
+    out
 }
 
 /// Prints what the strategy made of one paid-for candidate.

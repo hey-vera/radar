@@ -336,6 +336,143 @@ pub struct Verdicts {
     pub unremarkable: usize,
 }
 
+/// The smallest sample worth drawing a conclusion from.
+///
+/// At a base rate near 5.8%, a run of twenty launches contains roughly one
+/// bundle, so seeing none is unremarkable. Below this the honest answer is that
+/// nothing can be said.
+pub const MIN_SAMPLE: usize = 200;
+
+/// What a sample says about whether the detector is still working.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum Calibration {
+    /// Too few launch blocks to say anything.
+    ///
+    /// The common state, and it must never read as healthy. A detector nobody
+    /// has sampled and a detector that is working look identical from the
+    /// outside, which is the whole reason this type exists.
+    NotEnoughData {
+        /// How many were observed.
+        observed: usize,
+        /// How many are needed.
+        needed: usize,
+    },
+    /// The band is firing at a rate consistent with the measurement.
+    Consistent {
+        /// The observed rate at the centre, per ten thousand.
+        centre_rate_bps: u64,
+    },
+    /// The band has gone quiet.
+    ///
+    /// **The dangerous direction.** [`BUNDLE_CENTRE`] is a tool's default
+    /// setting; when whoever runs that tool changes it, this detector stops
+    /// refusing and says nothing. `is_actionable` fires only on
+    /// [`Coordination::Likely`], so a moved constant does not raise an error —
+    /// it silently lets bundles through.
+    Silent {
+        /// The observed rate at the centre, per ten thousand.
+        centre_rate_bps: u64,
+        /// What 0008 measured across all launches.
+        expected_bps: u64,
+        /// How many blocks the verdict rests on.
+        observed: usize,
+    },
+    /// The band is firing far more often than measured.
+    ///
+    /// Less dangerous and still worth knowing: either the market changed, or
+    /// the sample is not what it is believed to be. Both invalidate the
+    /// threshold, and reporting only the quiet direction would be a monitor
+    /// that watches one way.
+    Elevated {
+        /// The observed rate at the centre, per ten thousand.
+        centre_rate_bps: u64,
+        /// What 0008 measured.
+        expected_bps: u64,
+        /// How many blocks the verdict rests on.
+        observed: usize,
+    },
+}
+
+impl Calibration {
+    /// Whether a human should look.
+    #[must_use]
+    pub const fn needs_attention(&self) -> bool {
+        matches!(self, Self::Silent { .. } | Self::Elevated { .. })
+    }
+}
+
+/// How far below the measured rate counts as silent, per ten thousand.
+///
+/// A quarter of it. The measurement is 80 launches per population and the
+/// sampled populations differ, so a factor of four is a wide enough gap that
+/// ordinary variation does not trip it and a constant that has moved does.
+const SILENT_BELOW_BPS: u64 = MEASURED_CENTRE_RATE_BPS / 4;
+
+/// How far above counts as elevated, per ten thousand.
+const ELEVATED_ABOVE_BPS: u64 = MEASURED_CENTRE_RATE_BPS * 3;
+
+/// Whether a sample of launch blocks is still consistent with 0008.
+///
+/// This is the check [`docs/research/0008`](../../docs/research/0008-the-launch-block-gives-the-bundle-away.md)
+/// asks for in its own words: *"Six is a tool's default, not a law. The number
+/// will move when whoever is running this changes their configuration, and the
+/// detector will go quiet without saying so."*
+///
+/// # This compares a sample against a differently-selected population
+///
+/// 0008 measured across **all** launches. A caller passing a sample that has
+/// already survived other filters is comparing two different populations, and
+/// the rates should differ. That is why the thresholds are a factor of four
+/// wide rather than a confidence interval: this is a smoke alarm for a constant
+/// that has moved, not a significance test.
+#[must_use]
+pub fn calibration(sample: &Distribution) -> Calibration {
+    calibration_of(sample.verdicts().likely, sample.total())
+}
+
+/// The same judgement from counts alone.
+///
+/// **This is the form that makes the monitor real.** A single `consider` pass
+/// reads at most a few dozen launch blocks and could never reach
+/// [`MIN_SAMPLE`], so a monitor that only ever saw one pass would report
+/// "not enough data" forever — a check that cannot fire, which is worse than no
+/// check because it looks like one.
+///
+/// Recorded decisions carry the coordination verdict, so the counts accumulate
+/// across every pass ever run. They do not carry the recipient *count*, which
+/// is why this takes totals rather than a [`Distribution`]: the histogram is a
+/// per-run view and the calibration is a lifetime one.
+#[must_use]
+pub fn calibration_of(likely: usize, observed: usize) -> Calibration {
+    if observed < MIN_SAMPLE {
+        return Calibration::NotEnoughData {
+            observed,
+            needed: MIN_SAMPLE - observed,
+        };
+    }
+    let centre_rate_bps = u64::try_from(likely)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(10_000)
+        / u64::try_from(observed).unwrap_or(1);
+
+    if centre_rate_bps < SILENT_BELOW_BPS {
+        return Calibration::Silent {
+            centre_rate_bps,
+            expected_bps: MEASURED_CENTRE_RATE_BPS,
+            observed,
+        };
+    }
+    if centre_rate_bps > ELEVATED_ABOVE_BPS {
+        return Calibration::Elevated {
+            centre_rate_bps,
+            expected_bps: MEASURED_CENTRE_RATE_BPS,
+            observed,
+        };
+    }
+    Calibration::Consistent { centre_rate_bps }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,6 +649,136 @@ mod tests {
         assert_eq!(d.centre_rate_bps(), None);
         assert_eq!(d.band_rate_bps(), None);
         assert_eq!(d.verdicts(), Verdicts::default());
+    }
+
+    /// A cohort of `n` launches, `hits` of them at the centre.
+    fn cohort(n: usize, hits: usize) -> Distribution {
+        let mut d = Distribution::new();
+        for i in 0..n {
+            d.observe(shape(if i < hits { BUNDLE_CENTRE } else { 2 }));
+        }
+        d
+    }
+
+    #[test]
+    fn a_detector_nobody_sampled_never_reads_as_healthy() {
+        // The state this monitor exists to keep separate. A detector that has
+        // not been sampled and one that is working look identical from outside,
+        // and reporting the first as the second is how a moved constant stays
+        // invisible.
+        let quiet = calibration(&cohort(10, 0));
+        assert_eq!(
+            quiet,
+            Calibration::NotEnoughData {
+                observed: 10,
+                needed: MIN_SAMPLE - 10,
+            },
+            "the shortfall is the number a reader acts on, so it is pinned"
+        );
+        assert!(
+            !quiet.needs_attention(),
+            "not enough data is not an alarm, it is an absence"
+        );
+        assert!(
+            !matches!(quiet, Calibration::Consistent { .. }),
+            "and it is certainly not a clean bill of health"
+        );
+    }
+
+    #[test]
+    fn a_band_that_has_gone_quiet_is_the_alarm_that_matters() {
+        // BUNDLE_CENTRE is a tool's default. When it moves, `assess` returns
+        // Suspected or Unremarkable, `is_actionable` stops firing, and Radar
+        // silently stops refusing bundles. Nothing errors. This is the only
+        // thing that would notice.
+        let silent = calibration(&cohort(400, 0));
+        assert!(matches!(
+            silent,
+            Calibration::Silent {
+                centre_rate_bps: 0,
+                ..
+            }
+        ));
+        assert!(silent.needs_attention());
+    }
+
+    #[test]
+    fn a_rate_near_what_was_measured_is_consistent() {
+        // 0008 measured 5.8% of all launches at the centre. A sample near that
+        // is the detector working.
+        let at_rate = cohort(1_000, 58);
+        assert_eq!(at_rate.centre_rate_bps(), Some(MEASURED_CENTRE_RATE_BPS));
+        let c = calibration(&at_rate);
+        assert!(matches!(c, Calibration::Consistent { .. }));
+        assert!(!c.needs_attention());
+    }
+
+    #[test]
+    fn the_monitor_watches_both_directions() {
+        // A monitor that only alarms when a signal goes quiet is a monitor
+        // watching one way. A rate far above the measurement also invalidates
+        // the threshold -- either the market moved or the sample is not what it
+        // is believed to be, and both matter.
+        let elevated = calibration(&cohort(400, 320));
+        assert!(matches!(elevated, Calibration::Elevated { .. }));
+        assert!(elevated.needs_attention());
+    }
+
+    #[test]
+    fn ordinary_variation_does_not_trip_it() {
+        // A smoke alarm that goes off every time someone makes toast gets
+        // unplugged. The sampled population differs from 0008's -- these have
+        // survived other filters -- so the bands are deliberately wide.
+        for hits in [15, 30, 58, 100, 150] {
+            let c = calibration(&cohort(1_000, hits));
+            assert!(
+                !c.needs_attention(),
+                "{hits} of 1,000 should be within tolerance, got {c:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_boundaries_are_where_they_are_claimed_to_be() {
+        // Both edges, because a threshold tested only well inside and well
+        // outside is a threshold whose edge nobody has checked.
+        let just_silent = cohort(10_000, 144); // 144 bps, under a quarter of 580
+        assert!(matches!(
+            calibration(&just_silent),
+            Calibration::Silent { .. }
+        ));
+        let just_inside = cohort(10_000, 145); // 145 bps == SILENT_BELOW_BPS
+        assert!(matches!(
+            calibration(&just_inside),
+            Calibration::Consistent { .. }
+        ));
+
+        let just_elevated = cohort(10_000, 1_741); // over 3x
+        assert!(matches!(
+            calibration(&just_elevated),
+            Calibration::Elevated { .. }
+        ));
+        let still_fine = cohort(10_000, 1_740); // exactly 3x
+        assert!(matches!(
+            calibration(&still_fine),
+            Calibration::Consistent { .. }
+        ));
+    }
+
+    #[test]
+    fn exactly_the_minimum_sample_is_enough_to_judge() {
+        assert_eq!(
+            calibration(&cohort(MIN_SAMPLE - 1, 0)),
+            Calibration::NotEnoughData {
+                observed: MIN_SAMPLE - 1,
+                needed: 1,
+            },
+            "one short means one more, not some other arithmetic"
+        );
+        assert!(matches!(
+            calibration(&cohort(MIN_SAMPLE, 0)),
+            Calibration::Silent { .. }
+        ));
     }
 
     #[test]

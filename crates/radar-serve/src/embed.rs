@@ -117,6 +117,36 @@ mod tests {
     }
 
     #[test]
+    fn every_type_vite_can_emit_is_named_rather_than_guessed() {
+        // Each arm is a claim that a browser will handle the file correctly, and
+        // a deleted arm falls through to `application/octet-stream` -- which,
+        // with `nosniff` on, means the browser refuses to use it at all. The
+        // symptom is a missing font or a broken image, and the cause is a table
+        // nobody tested.
+        //
+        // Table-driven because the failure is per-arm: eight of these were
+        // deleted one at a time by mutation testing and none of them failed a
+        // suite that only checked three.
+        for (path, expected) in [
+            ("index.html", "text/html; charset=utf-8"),
+            ("assets/app.js", "text/javascript; charset=utf-8"),
+            ("assets/app.mjs", "text/javascript; charset=utf-8"),
+            ("assets/app.css", "text/css; charset=utf-8"),
+            ("manifest.json", "application/json"),
+            ("assets/app.js.map", "application/json"),
+            ("icon.svg", "image/svg+xml"),
+            ("shot.png", "image/png"),
+            ("shot.jpg", "image/jpeg"),
+            ("shot.jpeg", "image/jpeg"),
+            ("shot.webp", "image/webp"),
+            ("favicon.ico", "image/x-icon"),
+            ("inter.woff2", "font/woff2"),
+        ] {
+            assert_eq!(mime_of(path), expected, "wrong type for {path}");
+        }
+    }
+
+    #[test]
     fn an_unknown_extension_is_a_download_rather_than_a_guess() {
         // Guessing wrong is worse than declining to guess: a mistyped script is
         // executed as whatever the browser sniffs, and `nosniff` is on.

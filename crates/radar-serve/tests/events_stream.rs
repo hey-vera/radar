@@ -151,3 +151,51 @@ async fn an_empty_store_does_not_stall_the_stream_open() {
         "an empty store is not an error"
     );
 }
+
+#[tokio::test]
+async fn the_interface_answers_reads_and_refuses_everything_else() {
+    // The fallback serves the interface for GET and HEAD and returns 404 for
+    // anything else, so an unrouted POST is answered like an unrouted path
+    // rather than as a method error. A 405 would say the path exists and only
+    // the verb is wrong, which for the unconfigured paid routes is a leak.
+    //
+    // Inverting the condition that decides this makes EVERY request a 404 --
+    // the whole interface gone -- and nothing noticed until mutation testing
+    // deleted it.
+    let (state, _dir) = state_with_a_store();
+    let ask = |method: &'static str, path: &'static str| {
+        let app = app(state.clone());
+        async move {
+            app.oneshot(
+                axum::http::Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(axum::body::Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("response")
+            .status()
+        }
+    };
+
+    assert_eq!(
+        ask("GET", "/").await,
+        axum::http::StatusCode::OK,
+        "a read of the interface must be served"
+    );
+    assert_eq!(
+        ask("GET", "/tokens/anything").await,
+        axum::http::StatusCode::OK,
+        "and so must a route the interface owns"
+    );
+    assert_eq!(
+        ask("POST", "/tokens/anything").await,
+        axum::http::StatusCode::NOT_FOUND,
+        "a write to an unrouted path is not found, never a method error"
+    );
+    assert_eq!(
+        ask("DELETE", "/anything").await,
+        axum::http::StatusCode::NOT_FOUND
+    );
+}

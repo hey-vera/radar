@@ -6,3 +6,14 @@
 # cargo-mutants working output, rewritten on every run.
 mutants.out/
 mutants.out.old/
+
+# The frontend build output. Produced by `npm run build` in web/ and embedded
+# into the radar-serve binary at compile time, so it is a build artifact rather
+# than a source. The directory itself is tracked (see web/dist/.gitkeep) because
+# rust-embed needs it to exist for the crate to compile at all -- a fresh
+# checkout must build without anyone having run npm.
+web/dist/*
+!web/dist/.gitkeep
+web/node_modules/
+tsconfig.tsbuildinfo
+web/tsconfig.tsbuildinfo

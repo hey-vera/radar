@@ -25,11 +25,19 @@ radar.heyvera.org {
 		X-Content-Type-Options nosniff
 		X-Frame-Options DENY
 		Referrer-Policy strict-origin-when-cross-origin
-		# The ops page is self-contained: one inline stylesheet, no scripts, no
-		# external loads. Token names are creator-supplied and are escaped before
-		# rendering, but a policy that forbids script outright means a missed
-		# escape is a rendering bug rather than a compromise.
-		Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'; img-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
+		# The interface is a compiled bundle served from this origin, so every
+		# source is 'self' and nothing is inline. Vite emits a linked stylesheet
+		# and a module script rather than inline blocks, which is what lets
+		# `unsafe-inline` come out entirely -- it was there for the ops page's
+		# single inline <style> and is no longer needed by anything.
+		#
+		# No CDN, no external font host, no third-party origin of any kind. Token
+		# names are creator-supplied and are escaped before rendering; a policy
+		# that admits script only from this origin means a missed escape is a
+		# rendering bug rather than a compromise.
+		#
+		# `connect-src 'self'` covers both the JSON fetches and the EventSource.
+		Content-Security-Policy "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; font-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'"
 	}
 
 	# Everything except the event stream is compressed.

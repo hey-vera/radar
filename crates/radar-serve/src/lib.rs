@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+mod embed;
 pub mod facilitator;
 pub mod mcp;
 mod ops;
@@ -50,7 +51,11 @@ pub struct AppState {
 /// deployment returns 404 for them rather than serving intelligence for free.
 pub fn app(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
-        .route("/", get(ops_page))
+        // The interface, embedded in this binary. The server-rendered ops page
+        // stays at /ops as the no-JavaScript fallback: it is what answers when
+        // somebody is debugging with curl, and it needs no build to exist.
+        .route("/", get(interface))
+        .route("/ops", get(ops_page))
         .route("/health", get(health))
         .route("/v1/funnel", get(funnel))
         .route("/v1/tokens/{mint}", get(token))
@@ -58,7 +63,16 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/events", get(events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
-        .route("/mcp", post(mcp_endpoint));
+        .route("/mcp", post(mcp_endpoint))
+        // Anything else is either a built asset or a route the interface owns.
+        // Placed last so every named route above wins.
+        //
+        // Registered for any method rather than `get`, because a method-scoped
+        // fallback answers a POST to an unknown path with 405 — which says the
+        // path exists and only the verb is wrong. For the unconfigured paid
+        // routes that is a leak: they are supposed not to exist at all, and a
+        // paywall that admits its own shape is halfway to one that fails open.
+        .fallback(interface);
 
     if state.x402.is_some() {
         router = router
@@ -80,6 +94,22 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         "watermarkSlot": watermark.map(radar_types::Slot::get),
         "paidSurface": state.x402.is_some(),
     }))
+}
+
+/// The compiled interface, or a built asset.
+///
+/// Only reads. Anything else is not found, so an unrouted `POST` is answered
+/// the same way an unrouted path is rather than as a method error — see the
+/// note on the fallback registration.
+async fn interface(method: axum::http::Method, uri: axum::http::Uri) -> Response {
+    if method != axum::http::Method::GET && method != axum::http::Method::HEAD {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "no such route" })),
+        )
+            .into_response();
+    }
+    embed::serve(uri.path())
 }
 
 async fn ops_page(State(state): State<Arc<AppState>>) -> Html<String> {

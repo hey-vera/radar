@@ -46,3 +46,4 @@ licence-headers = just licence-headers
 cargo-deny      = just cargo-deny
 msrv            = github-only: pinned toolchain, no local recipe (the host may not have 1.90 for its triple)
 mutants         = just mutants
+web             = just web   -- NOT YET IN THE RULESET; adding a check means adding it in three places

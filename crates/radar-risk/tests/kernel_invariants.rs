@@ -19,7 +19,7 @@ fn policy() -> Policy {
         max_deployed: MicroUsd::from_dollars(200.0),
         max_per_creator: MicroUsd::from_dollars(60.0),
         max_daily_loss: MicroUsd::from_dollars(25.0),
-        max_round_trip_cost_percent: 5,
+        max_round_trip_cost_bps: 900,
         max_canary: MicroUsd::from_dollars(1.0),
         max_input_staleness: SlotDelta(150),
         max_consecutive_failures: 3,
@@ -376,5 +376,61 @@ fn a_verdict_round_trips_through_json() {
     assert_eq!(
         serde_json::from_str::<Verdict>(&s).expect("deserialize"),
         refused
+    );
+}
+
+#[test]
+fn the_cost_ceiling_can_express_the_cost_that_was_actually_measured() {
+    // The reason this field is basis points rather than percent. The measured
+    // round trip is 850 bps; a percent field offers 8% -- which refuses every
+    // trade there is -- or 9%, and nothing between. The rounding, not the
+    // measurement, would decide whether the system trades at all.
+    let mut at_measured_cost = buy(100.0);
+    at_measured_cost.estimated_round_trip_cost = MicroUsd::from_dollars(8.50);
+
+    let just_under = Policy {
+        max_round_trip_cost_bps: 849,
+        ..policy()
+    };
+    let exactly = Policy {
+        max_round_trip_cost_bps: 850,
+        ..policy()
+    };
+
+    assert!(
+        refusals(&evaluate(&at_measured_cost, &state(), &just_under))
+            .contains(&Refusal::RoundTripTooExpensive),
+        "a ceiling one basis point under the cost must refuse"
+    );
+    assert!(
+        !refusals(&evaluate(&at_measured_cost, &state(), &exactly))
+            .contains(&Refusal::RoundTripTooExpensive),
+        "and a ceiling exactly at the cost must not -- the boundary is inclusive, \
+         so a policy set to the measured cost admits a trade at that cost"
+    );
+}
+
+#[test]
+fn a_cost_ceiling_of_zero_refuses_every_cost_including_none() {
+    // Deny by default, and the shipped policy sets exactly this. A proposal
+    // costing nothing is still refused, because a zero ceiling is a statement
+    // that no round trip is authorised rather than that free ones are.
+    let mut free = buy(100.0);
+    free.estimated_round_trip_cost = MicroUsd::ZERO;
+    let closed = Policy {
+        max_round_trip_cost_bps: 0,
+        ..policy()
+    };
+    assert!(
+        !refusals(&evaluate(&free, &state(), &closed)).contains(&Refusal::RoundTripTooExpensive),
+        "a cost of zero is within a ceiling of zero; the refusal comes from \
+         elsewhere in Policy::CLOSED, not from this comparison"
+    );
+
+    let mut any = buy(100.0);
+    any.estimated_round_trip_cost = MicroUsd(1);
+    assert!(
+        refusals(&evaluate(&any, &state(), &closed)).contains(&Refusal::RoundTripTooExpensive),
+        "and one micro-dollar of cost is not"
     );
 }

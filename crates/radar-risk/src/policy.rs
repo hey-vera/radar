@@ -59,9 +59,15 @@ pub struct Policy {
     pub max_per_creator: MicroUsd,
     /// Realised loss in a day beyond which nothing is authorised.
     pub max_daily_loss: MicroUsd,
-    /// The most a round trip may cost in fees, tips and slippage, as a
-    /// percentage of the position.
-    pub max_round_trip_cost_percent: u32,
+    /// The most a round trip may cost in fees, tips and slippage, per ten
+    /// thousand of the position.
+    ///
+    /// Basis points rather than percent, because the measured cost is **850
+    /// bps** and a percent field cannot express it. The ceiling could be 8%
+    /// (refusing every trade there is) or 9%, and nothing between — a
+    /// bps-granularity cost judged against a percent-granularity limit, where
+    /// the rounding decides whether the system trades at all.
+    pub max_round_trip_cost_bps: u32,
     /// The largest dust round trip the `Canary` level may authorise.
     pub max_canary: MicroUsd,
     /// How stale an input may be before a proposal is refused.
@@ -86,7 +92,7 @@ impl Policy {
         max_deployed: MicroUsd::ZERO,
         max_per_creator: MicroUsd::ZERO,
         max_daily_loss: MicroUsd::ZERO,
-        max_round_trip_cost_percent: 0,
+        max_round_trip_cost_bps: 0,
         max_canary: MicroUsd::ZERO,
         max_input_staleness: SlotDelta(0),
         max_consecutive_failures: 0,

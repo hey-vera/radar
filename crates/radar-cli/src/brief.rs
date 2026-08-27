@@ -114,6 +114,7 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     checks.push(watermark(&reader));
     checks.extend(tables(&reader));
     checks.push(outcomes(&reader));
+    checks.push(decisions(&reader));
     checks.push(serving(serve_url.map(|url| (url, probe_serving(url)))));
     checks.push(trading_lane());
 
@@ -268,6 +269,74 @@ fn outcomes(reader: &Reader) -> Check {
     }
 }
 
+/// How far behind the watermark the newest decision may fall before the
+/// decision pass is considered stopped, in slots.
+///
+/// The pass runs hourly and a token is only eligible for ~40 minutes after
+/// launch, so a gap wider than a few hours means passes are being missed rather
+/// than that the funnel found nothing. Roughly three hours at 2.5 slots a
+/// second, which tolerates two skipped runs before it complains.
+const DECISIONS_STALE_AFTER: u64 = 27_000;
+
+/// Whether the decision pass is still recording.
+///
+/// It exists because nothing else would notice it stopping. The outcomes cron
+/// has the same shape and the same absence of supervision, and a recorder that
+/// dies quietly is [LEARNINGS] entry 8 — the failure that left hours of chain
+/// unrecorded and was found by regrounding rather than by an alarm.
+///
+/// Pure over the rows so both directions are testable without a store.
+///
+/// [LEARNINGS]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
+fn decisions(reader: &Reader) -> Check {
+    let Ok(Some(top)) = reader.watermark() else {
+        return Check::new(Status::Unknown, "decisions", "cannot read the watermark");
+    };
+    match reader.read_decisions(AsOf::at(top)) {
+        Ok(rows) => decisions_health(&rows, top),
+        Err(e) => Check::new(Status::Unknown, "decisions", format!("cannot read: {e}")),
+    }
+}
+
+/// The rule, separated from the read.
+fn decisions_health(rows: &[radar_store::Decision], top: radar_types::Slot) -> Check {
+    let Some(newest) = rows.iter().map(|d| d.decided_at.get()).max() else {
+        return Check::new(
+            Status::Warn,
+            "decisions",
+            "none recorded — nothing can be joined to prices until the pass runs",
+        );
+    };
+
+    let proposed = rows.iter().filter(|d| d.proposed()).count();
+    // Counted apart from "recorded". A decision with no entry price cannot be
+    // scored, so a store full of them is a pass that runs and produces nothing
+    // usable -- which reads identically to a healthy one without this number.
+    let scoreable = rows.iter().filter(|d| d.entry_price.is_some()).count();
+    let behind = top.get().saturating_sub(newest);
+    let detail = format!(
+        "{} recorded, {proposed} proposed, {scoreable} with an entry price; \
+         newest at slot {newest}",
+        rows.len()
+    );
+
+    if behind > DECISIONS_STALE_AFTER {
+        return Check::new(
+            Status::Fail,
+            "decisions",
+            format!("{detail} — {behind} slots behind the watermark; the pass has stopped"),
+        );
+    }
+    if scoreable == 0 {
+        return Check::new(
+            Status::Warn,
+            "decisions",
+            format!("{detail} — none carry an entry price, so none can be scored"),
+        );
+    }
+    Check::new(Status::Ok, "decisions", detail)
+}
+
 /// What a probe of the serving surface came back with.
 ///
 /// An enum rather than a `Result<String, _>` so that "answered, but wrongly" is
@@ -405,6 +474,110 @@ mod tests {
         let check = ingestion(dir.path(), now_epoch());
         assert_eq!(check.status, Status::Unknown);
         assert!(check.status.is_alarm(), "unknown must alarm");
+    }
+
+    fn a_decision(slot: u64, proposed: bool, entry: Option<u64>) -> radar_store::Decision {
+        radar_store::Decision {
+            mint: radar_types::Address::new([1u8; 32]),
+            creator: radar_types::Address::new([2u8; 32]),
+            decided_at: radar_types::Slot(slot),
+            launch_slot: radar_types::Slot(slot.saturating_sub(6_000)),
+            strategy: "creator_edge".to_owned(),
+            strategy_version: "0.1.0".to_owned(),
+            conclusion: if proposed {
+                radar_store::Conclusion::Proposed
+            } else {
+                radar_store::Conclusion::Passed
+            },
+            reasons: Vec::new(),
+            notional_micro_usd: None,
+            exit_capacity_micro_usd: None,
+            assumed_round_trip_bps: 850,
+            coordination: None,
+            kernel_outcome: None,
+            kernel_reasons: Vec::new(),
+            entry_price: entry,
+            inputs_digest: "d".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_decision_pass_that_has_stopped_is_reported_as_broken() {
+        // The check exists because nothing else would notice. The outcomes cron
+        // has the same shape and the same absence of supervision, and a recorder
+        // that dies quietly is LEARNINGS 8 -- hours of chain lost, found by
+        // regrounding rather than by an alarm.
+        let top = radar_types::Slot(1_000_000);
+        let fresh = vec![a_decision(1_000_000 - 100, true, Some(9))];
+        let stalled = vec![a_decision(
+            1_000_000 - DECISIONS_STALE_AFTER - 1,
+            true,
+            Some(9),
+        )];
+
+        assert_eq!(decisions_health(&fresh, top).status, Status::Ok);
+        assert_eq!(
+            decisions_health(&stalled, top).status,
+            Status::Fail,
+            "a pass that has not run in hours must alarm, not read as quiet"
+        );
+    }
+
+    #[test]
+    fn decisions_that_cannot_be_scored_are_not_reported_as_healthy() {
+        // A pass that runs and records rows carrying no entry price produces
+        // nothing usable, and without this it reads identically to a healthy
+        // one. That is a check reporting absence the same way it reports
+        // success -- LEARNINGS 5.
+        let top = radar_types::Slot(1_000_000);
+        let unscoreable = vec![a_decision(999_900, true, None)];
+        let scoreable = vec![a_decision(999_900, true, Some(9))];
+
+        assert_eq!(decisions_health(&unscoreable, top).status, Status::Warn);
+        assert_eq!(decisions_health(&scoreable, top).status, Status::Ok);
+    }
+
+    #[test]
+    fn no_decisions_at_all_warns_rather_than_passing_silently() {
+        let empty: Vec<radar_store::Decision> = Vec::new();
+        let check = decisions_health(&empty, radar_types::Slot(1_000_000));
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains("joined to prices"),
+            "the detail should say why it matters: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn the_staleness_window_tolerates_a_missed_pass_but_not_a_day() {
+        // Exercised through the rule rather than asserted about the constant:
+        // an `assert!` over a constant is a lint, and more to the point it
+        // checks the number rather than the behaviour the number is for.
+        //
+        // Hourly at roughly 9,000 slots an hour. One missed pass must not cry
+        // wolf; a day of silence must not pass.
+        let top = radar_types::Slot(1_000_000);
+        let gap = |slots: u64| {
+            decisions_health(&[a_decision(1_000_000 - slots, true, Some(9))], top).status
+        };
+
+        assert_eq!(gap(9_000), Status::Ok, "one missed pass is not a failure");
+        assert_eq!(gap(216_000), Status::Fail, "a day of silence is");
+
+        // The boundary itself, because `>` and `>=` differ only there and a
+        // window tested only well inside and well outside is a window whose
+        // edge nobody has checked.
+        assert_eq!(
+            gap(DECISIONS_STALE_AFTER),
+            Status::Ok,
+            "exactly at the window is still within it"
+        );
+        assert_eq!(
+            gap(DECISIONS_STALE_AFTER + 1),
+            Status::Fail,
+            "one slot past it is not"
+        );
     }
 
     #[test]

@@ -308,8 +308,8 @@ fn over_cost_ceiling(proposal: &Proposal, policy: &Policy) -> bool {
         proposal
             .notional
             .get()
-            .saturating_mul(u64::from(policy.max_round_trip_cost_percent))
-            / 100,
+            .saturating_mul(u64::from(policy.max_round_trip_cost_bps))
+            / 10_000,
     );
     proposal.estimated_round_trip_cost > allowed
 }

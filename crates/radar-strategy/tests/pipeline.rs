@@ -147,7 +147,7 @@ fn capped() -> Policy {
         max_deployed: MicroUsd::from_dollars(1_000.0),
         max_per_creator: MicroUsd::from_dollars(250.0),
         max_daily_loss: MicroUsd::from_dollars(100.0),
-        max_round_trip_cost_percent: 10,
+        max_round_trip_cost_bps: 1_000,
         max_canary: MicroUsd::from_dollars(1.0),
         max_input_staleness: SlotDelta(6_000),
         max_consecutive_failures: 3,

@@ -297,6 +297,89 @@ pub fn evaluate(proposal: &Proposal, state: &PortfolioState, policy: &Policy) ->
     }))
 }
 
+/// The refusals no proposal could avoid under this policy.
+///
+/// `Policy::CLOSED` refuses every proposal seven ways at once:
+///
+/// ```text
+/// [NoAutonomy, OverPositionLimit, OverDeploymentLimit, OverCreatorLimit,
+///  DailyLossReached, RoundTripTooExpensive, InputsTooStale]
+/// ```
+///
+/// Six of those are artifacts of the policy being all zeros — `max_daily_loss`
+/// of 0 makes `0 >= 0` true at zero realised loss, a staleness budget of 0 fails
+/// every input, a cost ceiling of 0 fails every cost. **There is one fact there,
+/// rendered as seven**, and a reader who has not memorised `Policy::CLOSED`
+/// cannot tell which of the seven is about the token.
+///
+/// So this is computed rather than listed: evaluate a deliberately perfect
+/// proposal — the smallest possible size, no cost, ample measured exit capacity,
+/// inputs from this instant — against a flat portfolio. Anything still refused
+/// is refused because of the policy, and nothing a token did could have changed
+/// it.
+///
+/// Computing it means it cannot drift. A hardcoded list would be right for
+/// `CLOSED` and wrong for every policy anyone writes afterwards, and wrong in
+/// the direction that presents a policy limit as a finding about a token.
+#[must_use]
+pub fn inevitable_refusals(policy: &Policy) -> Vec<Refusal> {
+    // The best trade that could actually exist: a dollar, exiting into unlimited
+    // measured depth, on inputs one slot old, costing one basis point.
+    //
+    // **Costing something is the load-bearing part.** A free probe passes a cost
+    // ceiling of zero, because `0 > 0` is false, so `RoundTripTooExpensive`
+    // would come back as a finding about the token under a policy that refuses
+    // every real trade on cost alone. No round trip is free; a probe that is one
+    // answers a question nobody asked.
+    //
+    // The one-slot input age is the same argument. An input observed in the
+    // decision's own slot is not something a real pipeline produces — it was
+    // read before the decision was taken — and a probe claiming otherwise
+    // passes a staleness budget of zero that refuses every real proposal.
+    //
+    // Not zero-size either: a zero-size buy is refused as an infinite cost
+    // ratio, which would put a token's reason into a policy's from the other
+    // direction.
+    //
+    // The shape of all three is one rule: **the probe must be the best case that
+    // could actually occur, not the best case the types permit.** A degenerate
+    // probe reports a degenerate limit as a finding about a token.
+    let now = Slot(1_000_000);
+    let perfect = Proposal {
+        mint: Address::new([0u8; 32]),
+        creator: Address::new([0u8; 32]),
+        action: Action::Buy,
+        notional: MicroUsd::DOLLAR,
+        estimated_round_trip_cost: MicroUsd(100),
+        oldest_input_slot: Slot(now.get() - 1),
+        simulated_exit_capacity: Some(MicroUsd(u64::MAX)),
+    };
+    match evaluate(&perfect, &PortfolioState::flat(now), policy) {
+        Verdict::Refused { reasons } => reasons,
+        Verdict::Authorised(_) => Vec::new(),
+    }
+}
+
+/// Splits a verdict's reasons into what the policy would have refused anyway and
+/// what is actually about this proposal.
+///
+/// The second list is the one worth reading. Under an open policy it is the
+/// whole list; under [`Policy::CLOSED`] it is usually empty, and *that* is the
+/// honest summary — not seven separate-looking problems.
+#[must_use]
+pub fn partition_refusals(reasons: &[Refusal], policy: &Policy) -> (Vec<Refusal>, Vec<Refusal>) {
+    let inevitable = inevitable_refusals(policy);
+    let (mut policy_bound, mut about_this) = (Vec::new(), Vec::new());
+    for reason in reasons {
+        if inevitable.contains(reason) {
+            policy_bound.push(*reason);
+        } else {
+            about_this.push(*reason);
+        }
+    }
+    (policy_bound, about_this)
+}
+
 /// Whether the round trip costs more than the policy allows.
 fn over_cost_ceiling(proposal: &Proposal, policy: &Policy) -> bool {
     if proposal.notional.get() == 0 {

@@ -65,7 +65,10 @@
 mod kernel;
 mod policy;
 
-pub use kernel::{Action, Authorization, PortfolioState, Proposal, Refusal, Verdict, evaluate};
+pub use kernel::{
+    Action, Authorization, PortfolioState, Proposal, Refusal, Verdict, evaluate,
+    inevitable_refusals, partition_refusals,
+};
 pub use policy::{Autonomy, Policy};
 
 // Re-exported so a caller building a proposal does not need three crates.

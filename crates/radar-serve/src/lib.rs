@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod api;
 pub mod facilitator;
 pub mod mcp;
 mod ops;
@@ -46,6 +47,9 @@ pub fn app(state: Arc<AppState>) -> Router {
     let mut router = Router::new()
         .route("/", get(ops_page))
         .route("/health", get(health))
+        .route("/v1/funnel", get(funnel))
+        .route("/v1/tokens/{mint}", get(token))
+        .route("/v1/store", get(store_counts))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
         .route("/mcp", post(mcp_endpoint));
@@ -74,6 +78,106 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
 
 async fn ops_page(State(state): State<Arc<AppState>>) -> Html<String> {
     Html(ops::render(&state))
+}
+
+/// Why the store could not name a watermark.
+///
+/// A small type rather than a ready-made `Response`, because a `Response` is
+/// large enough that returning one in an `Err` is a lint — and because the two
+/// cases want different status codes. "The store is empty" and "the store is
+/// broken" are different answers, and a route that rendered both the same way
+/// would send someone to the wrong place.
+enum NoWatermark {
+    /// Nothing has been recorded yet. A fresh instance, not a fault.
+    Empty,
+    /// The store could not be read.
+    Unreadable(String),
+}
+
+impl IntoResponse for NoWatermark {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Empty => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({ "error": "the store has recorded nothing yet" })),
+            )
+                .into_response(),
+            Self::Unreadable(detail) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": detail })),
+            )
+                .into_response(),
+        }
+    }
+}
+
+/// The watermark every store-reading route answers as of.
+fn watermark_of(state: &AppState) -> Result<radar_types::Slot, NoWatermark> {
+    match Reader::watermark(&state.store) {
+        Ok(Some(slot)) => Ok(slot),
+        Ok(None) => Err(NoWatermark::Empty),
+        Err(e) => Err(NoWatermark::Unreadable(e.to_string())),
+    }
+}
+
+/// What Radar has decided, and where it stopped.
+async fn funnel(State(state): State<Arc<AppState>>) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    let as_of = AsOf::at(watermark);
+    let (Ok(decisions), Ok(launches)) = (
+        state.store.read_decisions(as_of),
+        state.store.read(radar_store::Table::Launches, as_of),
+    ) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cannot read the store" })),
+        )
+            .into_response();
+    };
+    // The shipped policy, asked rather than assumed.
+    let closed = radar_risk::Policy::CLOSED.is_closed();
+    Json(api::funnel(
+        &decisions,
+        launches.len(),
+        watermark.get(),
+        closed,
+    ))
+    .into_response()
+}
+
+/// Everything recorded about one token.
+async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    match api::token_evidence(&state.store, &mint, AsOf::at(watermark)) {
+        Ok(evidence) => Json(evidence).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// How many rows each table holds.
+async fn store_counts(State(state): State<Arc<AppState>>) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    match api::store_counts(&state.store, AsOf::at(watermark)) {
+        Ok(counts) => Json(counts).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn list_instruments(State(state): State<Arc<AppState>>) -> Json<Value> {

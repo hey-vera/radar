@@ -1,0 +1,20 @@
+[package]
+name = "radar-agent"
+description = "The boundary a reasoning layer sits behind. Pure policy: no HTTP, no clock, no async."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+radar-provider.workspace = true
+radar-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

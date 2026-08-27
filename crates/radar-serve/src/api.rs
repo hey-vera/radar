@@ -205,11 +205,14 @@ pub struct StoreCounts {
 ///
 /// Returns [`radar_store::StoreError`] if the store cannot be read.
 pub fn store_counts(reader: &Reader, as_of: AsOf) -> Result<StoreCounts, radar_store::StoreError> {
+    // `count` rather than `read(..).len()`. Decoding 167,987 launch events to
+    // learn that there are 167,987 of them took ten seconds against the live
+    // store; the row count is in each file's Parquet footer.
     Ok(StoreCounts {
-        launches: reader.read(Table::Launches, as_of)?.len(),
-        graduations: reader.read(Table::Graduations, as_of)?.len(),
-        outcomes: reader.read_outcomes(as_of)?.len(),
-        decisions: reader.read_decisions(as_of)?.len(),
+        launches: reader.count(Table::Launches, as_of)?,
+        graduations: reader.count(Table::Graduations, as_of)?,
+        outcomes: reader.count(Table::Outcomes, as_of)?,
+        decisions: reader.count(Table::Decisions, as_of)?,
     })
 }
 

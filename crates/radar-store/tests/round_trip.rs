@@ -896,3 +896,250 @@ fn flushing_decisions_counts_the_rows_and_files_it_wrote() {
     assert_eq!(writer.written_rows(), 3, "three decisions, three rows");
     assert_eq!(writer.written_files(), 1, "one partition, one file");
 }
+
+/// The exhaustive watermark, via a different public path: read every row the
+/// store will hand out and take the highest slot.
+///
+/// Kept so the fast path can be compared rather than trusted, and written
+/// against the public API so it exercises a genuinely independent route to the
+/// same number.
+fn watermark_by_reading_everything(root: &std::path::Path) -> Option<Slot> {
+    let reader = Reader::open(root);
+    let everything = AsOf::at(Slot(u64::MAX));
+    let mut highest: Option<Slot> = None;
+    for table in Table::EVENT_TABLES {
+        for event in reader.read(*table, everything).expect("read") {
+            let slot = event.slot();
+            highest = Some(highest.map_or(slot, |h| h.max(slot)));
+        }
+    }
+    for outcome in reader.read_outcomes(everything).expect("outcomes") {
+        highest = Some(highest.map_or(outcome.measured_at, |h| h.max(outcome.measured_at)));
+    }
+    for decision in reader.read_decisions(everything).expect("decisions") {
+        highest = Some(highest.map_or(decision.decided_at, |h| h.max(decision.decided_at)));
+    }
+    highest
+}
+
+#[test]
+fn the_fast_watermark_agrees_with_reading_every_row() {
+    // `watermark` opens only the newest partition, because a partition file
+    // covers a bounded slot range named in its own filename. That is a real
+    // speedup -- 3.4 seconds to milliseconds against the live store -- and it is
+    // only safe if the two answers are the same one.
+    //
+    // Spread across many partitions and several generations, so the shortcut has
+    // something to skip and something to disambiguate.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 4).expect("open");
+
+    for p in 0..6u64 {
+        for n in 0..3u64 {
+            let slot = p * SLOTS_PER_PARTITION + n * 17 + 1;
+            writer.append(launch(slot)).expect("append");
+        }
+    }
+    // A second generation of the newest partition, so the shortcut has to look
+    // at more than one file to get the right answer.
+    writer.flush().expect("flush");
+    let newest = 5 * SLOTS_PER_PARTITION + 999;
+    writer.append(launch(newest)).expect("append");
+    writer.flush().expect("flush");
+
+    let fast = Reader::open(dir.path()).watermark().expect("watermark");
+    let slow = watermark_by_reading_everything(dir.path());
+
+    assert_eq!(fast, slow, "the shortcut must not change the answer");
+    assert_eq!(
+        fast,
+        Some(Slot(newest)),
+        "and the answer is the highest slot"
+    );
+    assert!(
+        Reader::open(dir.path())
+            .files(Table::Launches)
+            .expect("files")
+            .len()
+            > 2,
+        "the store must span several files, or the comparison is vacuous"
+    );
+}
+
+#[test]
+fn the_earliest_slot_also_agrees_and_comes_from_the_oldest_partition() {
+    // The same shortcut at the other end. Getting the direction backwards would
+    // return the newest slot as the earliest, which reads as a store with no
+    // history -- and `study` splits on exactly that number.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 4).expect("open");
+    let oldest = 7;
+    for p in 0..5u64 {
+        writer
+            .append(launch(
+                p * SLOTS_PER_PARTITION + if p == 0 { oldest } else { 100 },
+            ))
+            .expect("append");
+    }
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    assert_eq!(reader.earliest().expect("earliest"), Some(Slot(oldest)));
+    assert!(
+        reader.earliest().expect("earliest") < Reader::watermark(&reader).expect("wm"),
+        "earliest must be below the watermark, or the ends are swapped"
+    );
+}
+
+#[test]
+fn a_store_holding_one_partition_still_answers() {
+    // The degenerate case the shortcut could get wrong by assuming there is
+    // something to skip.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer.append(launch(42)).expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    assert_eq!(Reader::watermark(&reader).expect("wm"), Some(Slot(42)));
+    assert_eq!(reader.earliest().expect("earliest"), Some(Slot(42)));
+}
+
+#[test]
+fn a_count_equals_what_a_read_returns_at_every_watermark() {
+    // `count` reads Parquet footers for files wholly below the watermark and
+    // only decodes the partition that straddles it. That is a large speedup and
+    // it is worth nothing if the two disagree, so they are compared across the
+    // whole range rather than at one convenient point.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 4).expect("open");
+    let mut written = Vec::new();
+    for p in 0..4u64 {
+        for n in 0..5u64 {
+            // `n * 31` rather than `n * 31 + 1`, so every partition holds a row
+            // sitting exactly on its own start slot. Without one, a watermark at
+            // that slot admits nothing from the partition either way and the
+            // boundary comparison is untested.
+            let slot = p * SLOTS_PER_PARTITION + n * 31;
+            written.push(slot);
+            writer.append(launch(slot)).expect("append");
+        }
+    }
+    writer.flush().expect("flush");
+    let reader = Reader::open(dir.path());
+
+    assert!(
+        reader.files(Table::Launches).expect("files").len() >= 4,
+        "the store must span several partitions or the shortcut is untested"
+    );
+
+    // Sweep every boundary, including inside a partition and exactly on a
+    // partition edge -- the two places the arithmetic can be off by one.
+    let mut probes: Vec<u64> = written.clone();
+    for p in 0..5u64 {
+        probes.push(p * SLOTS_PER_PARTITION);
+        probes.push(p * SLOTS_PER_PARTITION + SLOTS_PER_PARTITION - 1);
+    }
+    probes.push(0);
+
+    for probe in probes {
+        let as_of = AsOf::at(Slot(probe));
+        let counted = reader.count(Table::Launches, as_of).expect("count");
+        let read = reader.read(Table::Launches, as_of).expect("read").len();
+        assert_eq!(counted, read, "count and read disagree at slot {probe}");
+    }
+}
+
+#[test]
+fn counting_a_measurement_table_uses_its_own_slot_column() {
+    // Outcomes are stamped `measured_at` and decisions `decided_at`. A count
+    // that looked for `slot` would fail on both, and a count that ignored the
+    // watermark would silently include the future.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer
+        .append_outcome(outcome(1, 10_000, 4_000, Some(870), 12))
+        .expect("append");
+    writer
+        .append_outcome(outcome(2, 900_000, 4_000, Some(870), 12))
+        .expect("append");
+    writer.append_decision(decision(3, 10_000)).expect("append");
+    writer
+        .append_decision(decision(4, 900_000))
+        .expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    for (table, at, expected) in [
+        (Table::Outcomes, 50_000, 1),
+        (Table::Outcomes, 1_000_000, 2),
+        (Table::Decisions, 50_000, 1),
+        (Table::Decisions, 1_000_000, 2),
+    ] {
+        assert_eq!(
+            reader.count(table, AsOf::at(Slot(at))).expect("count"),
+            expected,
+            "{table:?} at slot {at}"
+        );
+    }
+}
+
+#[test]
+fn an_empty_table_counts_zero_rather_than_failing() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    Writer::open(dir.path(), 4)
+        .expect("open")
+        .flush()
+        .expect("flush");
+    let reader = Reader::open(dir.path());
+    for table in Table::ALL {
+        assert_eq!(
+            reader
+                .count(*table, AsOf::at(Slot(u64::MAX)))
+                .expect("count"),
+            0
+        );
+    }
+}
+
+#[test]
+fn a_file_whose_name_cannot_be_parsed_is_read_rather_than_skipped() {
+    // The shortcuts key off the partition start in the filename. A file that
+    // does not follow the convention must fall back to reading -- a naming
+    // change should make these slow, never wrong, and silently counting such a
+    // file as zero would under-report the store without any sign that it had.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    writer.append(launch(500)).expect("append");
+    writer.append(launch(600)).expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let original = reader.files(Table::Launches).expect("files");
+    assert_eq!(original.len(), 1);
+
+    // Rename it to something the convention does not describe.
+    let renamed = original[0].with_file_name("not-a-partition-name.parquet");
+    std::fs::rename(&original[0], &renamed).expect("rename");
+
+    let reader = Reader::open(dir.path());
+    assert_eq!(
+        reader
+            .count(Table::Launches, AsOf::at(Slot(u64::MAX)))
+            .expect("count"),
+        2,
+        "an unparseable name must be read, not skipped"
+    );
+    assert_eq!(
+        reader
+            .count(Table::Launches, AsOf::at(Slot(550)))
+            .expect("count"),
+        1,
+        "and the watermark still applies to it"
+    );
+    assert_eq!(
+        Reader::watermark(&reader).expect("watermark"),
+        Some(Slot(600)),
+        "the watermark falls back to every file when no name parses"
+    );
+}

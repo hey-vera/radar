@@ -127,9 +127,12 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
         Err(e) => return e.into_response(),
     };
     let as_of = AsOf::at(watermark);
+    // The launch figure is a count, not a read: the funnel needs how many, and
+    // decoding every event to learn that took 5.5 seconds against the live
+    // store.
     let (Ok(decisions), Ok(launches)) = (
         state.store.read_decisions(as_of),
-        state.store.read(radar_store::Table::Launches, as_of),
+        state.store.count(radar_store::Table::Launches, as_of),
     ) else {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -139,13 +142,7 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
     };
     // The shipped policy, asked rather than assumed.
     let closed = radar_risk::Policy::CLOSED.is_closed();
-    Json(api::funnel(
-        &decisions,
-        launches.len(),
-        watermark.get(),
-        closed,
-    ))
-    .into_response()
+    Json(api::funnel(&decisions, launches, watermark.get(), closed)).into_response()
 }
 
 /// Everything recorded about one token.

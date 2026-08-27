@@ -359,13 +359,32 @@ fn coordination(reader: &Reader) -> Check {
     coordination_health(&decisions)
 }
 
+/// How many recent verdicts the calibration is judged over.
+///
+/// **A trailing window, not the lifetime.** A rate over all history is
+/// insensitive to exactly what this monitor exists to catch: a detector that
+/// worked for months and broke yesterday keeps a healthy lifetime average for
+/// weeks while refusing nothing. The window has to be short enough to notice
+/// and long enough to judge.
+///
+/// Three times [`MIN_SAMPLE`](radar_graph::MIN_SAMPLE), which at the hourly
+/// pass's rate is a couple of days of decisions.
+const CALIBRATION_WINDOW: usize = radar_graph::MIN_SAMPLE * 3;
+
 /// The rule, separated from the read.
 fn coordination_health(decisions: &[radar_store::Decision]) -> Check {
-    let observed = decisions
+    // Newest last, as `read_decisions` returns them, so the tail is the window.
+    // Only decisions carrying a verdict count: one whose launch block could not
+    // be read is excluded from both halves, because counting an unread block as
+    // clean is how a gate goes quiet.
+    let recent: Vec<&radar_store::Decision> = decisions
         .iter()
         .filter(|d| d.coordination.is_some())
-        .count();
-    let likely = decisions
+        .rev()
+        .take(CALIBRATION_WINDOW)
+        .collect();
+    let observed = recent.len();
+    let likely = recent
         .iter()
         .filter(|d| d.coordination.as_deref() == Some("Likely"))
         .count();
@@ -639,6 +658,82 @@ mod tests {
             .map(|_| with_coordination(Some("Unremarkable")))
             .collect();
         assert_eq!(coordination_health(&decisions).status, Status::Warn);
+    }
+
+    #[test]
+    fn a_detector_that_broke_recently_alarms_despite_a_healthy_history() {
+        // The reason the window exists. A lifetime rate lets months of correct
+        // behaviour drown a detector that stopped working yesterday -- it keeps
+        // a healthy average for weeks while refusing nothing, which is the exact
+        // failure this monitor was built to notice.
+        let mut decisions = Vec::new();
+        // A long, healthy past: 5,000 verdicts at roughly the measured rate.
+        for i in 0..5_000 {
+            decisions.push(with_coordination(Some(if i % 17 == 0 {
+                "Likely"
+            } else {
+                "Unremarkable"
+            })));
+        }
+        // Then it goes quiet, for longer than the window.
+        for _ in 0..CALIBRATION_WINDOW {
+            decisions.push(with_coordination(Some("Unremarkable")));
+        }
+
+        assert_eq!(
+            coordination_health(&decisions).status,
+            Status::Fail,
+            "a healthy history must not mask a detector that has just stopped"
+        );
+    }
+
+    #[test]
+    fn a_detector_that_has_recovered_stops_alarming() {
+        // The other direction, and the reason this is a window rather than a
+        // marker: a fix has to be able to clear the alarm without anybody
+        // editing state. A long dead stretch followed by a healthy window reads
+        // as healthy.
+        let mut decisions: Vec<radar_store::Decision> = (0..5_000)
+            .map(|_| with_coordination(Some("Unremarkable")))
+            .collect();
+        for i in 0..CALIBRATION_WINDOW {
+            decisions.push(with_coordination(Some(if i % 17 == 0 {
+                "Likely"
+            } else {
+                "Unremarkable"
+            })));
+        }
+
+        assert_eq!(
+            coordination_health(&decisions).status,
+            Status::Ok,
+            "a recovered detector must clear on its own"
+        );
+    }
+
+    #[test]
+    fn unread_blocks_do_not_consume_the_window() {
+        // A stretch where the source was unavailable must not push real verdicts
+        // out of the window and leave the monitor judging nothing. Absence is
+        // excluded before the window is taken, not after.
+        let mut decisions: Vec<radar_store::Decision> = (0..300)
+            .map(|i| {
+                with_coordination(Some(if i % 17 == 0 {
+                    "Likely"
+                } else {
+                    "Unremarkable"
+                }))
+            })
+            .collect();
+        for _ in 0..5_000 {
+            decisions.push(with_coordination(None));
+        }
+
+        assert_eq!(
+            coordination_health(&decisions).status,
+            Status::Ok,
+            "five thousand unread blocks must not evict three hundred real ones"
+        );
     }
 
     #[test]

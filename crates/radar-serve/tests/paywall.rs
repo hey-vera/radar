@@ -30,6 +30,7 @@ fn configured() -> axum::Router {
             network: Network::solana_usdc(),
             margin_percent: 50,
         }),
+        chat: None,
     }))
 }
 
@@ -41,6 +42,7 @@ fn unconfigured() -> axum::Router {
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: None,
+        chat: None,
     }))
 }
 

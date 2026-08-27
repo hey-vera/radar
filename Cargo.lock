@@ -1470,6 +1470,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-model"
+version = "0.0.1"
+dependencies = [
+ "radar-agent",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
 name = "radar-provider"
 version = "0.0.1"
 dependencies = [
@@ -1514,8 +1526,10 @@ dependencies = [
  "axum",
  "futures-util",
  "http-body-util",
+ "radar-agent",
  "radar-asof",
  "radar-instruments",
+ "radar-model",
  "radar-risk",
  "radar-store",
  "radar-types",

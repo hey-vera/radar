@@ -545,7 +545,20 @@ fn verdicts(
                 );
             }
             Verdict::Refused { reasons } => {
-                println!("  {}  refused: {reasons:?}", proposal.mint);
+                // Split rather than dumped. Under the shipped policy all seven
+                // reasons are artifacts of a policy of zeros, and printing them
+                // as a flat list tells a reader there are seven problems when
+                // there is one.
+                let (policy_bound, about_this) = radar_risk::partition_refusals(reasons, &policy);
+                if about_this.is_empty() {
+                    println!(
+                        "  {}  refused by policy ({} limit(s)); nothing about the token",
+                        proposal.mint,
+                        policy_bound.len()
+                    );
+                } else {
+                    println!("  {}  refused: {about_this:?}", proposal.mint);
+                }
             }
         }
         by_mint.insert(proposal.mint, verdict);

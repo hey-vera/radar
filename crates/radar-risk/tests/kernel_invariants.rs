@@ -434,3 +434,132 @@ fn a_cost_ceiling_of_zero_refuses_every_cost_including_none() {
         "and one micro-dollar of cost is not"
     );
 }
+
+// --- what the policy refuses, versus what the token did ----------------------
+
+#[test]
+fn the_shipped_policy_refuses_everything_for_reasons_that_are_all_its_own() {
+    // The seven-reason refusal every proposal gets under Policy::CLOSED. Every
+    // one of them is about the policy; none is about the token. A reader who has
+    // not memorised CLOSED cannot tell that from the list, which is what this
+    // function exists to fix.
+    let inevitable = radar_risk::inevitable_refusals(&Policy::CLOSED);
+    assert!(
+        inevitable.contains(&Refusal::NoAutonomy),
+        "an Observe policy authorises nothing whatever the token is"
+    );
+    assert!(inevitable.contains(&Refusal::OverPositionLimit));
+    assert!(inevitable.contains(&Refusal::DailyLossReached), "0 >= 0");
+    assert!(inevitable.contains(&Refusal::RoundTripTooExpensive));
+    assert!(inevitable.contains(&Refusal::InputsTooStale));
+
+    // And a real refusal under CLOSED splits to nothing that is about the token.
+    let refused = evaluate(&buy(10.0), &state(), &Policy::CLOSED);
+    let (policy_bound, about_this) =
+        radar_risk::partition_refusals(&refusals(&refused), &Policy::CLOSED);
+    assert!(!policy_bound.is_empty());
+    assert!(
+        about_this.is_empty(),
+        "under a closed policy nothing is a finding about the token: {about_this:?}"
+    );
+}
+
+#[test]
+fn an_open_policy_makes_a_real_refusal_visible_as_one() {
+    // The direction that matters for a reader. With the policy out of the way,
+    // an exit that could not be simulated is the whole answer -- and it is the
+    // one Radar exists to act on.
+    let mut unsellable = buy(10.0);
+    unsellable.simulated_exit_capacity = None;
+
+    let verdict = evaluate(&unsellable, &state(), &policy());
+    let (policy_bound, about_this) = radar_risk::partition_refusals(&refusals(&verdict), &policy());
+
+    assert_eq!(
+        about_this,
+        vec![Refusal::ExitNotSimulated],
+        "the finding is the unsimulated exit, and nothing else"
+    );
+    assert!(
+        policy_bound.is_empty(),
+        "an open policy contributes no refusals of its own: {policy_bound:?}"
+    );
+}
+
+#[test]
+fn an_open_policy_has_nothing_inevitable_about_it() {
+    // If a policy would refuse a perfect proposal, it is closed in some way the
+    // operator may not have intended. An open one refuses nothing a priori.
+    assert!(radar_risk::inevitable_refusals(&policy()).is_empty());
+}
+
+#[test]
+fn a_halted_operator_is_a_policy_fact_not_a_token_fact() {
+    // Halting is deliberately not part of Policy, so it cannot be inevitable
+    // from the policy alone -- and a reader must still not read it as something
+    // the token did. It surfaces as a finding, which is correct: it IS about
+    // this attempt rather than about the rules, and the operator knows why.
+    let mut halted = state();
+    halted.halted = true;
+    let verdict = evaluate(&buy(10.0), &halted, &policy());
+    let (_, about_this) = radar_risk::partition_refusals(&refusals(&verdict), &policy());
+    assert!(about_this.contains(&Refusal::Halted));
+}
+
+#[test]
+fn the_classification_is_computed_so_it_cannot_drift_from_the_policy() {
+    // A hardcoded list would be right for CLOSED and wrong for every policy
+    // written afterwards -- wrong in the direction that presents a policy limit
+    // as a finding about a token.
+    //
+    // Tightening one limit must move exactly that reason across the line.
+    let mut no_room = policy();
+    no_room.max_deployed = MicroUsd::ZERO;
+
+    let inevitable = radar_risk::inevitable_refusals(&no_room);
+    assert_eq!(
+        inevitable,
+        vec![Refusal::OverDeploymentLimit],
+        "the newly-closed limit, and only it"
+    );
+    assert!(radar_risk::inevitable_refusals(&policy()).is_empty());
+}
+
+#[test]
+fn the_refusal_production_actually_prints_is_entirely_about_the_policy() {
+    // The shape of a real proposal from the live funnel: $6.30 sized off $31.52
+    // of measured exit capacity, 850 bps of assumed round-trip cost, inputs a
+    // few thousand slots old. Production prints this for every one of them:
+    //
+    //   [NoAutonomy, OverPositionLimit, OverDeploymentLimit, OverCreatorLimit,
+    //    DailyLossReached, RoundTripTooExpensive, InputsTooStale]
+    //
+    // Seven reasons, one fact. A reader who has not memorised Policy::CLOSED
+    // cannot tell that none of them is about the token, and a frontend that
+    // rendered the list verbatim would tell a novice there are seven problems.
+    let now = Slot(441_734_987);
+    let real = Proposal {
+        mint: mint(1),
+        creator: mint(2),
+        action: Action::Buy,
+        notional: MicroUsd::from_dollars(6.30),
+        estimated_round_trip_cost: MicroUsd::from_dollars(0.5355),
+        oldest_input_slot: Slot(now.get() - 4_000),
+        simulated_exit_capacity: Some(MicroUsd::from_dollars(31.52)),
+    };
+
+    let reasons = refusals(&evaluate(
+        &real,
+        &PortfolioState::flat(now),
+        &Policy::CLOSED,
+    ));
+    assert_eq!(reasons.len(), 7, "the list production prints: {reasons:?}");
+
+    let (policy_bound, about_this) = radar_risk::partition_refusals(&reasons, &Policy::CLOSED);
+    assert_eq!(policy_bound.len(), 7);
+    assert!(
+        about_this.is_empty(),
+        "a proposal with measured capacity five times its size, at a cost the \
+         funnel measured, is refused for nothing it did: {about_this:?}"
+    );
+}

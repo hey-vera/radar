@@ -37,6 +37,21 @@ Three figures per token, all in basis points against the **first fill**:
 - **MAE** — maximum adverse excursion, the worst it ever got.
 - **HELD** — where it was at the last observed fill.
 
+> **Correction, 2026-08-26.** The excursion table below was computed with a
+> contaminated price query and **should not be read**. The aggregate admitted
+> dust transactions — a transfer of one base unit beside unrelated SOL — and
+> because `peak_price` is `max(lam/tok)` it selected precisely those rows. See
+> [LEARNINGS](../../LEARNINGS.md) entry 14. Corrected figures over 59,647 mints
+> are in [0011](0011-graduation-predicts-volatility-not-profit.md): median MFE
+> **598 bps**, p90 **19,404 bps**, against the 2,367 and 2,306,382 reported here.
+>
+> **The held-to-end median of −13.4% stands.** `first` and `last` are chosen by
+> timestamp rather than by price, so they were very nearly unaffected — which is
+> why this note's headline survived while the table beside it did not. Over a
+> larger cohort the population median moves to −863 bps, because `last_price`
+> depends on which checkpoint a token was last measured at; 0011 explains why
+> that is a property of the measurement rather than a disagreement.
+
 ## What it says
 
 ```
@@ -91,8 +106,9 @@ to beat is −13.4% before costs.
   means it acts around 40 minutes after launch, not at the first trade. The
   cohort here is deliberately *unfiltered*: it is the population, not the
   selection.
-- **Costs are ignored throughout.** `assumed_round_trip_bps` is 200 and is a
-  placeholder; a measured figure would move every mean above further down.
+- **Costs are ignored throughout.** `assumed_round_trip_bps` was 200 when this
+  was written. Measured over 26,691 fills it is **850**, which moves every mean
+  above further down.
 - **Survivorship runs the other way for once.** The 23 tokens that never traded
   are excluded, and they are the worst outcomes in the sample. Their exclusion
   makes these figures *better* than the truth, not worse.

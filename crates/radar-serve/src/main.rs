@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use radar_instruments::{CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 use radar_serve::chat::Chat;
-use radar_serve::{AppState, app, chat, x402};
+use radar_serve::{AppState, access, app, chat, x402};
 use radar_store::Reader;
 
 /// Every instrument Radar exposes. The CLI builds the same list.
@@ -78,6 +78,16 @@ async fn main() -> ExitCode {
         .parse()
         .unwrap_or_else(|_| SocketAddr::from(([127, 0, 0, 1], 8080)));
 
+    // Before anything binds a socket. A server that starts and then discovers
+    // it does not know who may look has already answered a request by then.
+    let access = match access::Mode::from_vars(&|k| std::env::var(k).ok()) {
+        Ok(mode) => mode,
+        Err(why) => {
+            eprintln!("radar-serve: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
     let state = Arc::new(AppState {
@@ -85,6 +95,8 @@ async fn main() -> ExitCode {
         store: Reader::open(&store_dir),
         x402,
         chat: agent,
+        access: access.clone(),
+        keys: access::KeyCache::new(),
     });
 
     println!("radar-serve v{}", env!("CARGO_PKG_VERSION"));
@@ -96,6 +108,15 @@ async fn main() -> ExitCode {
             "on"
         } else {
             "off (set RADAR_X402_PAY_TO and RADAR_X402_FACILITATOR to enable)"
+        }
+    );
+    println!(
+        "  access     : {}",
+        match &access {
+            access::Mode::Enforce(config) => format!("verifying {} tokens", config.team_domain),
+            // Said plainly, every start. An instance serving operational detail
+            // to anyone who can reach it should say so in its own logs.
+            access::Mode::Off => "OFF — anyone who can reach this can read it".to_owned(),
         }
     );
     println!("  agent      : {agent_note}");

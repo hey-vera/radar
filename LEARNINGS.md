@@ -720,3 +720,46 @@ observation in a different field. `--reprice` replaces a recorded path instead
 of extending it, and reaches a token only while that token is still due for a
 checkpoint. It repairs what is in flight rather than the whole store, and says
 so, because a repair that looked complete and was not would be worse than none.
+
+---
+
+## 15. A binary deployed ahead of the configuration it needed
+
+**2026-08-27.** The Radar interface — Vite, React, embedded in the binary with
+`rust-embed` — was installed on the box and the site went **blank**. Not an
+error page, not a partial render: a white document with a `<div id="root">` that
+never filled.
+
+The binary was fine. The bundle was fine. The live Caddyfile still carried the
+CSP written for the previous, server-rendered ops page:
+
+```
+Content-Security-Policy "default-src 'none'; style-src 'unsafe-inline'"
+```
+
+`default-src 'none'` blocks a `<script src>`. Every asset the new interface
+needed was refused by the browser before it ran, and the only evidence was in a
+console nobody was looking at.
+
+**Both halves were correct in isolation.** The new CSP was written, reviewed and
+committed in the same change as the interface. It was in `deploy/`, in git, and
+in the pull request. It was not on the box, because installing a binary and
+reloading Caddy are two commands and only one of them was run.
+
+**The shape:** a change that spans a binary and its environment is one deploy
+unit, and nothing in the process said so. `sha256sum` discipline covers the
+artifact — and the artifact was correct. The runbook's verification step read
+the health endpoint, which is served by the same binary and answered `200`
+throughout.
+
+**What catches a recurrence:** stating the ordering in the runbook, at the top,
+ahead of the install commands — and, where it can be done, making the binary
+*refuse to start* without the configuration rather than starting into a broken
+state. The Cloudflare Access work that followed is built that way on purpose:
+`radar-serve` will not start unless the environment says who may look, because
+the alternative is a server that comes up and serves the wrong thing while every
+health check reports fine.
+
+That is the difference worth keeping. A missing CSP produced a blank page and
+took minutes to notice. A missing access check produces a working page served to
+everybody, and would not have been noticed at all.

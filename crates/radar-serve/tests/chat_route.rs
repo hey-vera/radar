@@ -25,6 +25,8 @@ fn unconfigured() -> axum::Router {
         store: Reader::open(std::env::temp_dir().join("radar-chat-route-test")),
         x402: None,
         chat: None,
+        access: radar_serve::access::Mode::Off,
+        keys: radar_serve::access::KeyCache::new(),
     }))
 }
 

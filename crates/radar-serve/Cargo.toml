@@ -21,6 +21,8 @@ radar-asof.workspace = true
 radar-model.workspace = true
 radar-instruments.workspace = true
 radar-risk.workspace = true
+ring = { version = "0.17", default-features = false }
+thiserror.workspace = true
 rust-embed = { version = "8", default-features = false }
 radar-store.workspace = true
 radar-types.workspace = true

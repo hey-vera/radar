@@ -134,9 +134,11 @@ compiles and the tests pass — in which case the tests are also wrong.
    `radar brief` with no serving endpoint configured reports that it cannot see
    rather than that nothing is wrong. Spending nothing is always recoverable.
 
-   **The spend-meter half is currently aspirational, and saying so is the point.**
-   `radar-provider` implements the budget, the commitment and the refusal — and
-   nothing depends on it. Every component that actually spends money
+   **The spend-meter half is not yet wired, and saying so is the point.**
+   `radar-provider` implements the budget, the commitment, the refusal and — as
+   of 2026-08-27 — a [`Ledger`](crates/radar-provider/src/cost.rs) that survives
+   a restart, because a budget that forgets is not a budget and `radar-serve`
+   runs under `Restart=always`. Nothing depends on the crate yet. Every component that actually spends money
    (`radar-backfill` on CryptoHouse, `radar-sim` on Jupiter and RPC, `radar-serve`
    on the facilitator) holds its own HTTP agent and passes through no meter at
    all. There is no daily ceiling in the running system. Wiring it is Phase 3 of

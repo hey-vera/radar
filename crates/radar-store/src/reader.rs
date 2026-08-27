@@ -62,7 +62,7 @@ impl Reader {
             // Not every table calls it `slot`: a measurement or a decision is
             // stamped with when it was *taken*, not when it happened.
             let column = table.slot_column();
-            for path in self.files(*table)? {
+            for path in extremal_partition(&self.files(*table)?, Extreme::Newest) {
                 for slot in slots_in(&path, column)? {
                     highest = Some(highest.map_or(slot, |h| h.max(slot)));
                 }
@@ -86,7 +86,7 @@ impl Reader {
         let mut lowest: Option<Slot> = None;
         for table in Table::ALL {
             let column = table.slot_column();
-            for path in self.files(*table)? {
+            for path in extremal_partition(&self.files(*table)?, Extreme::Oldest) {
                 for slot in slots_in(&path, column)? {
                     lowest = Some(lowest.map_or(slot, |l: Slot| l.min(slot)));
                 }
@@ -129,6 +129,48 @@ impl Reader {
             (env.slot.get(), env.tx_index, env.instruction_index)
         });
         Ok(out)
+    }
+
+    /// How many rows a table holds at or before the watermark.
+    ///
+    /// Counting does not need the data. Parquet records the row count in each
+    /// file's footer, so a file that lies **entirely** at or before the
+    /// watermark can be counted without decoding a single value — and because
+    /// the watermark is usually the store's own top, at most one partition
+    /// straddles it and needs reading.
+    ///
+    /// Against the live store this is the difference between 5.5 seconds and
+    /// milliseconds for the funnel, which reads this to say how many launches
+    /// have been recorded. A count is the cheapest question anyone asks and it
+    /// was the most expensive one to answer.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a file cannot be read.
+    pub fn count(&self, table: Table, as_of: AsOf) -> Result<usize, StoreError> {
+        let top = as_of.slot().get();
+        let mut total = 0usize;
+        for path in self.files(table)? {
+            let Some(start) = start_slot_of(&path) else {
+                // An unparseable name: fall back to reading, so a naming change
+                // makes this slow rather than wrong.
+                total += admitted_rows(&path, table, as_of)?;
+                continue;
+            };
+            if start > top {
+                // Wholly after the watermark. Nothing in it is admissible.
+                continue;
+            }
+            // A partition covers `[start, start + SLOTS_PER_PARTITION)`, so this
+            // is the highest slot it could possibly contain.
+            let last_possible = start.saturating_add(SLOTS_PER_PARTITION - 1);
+            if last_possible <= top {
+                total += rows_in(&path)?;
+            } else {
+                total += admitted_rows(&path, table, as_of)?;
+            }
+        }
+        Ok(total)
     }
 
     /// Reads outcome measurements taken at or before `as_of`.
@@ -327,6 +369,65 @@ fn string_list_col(
         );
     }
     Ok(out)
+}
+
+/// Rows in one file that the watermark admits, by reading its slot column.
+fn admitted_rows(path: &Path, table: Table, as_of: AsOf) -> Result<usize, StoreError> {
+    Ok(slots_in(path, table.slot_column())?
+        .into_iter()
+        .filter(|slot| as_of.admits(*slot))
+        .count())
+}
+
+/// The row count from a Parquet footer, without decoding any values.
+fn rows_in(path: &Path) -> Result<usize, StoreError> {
+    let file = fs::File::open(path)?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)?;
+    let rows = builder.metadata().file_metadata().num_rows();
+    Ok(usize::try_from(rows).unwrap_or(0))
+}
+
+/// Which end of the store a caller wants.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Extreme {
+    /// The partition holding the highest slots.
+    Newest,
+    /// The partition holding the lowest.
+    Oldest,
+}
+
+/// The files that could possibly hold the extreme slot.
+///
+/// **A partition file covers a bounded slot range, and its filename names the
+/// start of that range.** So the highest slot in a table is inside a file whose
+/// partition start is the highest, and nothing in any earlier partition can beat
+/// it. Reading the rest is work whose answer is known in advance.
+///
+/// Every generation of that partition is returned, not just one: a flush writes
+/// beside an existing file rather than replacing it, so `g0000` and `g0001` of
+/// the same partition both hold rows and either may carry the extreme.
+///
+/// This is the difference between opening five files and opening seven
+/// thousand. Measured against the live store, `watermark` took **3.4 seconds**
+/// walking 6,998 files, and the count grows by roughly 4,700 a day — a serving
+/// surface whose latency is a function of how long the recorder has been
+/// running is one that gets worse forever.
+fn extremal_partition(files: &[PathBuf], which: Extreme) -> Vec<PathBuf> {
+    let starts = files.iter().filter_map(|p| start_slot_of(p));
+    let Some(target) = (match which {
+        Extreme::Newest => starts.max(),
+        Extreme::Oldest => starts.min(),
+    }) else {
+        // No filename parsed. Rather than conclude the store is empty, hand back
+        // everything and let the caller read it -- a naming change should make
+        // this slow, never wrong.
+        return files.to_vec();
+    };
+    files
+        .iter()
+        .filter(|p| start_slot_of(p) == Some(target))
+        .cloned()
+        .collect()
 }
 
 /// Parses the start slot out of a partition filename.

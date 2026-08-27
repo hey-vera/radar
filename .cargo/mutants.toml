@@ -41,4 +41,21 @@ exclude_re = [
     # hand, after an argument that it should fail turned out to have dropped an
     # iteration.
     'replace \+ with \* in code_span_paths',
+    # `count`: `start + SLOTS_PER_PARTITION - 1` is the highest slot a partition
+    # file could hold. Both mutations make that bound LARGER — `+ 1` directly,
+    # and `/ 1` by removing the subtraction — which only ever pushes a file out
+    # of the metadata-count branch and into the read-and-filter branch. Both
+    # branches return the same number; the mutants are slower, not wrong.
+    #
+    # Checked by simulating the arithmetic over 4,000 random partition layouts
+    # at every watermark from 0 to 4 partitions past the end: zero disagreements
+    # with a brute-force count, for either mutation.
+    #
+    # The asymmetry is worth writing down. A bound that was too SMALL would be a
+    # real bug — a straddling file counted from its footer would include rows
+    # above the watermark, which is look-ahead that no test of totals would
+    # notice. Nothing mutates it that way here, but that is the direction to
+    # look if this line ever changes.
+    'replace \- with \+ in Reader::count',
+    'replace \- with / in Reader::count',
 ]

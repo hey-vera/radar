@@ -16,7 +16,9 @@ path = "src/main.rs"
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+radar-agent.workspace = true
 radar-asof.workspace = true
+radar-model.workspace = true
 radar-instruments.workspace = true
 radar-risk.workspace = true
 rust-embed = { version = "8", default-features = false }

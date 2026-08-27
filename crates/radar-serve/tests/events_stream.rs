@@ -43,6 +43,7 @@ fn state_with_a_store() -> (Arc<AppState>, tempfile::TempDir) {
             registry: Registry::new(),
             store: Reader::open(dir.path()),
             x402: None,
+            chat: None,
         }),
         dir,
     )
@@ -134,6 +135,7 @@ async fn an_empty_store_does_not_stall_the_stream_open() {
         registry: Registry::new(),
         store: Reader::open(dir.path()),
         x402: None,
+        chat: None,
     });
 
     let response = app(state)

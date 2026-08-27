@@ -37,10 +37,13 @@
 pub mod tools;
 pub mod untrusted;
 
-use radar_provider::{Budget, Ledger};
 use radar_types::MicroUsd;
 use serde::{Deserialize, Serialize};
 
+// Re-exported so a caller configuring an agent needs one crate rather than two,
+// and so the budget type a caller constructs is provably the one the meter
+// consumes.
+pub use radar_provider::{Budget, Ledger};
 pub use tools::{Allowlist, Refused};
 pub use untrusted::{Provenance, fence};
 

@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api;
+pub mod chat;
 mod embed;
 pub mod facilitator;
 pub mod mcp;
@@ -43,6 +44,13 @@ pub struct AppState {
     pub store: Reader,
     /// x402 configuration, or `None` when the paid surface is disabled.
     pub x402: Option<x402::Config>,
+    /// The agent, or `None` when no model provider is configured.
+    ///
+    /// `None` is the shipped state and the route is not mounted in it. Rule 8:
+    /// a component with no configuration refuses rather than degrades, and the
+    /// degradation available here -- answering from a cheaper model, or from
+    /// cache -- would be reporting confidence Radar does not have.
+    pub chat: Option<chat::Chat>,
 }
 
 /// Builds the router.
@@ -73,6 +81,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         // routes that is a leak: they are supposed not to exist at all, and a
         // paywall that admits its own shape is halfway to one that fails open.
         .fallback(interface);
+
+    if state.chat.is_some() {
+        router = router.route("/v1/chat", post(chat::ask));
+    }
 
     if state.x402.is_some() {
         router = router

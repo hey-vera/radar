@@ -440,7 +440,10 @@ mod tests {
         // model judgement must never authorise capital. A path from there to the
         // signer is the exact thing rule 1 forbids -- and it would arrive as a
         // convenience, one `use` at a time, the way the last one did.
-        const LISTENERS: &[&str] = &["radar-serve", "radar-agent"];
+        // `radar-model` joins them for the third reason: it is the only crate
+        // that holds a credential, and a crate holding a credential must not
+        // also be able to reach a key.
+        const LISTENERS: &[&str] = &["radar-serve", "radar-agent", "radar-model"];
 
         for listener in LISTENERS {
             let manifest = root().join("crates").join(listener).join("Cargo.toml");
@@ -453,16 +456,21 @@ mod tests {
             );
         }
 
-        // And the agent reaches nothing that could become an authorisation.
-        // "No path" has to mean no path: an agent able to build a `Proposal` or
-        // reach `radar-exec` is one refactor from authorising one.
-        let agent = std::fs::read_to_string(root().join("crates/radar-agent/Cargo.toml"))
-            .expect("radar-agent has a manifest");
-        for forbidden in ["radar-risk", "radar-exec", "radar-strategy"] {
-            assert!(
-                !agent.contains(forbidden),
-                "radar-agent must not depend on {forbidden}: a model that can reach                  the decision lane is a model that can reach capital, whatever the                  intention was when the dependency was added"
-            );
+        // And neither AI crate reaches anything that could become an
+        // authorisation. "No path" has to mean no path: a crate able to build a
+        // `Proposal` or reach `radar-exec` is one refactor from authorising one,
+        // and the dependency would arrive as a convenience the way the last one
+        // did.
+        for crate_name in ["radar-agent", "radar-model"] {
+            let manifest = root().join("crates").join(crate_name).join("Cargo.toml");
+            let text = std::fs::read_to_string(&manifest)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", manifest.display()));
+            for forbidden in ["radar-risk", "radar-exec", "radar-strategy", "radar-store"] {
+                assert!(
+                    !text.contains(forbidden),
+                    "{crate_name} must not depend on {forbidden}: a model that can reach                      the decision lane is a model that can reach capital, whatever the                      intention was when the dependency was added"
+                );
+            }
         }
     }
 

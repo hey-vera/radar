@@ -115,6 +115,7 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     checks.extend(tables(&reader));
     checks.push(outcomes(&reader));
     checks.push(decisions(&reader));
+    checks.push(coordination(&reader));
     checks.push(serving(serve_url.map(|url| (url, probe_serving(url)))));
     checks.push(trading_lane());
 
@@ -337,6 +338,81 @@ fn decisions_health(rows: &[radar_store::Decision], top: radar_types::Slot) -> C
     Check::new(Status::Ok, "decisions", detail)
 }
 
+/// Whether the coordination detector is still calibrated, over every decision
+/// ever recorded.
+///
+/// A single `consider` pass reads a few dozen launch blocks, far short of what
+/// a rate can be judged from, so a per-pass check could never fire. Recorded
+/// decisions carry the verdict, so this accumulates across every pass.
+///
+/// It reads what was *observed*, never what was assumed: a decision whose launch
+/// block could not be read carries no verdict and is excluded from both halves
+/// of the rate, because counting an unread block as clean is precisely how a
+/// gate goes quiet.
+fn coordination(reader: &Reader) -> Check {
+    let Ok(Some(top)) = reader.watermark() else {
+        return Check::new(Status::Unknown, "coordination", "cannot read the watermark");
+    };
+    let Ok(decisions) = reader.read_decisions(AsOf::at(top)) else {
+        return Check::new(Status::Unknown, "coordination", "cannot read decisions");
+    };
+    coordination_health(&decisions)
+}
+
+/// The rule, separated from the read.
+fn coordination_health(decisions: &[radar_store::Decision]) -> Check {
+    let observed = decisions
+        .iter()
+        .filter(|d| d.coordination.is_some())
+        .count();
+    let likely = decisions
+        .iter()
+        .filter(|d| d.coordination.as_deref() == Some("Likely"))
+        .count();
+
+    match radar_graph::calibration_of(likely, observed) {
+        radar_graph::Calibration::NotEnoughData { observed, needed } => Check::new(
+            Status::Warn,
+            "coordination",
+            format!(
+                "{observed} launch block(s) read, {needed} more before the detector's \
+                 calibration can be judged"
+            ),
+        ),
+        radar_graph::Calibration::Consistent { centre_rate_bps } => Check::new(
+            Status::Ok,
+            "coordination",
+            format!("{likely} of {observed} at the centre ({centre_rate_bps} bps), consistent"),
+        ),
+        radar_graph::Calibration::Silent {
+            centre_rate_bps,
+            expected_bps,
+            observed,
+        } => Check::new(
+            Status::Fail,
+            "coordination",
+            format!(
+                "{centre_rate_bps} bps at the centre over {observed} block(s) against \
+                 {expected_bps} measured — the band has gone quiet, and that is the \
+                 direction that fails permissive"
+            ),
+        ),
+        radar_graph::Calibration::Elevated {
+            centre_rate_bps,
+            expected_bps,
+            observed,
+        } => Check::new(
+            Status::Warn,
+            "coordination",
+            format!(
+                "{centre_rate_bps} bps at the centre over {observed} block(s) against \
+                 {expected_bps} measured — either the market moved or this sample is not \
+                 what it is believed to be"
+            ),
+        ),
+    }
+}
+
 /// What a probe of the serving surface came back with.
 ///
 /// An enum rather than a `Result<String, _>` so that "answered, but wrongly" is
@@ -499,6 +575,70 @@ mod tests {
             entry_price: entry,
             inputs_digest: "d".to_owned(),
         }
+    }
+
+    fn with_coordination(verdict: Option<&str>) -> radar_store::Decision {
+        let mut d = a_decision(999_900, false, None);
+        d.coordination = verdict.map(std::borrow::ToOwned::to_owned);
+        d
+    }
+
+    #[test]
+    fn an_unread_launch_block_is_excluded_from_both_halves_of_the_rate() {
+        // Counting an unread block as clean is precisely how a gate goes quiet:
+        // the denominator grows, the rate falls, and the monitor reports a
+        // detector that has stopped working as one that is finding nothing.
+        let mut decisions: Vec<radar_store::Decision> =
+            (0..300).map(|_| with_coordination(None)).collect();
+        let check = coordination_health(&decisions);
+        assert_eq!(
+            check.status,
+            Status::Warn,
+            "three hundred unread blocks is still no sample: {}",
+            check.detail
+        );
+
+        // Add a real sample at the measured rate and it becomes judgeable.
+        for i in 0..300 {
+            decisions.push(with_coordination(Some(if i < 17 {
+                "Likely"
+            } else {
+                "Unremarkable"
+            })));
+        }
+        assert_eq!(
+            coordination_health(&decisions).status,
+            Status::Ok,
+            "17 of 300 is 566 bps, near the 580 measured"
+        );
+    }
+
+    #[test]
+    fn a_detector_that_has_gone_quiet_fails_the_brief() {
+        // The alarm that matters, and the reason this check exists at all.
+        // BUNDLE_CENTRE is a bundler tool's default; when it moves, nothing
+        // errors and Radar simply stops refusing.
+        let decisions: Vec<radar_store::Decision> = (0..400)
+            .map(|_| with_coordination(Some("Unremarkable")))
+            .collect();
+        let check = coordination_health(&decisions);
+        assert_eq!(check.status, Status::Fail);
+        assert!(
+            check.detail.contains("fails permissive"),
+            "the detail must say why quiet is the dangerous direction: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_small_sample_warns_rather_than_passing_or_failing() {
+        // Neither a clean bill of health nor an alarm. An hourly pass reads a
+        // few dozen blocks, so this is the state the check spends its first days
+        // in, and it must not read as either.
+        let decisions: Vec<radar_store::Decision> = (0..20)
+            .map(|_| with_coordination(Some("Unremarkable")))
+            .collect();
+        assert_eq!(coordination_health(&decisions).status, Status::Warn);
     }
 
     #[test]

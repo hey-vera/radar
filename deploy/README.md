@@ -209,20 +209,44 @@ sudo -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex      codex login 
 ```
 
 Then a wrapper that drops to that user, so `radar-serve` never runs the CLI as
-itself:
+itself. **It must pass its arguments through**, because Radar supplies the
+subcommand: `exec -` to ask a question and `login --device-auth` to link the
+credential.
 
 ```
 sudo tee /usr/local/bin/radar-codex >/dev/null <<'SH'
 #!/bin/sh
-exec sudo -n -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex codex exec -
+exec sudo -n -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex codex "$@"
 SH
 sudo chmod 755 /usr/local/bin/radar-codex
 ```
 
-`guardian` needs `NOPASSWD` for exactly that one command and nothing else — see
-the note in `MEMORY` about what `guardian` cannot sudo. Radar clears the child's
-environment and passes only `PATH`, `HOME`, `CODEX_HOME`, `LANG`, `LC_ALL` and
-`TMPDIR`, so nothing else in `/etc/radar/radar.env` reaches the CLI.
+`guardian` needs `NOPASSWD` for exactly that one command and nothing else. Radar
+clears the child's environment and passes only `PATH`, `HOME`, `CODEX_HOME`,
+`LANG`, `LC_ALL` and `TMPDIR`, so nothing else in `/etc/radar/radar.env` reaches
+the CLI, and the prompt goes in on stdin rather than as an argument — arguments
+are visible in `ps` to every user on the box.
+
+### Linking is a button, not an SSH session
+
+Once the wrapper is in place, **the interface links the credential itself**.
+Sign in, press **Link**, and the page shows a verification URL and a short code
+to enter in a browser. Neither is a credential — that is what device
+authorisation is — so nothing secret crosses the page.
+
+The seeding command below still works and is the fallback when the interface is
+not reachable. The button matters most for the case nobody plans for: the
+refresh token expires after roughly 14–30 days of inactivity, and re-linking
+should be a click rather than a procedure somebody has to remember.
+
+```
+sudo -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex      codex login --device-auth
+```
+
+Only one flow runs at a time. The credential is single-writer, so a second
+concurrent login would race the first; asking again while one is open returns
+the same code rather than starting another, and an abandoned flow is reclaimed
+after fifteen minutes.
 
 Finally, in `/etc/radar/radar.env`:
 
@@ -233,7 +257,24 @@ RADAR_MODEL_CODEX=/usr/local/bin/radar-codex
 
 The startup log says which mode it is in. `radar-serve` prints `access` and
 `agent` lines on every start, and an instance serving without a check says so
-about itself in its own logs.
+about itself in its own logs:
+
+```
+  access     : verifying heyvera.cloudflareaccess.com tokens
+  agent      : on via codex, 3 read-only tool(s), $2.000000/day
+```
+
+`radar brief` then reports the agent in **both** directions, from the health body
+it already fetches:
+
+```
+  [ok  ] agent              codex answering, 3 read-only tool(s), $0.010000 today
+  [FAIL] agent              codex refused the last call: the CLI exited with exit code: 1
+```
+
+Both were verified by running them — the second by breaking the CLI on purpose
+and confirming `radar brief` exits non-zero. A check confirmed only where it
+passes is not confirmed.
 
 ## Every deploy after that
 

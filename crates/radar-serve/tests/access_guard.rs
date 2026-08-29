@@ -29,6 +29,7 @@ fn router(access: Mode) -> axum::Router {
         chat: None,
         access,
         keys: KeyCache::new(),
+        linker: radar_serve::link::Linker::new(),
     }))
 }
 

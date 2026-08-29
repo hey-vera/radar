@@ -11,6 +11,7 @@
 //! what was authorised, and under the shipped policy the last one is zero.
 
 import { useCallback, useEffect, useState } from "react";
+import { Agent } from "./Agent";
 import { api, ApiError, subscribe, type Funnel } from "./api";
 
 /** What the page is doing right now. */
@@ -75,6 +76,8 @@ export function App() {
       )}
 
       {load.state === "ready" && <FunnelView funnel={load.value} />}
+
+      <Agent />
     </main>
   );
 }

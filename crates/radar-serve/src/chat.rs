@@ -107,6 +107,43 @@ pub struct Chat {
     pub agent: std::sync::Mutex<Agent>,
     /// How to reach a model.
     pub provider: Box<dyn Provider>,
+    /// The same provider, when it is one whose credential can be linked from
+    /// the interface.
+    ///
+    /// A second handle rather than a downcast, because the question "can this be
+    /// linked" is answered when the provider is built and should not be
+    /// re-derived at the route. `None` on the API-key path, which has nothing to
+    /// link: a key is set in a file, not authorised in a browser.
+    pub linkable: Option<radar_model::Codex>,
+    /// How the last call went.
+    ///
+    /// Recorded because a health check that only says "a provider is
+    /// configured" is the shape LEARNINGS records repeatedly: a working
+    /// component and a dead one reporting the same thing. A credential that
+    /// lapsed after a fortnight of inactivity leaves configuration untouched and
+    /// every call failing, and this is what makes that visible.
+    pub last: std::sync::Mutex<LastCall>,
+}
+
+/// The outcome of the most recent model call.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize)]
+#[serde(tag = "last_call", rename_all = "snake_case")]
+pub enum LastCall {
+    /// Nothing has been asked since this process started.
+    ///
+    /// Not a failure and not a success. Saying so plainly beats reporting it as
+    /// either: a restart makes this the normal state, so alarming on it would
+    /// alarm on every deploy, and reporting it as healthy would call an
+    /// untested provider working.
+    #[default]
+    Never,
+    /// The last call succeeded.
+    Ok,
+    /// The last call failed, and this is why.
+    Failed {
+        /// The refusal, as the provider gave it.
+        why: String,
+    },
 }
 
 /// Answers a question, or says why it cannot.
@@ -164,6 +201,9 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
             // Charging the estimate is what stops a subscription -- which never
             // reports one -- from being free forever.
             agent.settle(commitment, answer.cost.unwrap_or(estimate));
+            if let Ok(mut last) = chat.last.lock() {
+                *last = LastCall::Ok;
+            }
             let citations: Vec<String> = Vec::new();
             Json(Answered {
                 text: answer.text,
@@ -177,6 +217,11 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
             // would let a flapping provider exhaust a budget it never spent,
             // which is a self-inflicted outage rather than a safety measure.
             agent.abandon(commitment);
+            if let Ok(mut last) = chat.last.lock() {
+                *last = LastCall::Failed {
+                    why: why.to_string(),
+                };
+            }
             unavailable(&Unavailable::Unreachable(why.to_string()))
         }
     }
@@ -230,12 +275,20 @@ pub fn status(chat: Option<&Chat>) -> serde_json::Value {
         None => json!({ "configured": false }),
         Some(chat) => {
             let ledger = chat.agent.lock().ok().map(|a| a.ledger());
+            let last = chat.last.lock().map_or_else(
+                |_| LastCall::Failed {
+                    why: "the record is poisoned".to_owned(),
+                },
+                |l| l.clone(),
+            );
             json!({
                 "configured": true,
                 "provider": chat.provider.name(),
+                "linkable": chat.linkable.is_some(),
                 "estimate_micro_usd": chat.provider.estimate().get(),
                 "spent_micro_usd": ledger.as_ref().map(|l| l.spent),
                 "tools": chat.agent.lock().ok().map_or(0, |a| a.allowlist().len()),
+                "last": last,
             })
         }
     }
@@ -279,6 +332,8 @@ mod tests {
                 today_utc(),
             )),
             provider: Box::new(Stub(outcome)),
+            linkable: None,
+            last: std::sync::Mutex::new(LastCall::Never),
         }
     }
 

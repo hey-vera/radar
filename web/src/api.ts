@@ -89,3 +89,53 @@ export function subscribe(onChange: () => void): () => void {
   source.addEventListener("store", onChange);
   return () => source.close();
 }
+
+/** How the credential-linking flow is going. */
+export type Progress =
+  | {
+      state: "waiting";
+      verification_url: string;
+      user_code: string;
+      seconds_elapsed: number;
+    }
+  | { state: "linked" }
+  | { state: "failed"; status: string }
+  | { state: "idle" };
+
+/** What the model said, and what it was shown. */
+export interface Answered {
+  text: string;
+  citations: string[];
+  uncited: boolean;
+}
+
+async function send<T>(path: string, body?: unknown): Promise<T> {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    // `null` rather than `undefined`: strict optional properties treat an
+    // explicitly-undefined field as a type error, and `null` is what fetch
+    // documents for "no body".
+    body: body === undefined ? null : JSON.stringify(body),
+  });
+  if (!response.ok) {
+    let detail = response.statusText;
+    try {
+      const parsed = (await response.json()) as { error?: string };
+      if (parsed.error) detail = parsed.error;
+    } catch {
+      // A non-JSON body is itself informative: something upstream answered.
+    }
+    throw new ApiError(response.status, detail);
+  }
+  return (await response.json()) as T;
+}
+
+export const agent = {
+  /** Starts a device-authorisation flow, or returns the one already open. */
+  link: () => send<Progress>("/v1/link"),
+  /** Where the current flow has got to. */
+  linkStatus: (signal?: AbortSignal) => get<Progress>("/v1/link", signal),
+  /** Asks a question. */
+  ask: (question: string) => send<Answered>("/v1/chat", { question }),
+};

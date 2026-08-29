@@ -93,6 +93,18 @@ this document asserts. `deploy/README.md` carries the unit that does it.
 - **A human step, once.** Somebody must complete the device-authorisation flow,
   and again if the credential lapses after a fortnight of inactivity. There is no
   way to automate this that does not amount to option 1.
+
+  It is a *button* rather than an SSH session, and that is not a compromise of
+  the decision above. Device authorisation prints a verification URL and a short
+  code, both designed to be shown to a person and neither of them a credential;
+  the code is useless without somebody able to sign in to the account, and it
+  expires in minutes. Radar renders those two strings and nothing else. The CLI
+  still owns `auth.json`, still owns refresh, and Radar still has no code that
+  reads a token — what the button removes is the need to remember a procedure at
+  the moment the credential has already lapsed.
+
+  Only one flow at a time, because the credential is single-writer and two
+  concurrent logins would race to be the writer.
 - **A process per call.** Negligible against the call, and it buys the property
   that a hung CLI is killed on a deadline rather than holding a request forever.
 - **The subscription path is private-use-only.** The vendor's terms and §115 of

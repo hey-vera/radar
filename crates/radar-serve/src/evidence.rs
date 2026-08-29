@@ -173,10 +173,23 @@ fn truncate(rendered: &str) -> String {
     if rendered.len() <= MAX_BLOCK_BYTES {
         return rendered.to_owned();
     }
-    let mut cut = MAX_BLOCK_BYTES;
-    while cut > 0 && !rendered.is_char_boundary(cut) {
-        cut -= 1;
-    }
+
+    // The last character boundary at or before the limit. Written as a scan
+    // rather than as a walk-back loop with a decrement, because a decrement is
+    // one mutation away from a no-op -- and a no-op there is not a wrong answer,
+    // it is a request handler thread spinning forever. `cargo-mutants` found
+    // exactly that: `cut -= 1` became `cut /= 1` and the test suite hung.
+    //
+    // Instrument output is JSON containing token names, which are arbitrary
+    // Unicode, so the limit routinely falls inside a character and slicing there
+    // would panic.
+    let cut = rendered
+        .char_indices()
+        .map(|(at, _)| at)
+        .take_while(|at| *at <= MAX_BLOCK_BYTES)
+        .last()
+        .unwrap_or_default();
+
     format!("{}… [truncated]", &rendered[..cut])
 }
 

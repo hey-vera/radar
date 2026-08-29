@@ -94,17 +94,31 @@ fn the_citation_names_the_instrument_that_actually_answered() {
     let store = Reader::open(dir.path());
     let blocks = evidence::gather(&registry(), &store, &format!("tell me about {}", creator()));
 
+    // Both creator instruments accept the same argument and both echo it, so
+    // "the content mentions the creator" does NOT distinguish them -- the first
+    // version of this test asserted exactly that and an inverted match sailed
+    // through it. Each is identified by a field only it returns.
+    let fingerprint = |name: &str| match name {
+        "creator_history" => "duplicate_metadata_launches",
+        "creator_track_record" => "stillborn",
+        other => panic!("unplanned instrument {other}"),
+    };
+
+    assert_eq!(blocks.len(), 2, "both creator instruments ran");
     for block in &blocks {
         let named = block
             .source
             .split('(')
             .next()
             .expect("the source names an instrument");
-        // Every instrument echoes the creator it was asked about, so the
-        // content proves which one ran rather than which one was labelled.
+        assert!(
+            block.content.contains(fingerprint(named)),
+            "cited as {named}, but the output is not {named}'s: {}",
+            block.content
+        );
         assert!(
             block.content.contains(&creator()),
-            "{named} did not answer about the address it was cited for"
+            "{named} answered about a different address than it was cited for"
         );
     }
 }

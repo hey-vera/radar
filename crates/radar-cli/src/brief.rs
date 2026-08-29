@@ -116,7 +116,13 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     checks.push(outcomes(&reader));
     checks.push(decisions(&reader));
     checks.push(coordination(&reader));
-    checks.push(serving(serve_url.map(|url| (url, probe_serving(url)))));
+    // Probed once and read twice. The agent's state is inside the health body
+    // the serving check already fetched, so a second request would be a second
+    // thing that can fail -- and it would fail whenever the server is down,
+    // reporting the agent as broken because the server is.
+    let probe = serve_url.map(|url| (url, probe_serving(url)));
+    checks.push(agent(probe.as_ref().map(|(_, p)| p)));
+    checks.push(serving(probe));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -548,6 +554,111 @@ fn trading_lane() -> Check {
     )
 }
 
+/// What the serving surface says about its reading assistant.
+///
+/// Read out of the health body the serving check already fetched, rather than by
+/// opening a second connection. A separate probe would be a second thing that
+/// can fail, and it would fail *in the same way* whenever the component it is
+/// probing is the one that is down — reporting the agent as broken because the
+/// server is, which is a wrong diagnosis dressed as a specific one.
+///
+/// Alarms in both directions, which is the whole reason it exists. A check that
+/// can only say "a provider is configured" is a working component and a dead one
+/// printing the same thing — LEARNINGS 5, 7 and 10, and the failure this feature
+/// is most likely to have: a credential that lapsed after a fortnight of
+/// inactivity leaves the configuration untouched and every call failing.
+fn agent(probed: Option<&ServingProbe>) -> Check {
+    let Some(ServingProbe::Answered { body, .. }) = probed else {
+        // Not a failure of the agent. The serving check already alarms on an
+        // unreachable server, and two lines reporting one outage is two people
+        // looking for two problems.
+        return Check::new(
+            Status::Unknown,
+            "agent",
+            "cannot see — the serving surface did not answer",
+        );
+    };
+
+    let Ok(health) = serde_json::from_str::<serde_json::Value>(body) else {
+        return Check::new(Status::Unknown, "agent", "the health body is not JSON");
+    };
+
+    let Some(agent) = health.get("agent") else {
+        // An older binary than this check. Saying which is the useful part: the
+        // alternative reading -- "no agent" -- is indistinguishable from a
+        // deliberately unconfigured one, and only one of them wants action.
+        return Check::new(
+            Status::Unknown,
+            "agent",
+            "the serving surface reports no agent field — it predates this check",
+        );
+    };
+
+    if agent.get("configured").and_then(serde_json::Value::as_bool) != Some(true) {
+        // The shipped state. Not an alarm, or the brief is permanently red on
+        // every instance that has not been given a model.
+        return Check::new(
+            Status::Ok,
+            "agent",
+            "off — no model provider configured (set RADAR_MODEL_DAILY_USD and a provider)",
+        );
+    }
+
+    let provider = agent
+        .get("provider")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unnamed");
+    let spent = agent
+        .get("spent_micro_usd")
+        .and_then(serde_json::Value::as_u64);
+    let tools = agent
+        .get("tools")
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or_default();
+
+    let today = spent.map_or_else(
+        || "spend unknown".to_owned(),
+        |s| format!("${}.{:06} today", s / 1_000_000, s % 1_000_000),
+    );
+
+    match agent
+        .get("last")
+        .and_then(|l| l.get("last_call"))
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("ok") => Check::new(
+            Status::Ok,
+            "agent",
+            format!("{provider} answering, {tools} read-only tool(s), {today}"),
+        ),
+        Some("failed") => {
+            let why = agent
+                .get("last")
+                .and_then(|l| l.get("why"))
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("no reason given");
+            Check::new(
+                Status::Fail,
+                "agent",
+                format!("{provider} refused the last call: {why}"),
+            )
+        }
+        Some("never") => Check::new(
+            Status::Ok,
+            "agent",
+            format!("{provider} configured, nothing asked since the last restart, {today}"),
+        ),
+        // A state this check does not know. Not a pass: the variant was added by
+        // somebody who did not update this file, and guessing which way it goes
+        // is how a new failure state gets reported as health.
+        other => Check::new(
+            Status::Unknown,
+            "agent",
+            format!("{provider} reports an unrecognised state: {other:?}"),
+        ),
+    }
+}
+
 /// Renders a duration the way an operator reads one.
 fn humanise(seconds: i64) -> String {
     match seconds {
@@ -862,6 +973,104 @@ mod tests {
     fn an_empty_store_fails_rather_than_reporting_nothing_wrong() {
         let dir = tempfile::tempdir().expect("tempdir");
         assert_eq!(watermark(&Reader::open(dir.path())).status, Status::Fail);
+    }
+
+    /// A health body with the agent block filled in as given.
+    fn health_with(agent_json: &str) -> ServingProbe {
+        ServingProbe::Answered {
+            status: 200,
+            body: format!(r#"{{"status":"ok","agent":{agent_json}}}"#),
+        }
+    }
+
+    #[test]
+    fn the_agent_check_alarms_when_the_last_call_failed() {
+        // The direction that matters, and the failure this feature is most
+        // likely to have: a credential that lapsed after a fortnight of
+        // inactivity leaves every setting untouched and every call failing.
+        let probe = health_with(
+            r#"{"configured":true,"provider":"codex","tools":3,"spent_micro_usd":0,
+                "last":{"last_call":"failed","why":"the CLI exited with exit status: 1"}}"#,
+        );
+        let check = agent(Some(&probe));
+        assert_eq!(check.status, Status::Fail);
+        assert!(check.detail.contains("exit status: 1"), "{}", check.detail);
+        assert!(check.status.is_alarm(), "and it exits non-zero");
+    }
+
+    #[test]
+    fn the_agent_check_passes_when_the_last_call_worked() {
+        // The other direction. A check verified only where it fails is
+        // indistinguishable from one that always fails, which is finding 1.6 of
+        // the plan and the reason this test exists beside the one above.
+        let probe = health_with(
+            r#"{"configured":true,"provider":"codex","tools":3,"spent_micro_usd":1500000,
+                "last":{"last_call":"ok"}}"#,
+        );
+        let check = agent(Some(&probe));
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("codex answering"), "{}", check.detail);
+        assert!(check.detail.contains("$1.500000"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_unconfigured_agent_is_not_an_alarm() {
+        // The shipped state. Alarming on it would leave the brief permanently
+        // red on every instance that has not been given a model, and a monitor
+        // that is always red is a monitor that gets ignored.
+        let check = agent(Some(&health_with(r#"{"configured":false}"#)));
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.starts_with("off"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_configured_agent_that_has_not_been_asked_anything_says_so() {
+        // Neither a pass nor a failure dressed as one. A restart makes this the
+        // normal state, so it must not alarm -- but calling an untested
+        // provider "answering" would be a claim nothing supports.
+        let probe = health_with(
+            r#"{"configured":true,"provider":"codex","tools":3,"spent_micro_usd":0,
+                "last":{"last_call":"never"}}"#,
+        );
+        let check = agent(Some(&probe));
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("nothing asked"), "{}", check.detail);
+    }
+
+    #[test]
+    fn a_state_this_check_does_not_recognise_is_unknown_rather_than_a_pass() {
+        // Added by somebody who did not update this file. Guessing which way a
+        // new state goes is how a new failure gets reported as health.
+        let probe = health_with(
+            r#"{"configured":true,"provider":"codex","last":{"last_call":"rate_limited"}}"#,
+        );
+        assert_eq!(agent(Some(&probe)).status, Status::Unknown);
+
+        // As is a health body with no agent block at all: an older binary than
+        // this check, which is a different thing from a deliberately
+        // unconfigured one and only one of them wants action.
+        let old = ServingProbe::Answered {
+            status: 200,
+            body: r#"{"status":"ok"}"#.to_owned(),
+        };
+        let check = agent(Some(&old));
+        assert_eq!(check.status, Status::Unknown);
+        assert!(check.detail.contains("predates"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_unreachable_server_does_not_also_report_the_agent_as_broken() {
+        // Two lines reporting one outage is two people looking for two
+        // problems. The serving check already alarms on this; the agent check
+        // says it cannot see, which is true and is not a second diagnosis.
+        for probe in [
+            None,
+            Some(ServingProbe::Unreachable("connection refused".to_owned())),
+        ] {
+            let check = agent(probe.as_ref());
+            assert_eq!(check.status, Status::Unknown);
+            assert!(check.detail.contains("cannot see"), "{}", check.detail);
+        }
     }
 
     #[test]

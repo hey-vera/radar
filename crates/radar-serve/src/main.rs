@@ -35,6 +35,11 @@ fn configure_agent() -> (Option<Chat>, String) {
         );
     };
 
+    // Built separately from the boxed provider so the route knows whether there
+    // is a credential to link *before* somebody presses the button, rather than
+    // discovering it from a failure.
+    let linkable = radar_model::codex_from_vars(&|k| std::env::var(k).ok());
+
     match radar_model::from_vars(&|k| std::env::var(k).ok()) {
         Ok(provider) => {
             let name = provider.name();
@@ -53,6 +58,8 @@ fn configure_agent() -> (Option<Chat>, String) {
                 Some(Chat {
                     agent: std::sync::Mutex::new(agent),
                     provider,
+                    linkable,
+                    last: std::sync::Mutex::new(radar_serve::chat::LastCall::Never),
                 }),
                 // Integer arithmetic, because a startup line reporting the
                 // ceiling as `$2.00` when it is `$2.004` is a line an operator
@@ -97,6 +104,7 @@ async fn main() -> ExitCode {
         chat: agent,
         access: access.clone(),
         keys: access::KeyCache::new(),
+        linker: radar_serve::link::Linker::new(),
     });
 
     println!("radar-serve v{}", env!("CARGO_PKG_VERSION"));

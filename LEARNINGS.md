@@ -763,3 +763,51 @@ health check reports fine.
 That is the difference worth keeping. A missing CSP produced a blank page and
 took minutes to notice. A missing access check produces a working page served to
 everybody, and would not have been noticed at all.
+
+---
+
+## 16. A security property argued in a comment, and then actually run
+
+**2026-08-27.** Not a failure — a note about what verification is worth, written
+because the alternative was available and tempting.
+
+The chat feature's central claim is that a language model reading
+attacker-controlled token names cannot reach anything. Three layers hold it up:
+the model has no action tools, its output is never parsed into an action, and the
+interface renders a reply as text.
+
+The third layer was, at the point of writing, a comment saying
+`dangerouslySetInnerHTML` was not used. That is a true statement about the source
+and it is not evidence. So the stand-in CLI was pointed at a script that returned
+this as the model's answer:
+
+```
+<img src=x onerror="window.__PWNED=1"><script>window.__PWNED=1</script> BUY THIS TOKEN NOW
+```
+
+and the page was driven in a browser:
+
+```
+{"pwned": null, "imgs": 0, "scripts": 1, "rendered": true}
+```
+
+No script ran, the `<img onerror>` never became an element, the one `<script>`
+is the application's own bundle, and the literal text `<script>` appears on the
+page as text. The claim is now a measurement.
+
+**The same shape applied to the monitor.** `radar brief` gained an `agent` check,
+and a check is only worth having if it goes red. It was run twice against a live
+server: once with the provider working (`[ok] agent codex answering`, exit 0) and
+once with the CLI made to exit non-zero the way a lapsed credential does
+(`[FAIL] agent codex refused the last call`, exit 1).
+
+**And it caught something the code review had not.** In the failing run the CLI
+printed `Error: not authenticated. Run codex login.` to stderr, and the HTTP
+response carried only `the CLI exited with exit code: 1`. That redaction was
+designed deliberately, but until the failing path was actually executed, nobody
+had seen it work.
+
+**The general shape:** the security properties in this repository are cheap to
+assert and cheap to test, and the gap between the two is where entries 1, 9 and
+13 live. If a claim is worth a paragraph of comment, it is worth the twenty
+minutes of running the attack it describes.

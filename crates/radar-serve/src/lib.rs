@@ -16,6 +16,7 @@ pub mod api;
 pub mod chat;
 mod embed;
 pub mod facilitator;
+pub mod link;
 pub mod mcp;
 mod ops;
 pub mod x402;
@@ -61,6 +62,8 @@ pub struct AppState {
     pub access: access::Mode,
     /// Cloudflare's published signing keys, fetched on demand.
     pub keys: access::KeyCache,
+    /// The one credential-linking flow that may be in progress.
+    pub linker: link::Linker,
 }
 
 /// Builds the router.
@@ -93,7 +96,10 @@ pub fn app(state: Arc<AppState>) -> Router {
         .fallback(interface);
 
     if state.chat.is_some() {
-        router = router.route("/v1/chat", post(chat::ask));
+        router = router
+            .route("/v1/chat", post(chat::ask))
+            .route("/v1/link", post(link::begin))
+            .route("/v1/link", get(link::status));
     }
 
     if state.x402.is_some() {
@@ -185,6 +191,10 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         // "recorded up to genesis" are different states.
         "watermarkSlot": watermark.map(radar_types::Slot::get),
         "paidSurface": state.x402.is_some(),
+        // The agent's own account of itself, so `radar brief` can alarm on it
+        // from the probe it already makes rather than by opening a second
+        // connection to a component that might be the thing that is down.
+        "agent": chat::status(state.chat.as_ref()),
     }))
 }
 

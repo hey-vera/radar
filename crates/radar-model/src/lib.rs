@@ -167,6 +167,25 @@ pub fn from_vars(get: &impl Fn(&str) -> Option<String>) -> Result<Box<dyn Provid
     }
 }
 
+/// The subscription provider, when one is configured.
+///
+/// Separate from [`from_vars`] because the caller needs to know whether there is
+/// a credential that can be *linked* from a browser, and that is a question
+/// about which provider was chosen rather than about the boxed trait object.
+/// Answering it by downcasting later would put the answer at the route, where
+/// it would be discovered from a failure instead of from configuration.
+///
+/// Returns `None` on the API-key path, which has nothing to link: a key is set
+/// in a file, not authorised in a browser.
+#[must_use]
+pub fn codex_from_vars(get: &impl Fn(&str) -> Option<String>) -> Option<Codex> {
+    let command = non_empty(get, "RADAR_MODEL_CODEX")?;
+    // Deliberately silent on failure. `from_vars` is the function that reports a
+    // misconfiguration; two callers reporting the same one is two chances to
+    // report it differently.
+    Codex::from_vars(&command, get).ok()
+}
+
 /// Reads the day's model budget from the environment.
 ///
 /// `None` when `RADAR_MODEL_DAILY_USD` is unset, and the caller must then not

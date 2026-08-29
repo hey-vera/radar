@@ -33,6 +33,7 @@ fn configured() -> axum::Router {
         chat: None,
         access: radar_serve::access::Mode::Off,
         keys: radar_serve::access::KeyCache::new(),
+        linker: radar_serve::link::Linker::new(),
     }))
 }
 
@@ -47,6 +48,7 @@ fn unconfigured() -> axum::Router {
         chat: None,
         access: radar_serve::access::Mode::Off,
         keys: radar_serve::access::KeyCache::new(),
+        linker: radar_serve::link::Linker::new(),
     }))
 }
 

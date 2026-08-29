@@ -33,7 +33,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use radar_agent::{Agent, Unavailable};
-use radar_model::{Provider, Request};
+use radar_model::Provider;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -52,7 +52,9 @@ pub const SYSTEM: &str = "You are the reading assistant for Radar, a Solana \
     median return around -13% before costs and fewer than one token in ten \
     finishes above a round trip. Answer from the recorded evidence you are \
     given, name the source when you use one, and say plainly when the evidence \
-    does not settle the question. Never recommend buying or selling anything: \
+    does not settle the question. You cannot request more evidence: what you \
+    have been given is what Radar looked up, so say what is missing rather than \
+    asking for it. Never recommend buying or selling anything: \
     you cannot see a position, a balance or a price, and Radar's trading policy \
     is closed regardless of what you say.";
 
@@ -187,9 +189,17 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
         }
     };
 
-    let request = Request::new(SYSTEM, question);
+    // Gathered before the model sees anything, and by Radar rather than by the
+    // model. That direction is the whole design: letting a model ask for
+    // evidence means parsing its output into a request, which is the path an
+    // injected instruction travels.
     let provider = &chat.provider;
-    let outcome = tokio::task::block_in_place(|| provider.ask(&request));
+    let (blocks, outcome) = tokio::task::block_in_place(|| {
+        let blocks = crate::evidence::gather(&state.registry, &state.store, question);
+        let request = crate::evidence::request(SYSTEM, question, &blocks);
+        let outcome = provider.ask(&request);
+        (blocks, outcome)
+    });
 
     let Ok(mut agent) = chat.agent.lock() else {
         return refuse(StatusCode::SERVICE_UNAVAILABLE, "the meter is poisoned");
@@ -204,7 +214,9 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
             if let Ok(mut last) = chat.last.lock() {
                 *last = LastCall::Ok;
             }
-            let citations: Vec<String> = Vec::new();
+            // The instruments Radar actually invoked, not names the model chose
+            // to write down. A citation here can be re-run.
+            let citations: Vec<String> = blocks.into_iter().map(|b| b.source).collect();
             Json(Answered {
                 text: answer.text,
                 uncited: citations.is_empty(),
@@ -297,7 +309,7 @@ pub fn status(chat: Option<&Chat>) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use radar_model::{Answer, Unreachable};
+    use radar_model::{Answer, Request, Unreachable};
     use radar_types::MicroUsd;
 
     /// A provider that never reaches anything, so the seam can be tested
@@ -345,6 +357,11 @@ mod tests {
         // feature, because it is the one a reader would act on.
         assert!(SYSTEM.contains("Never recommend buying or selling"));
         assert!(SYSTEM.contains("-13%"), "the base rate is in the framing");
+        // And it says the one thing about the shape of the conversation that a
+        // model would otherwise get wrong: it cannot ask for anything. A model
+        // that replies "let me check the creator history" is a model whose
+        // answer never arrives, because there is no second turn.
+        assert!(SYSTEM.contains("cannot request more evidence"));
     }
 
     #[test]

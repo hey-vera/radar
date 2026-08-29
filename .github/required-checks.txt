@@ -33,6 +33,11 @@
 # be made through a pull request" and "8 of 8 required status checks are
 # expected".
 #
+# `web` was added to the ruleset on 2026-08-27, making it nine. It had been
+# running on every pull request and blocking nothing since the interface landed,
+# which is the quieter version of the failure entry 13 records: not a claim that
+# was false, but a check that looked like a gate and was not one.
+#
 # There are no bypass actors, admins included. An override means editing the
 # ruleset, which is a deliberate act and leaves a trace -- the point, given how
 # this file read yesterday.
@@ -46,4 +51,4 @@ licence-headers = just licence-headers
 cargo-deny      = just cargo-deny
 msrv            = github-only: pinned toolchain, no local recipe (the host may not have 1.90 for its triple)
 mutants         = just mutants
-web             = just web   -- NOT YET IN THE RULESET; adding a check means adding it in three places
+web             = just web

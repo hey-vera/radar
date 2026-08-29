@@ -134,16 +134,23 @@ compiles and the tests pass — in which case the tests are also wrong.
    `radar brief` with no serving endpoint configured reports that it cannot see
    rather than that nothing is wrong. Spending nothing is always recoverable.
 
-   **The spend-meter half is not yet wired, and saying so is the point.**
-   `radar-provider` implements the budget, the commitment, the refusal and — as
-   of 2026-08-27 — a [`Ledger`](crates/radar-provider/src/cost.rs) that survives
-   a restart, because a budget that forgets is not a budget and `radar-serve`
-   runs under `Restart=always`. Nothing depends on the crate yet. Every component that actually spends money
-   (`radar-backfill` on CryptoHouse, `radar-sim` on Jupiter and RPC, `radar-serve`
-   on the facilitator) holds its own HTTP agent and passes through no meter at
-   all. There is no daily ceiling in the running system. Wiring it is Phase 3 of
-   the current plan; until then this rule is enforced for the signer and the
-   paywall and *not* for spend.
+   **The spend-meter half is wired for one component and not for the rest, and
+   saying exactly which is the point.** `radar-provider` implements the budget,
+   the commitment, the refusal and a [`Ledger`](crates/radar-provider/src/cost.rs)
+   that survives a restart, because a budget that forgets is not a budget and
+   `radar-serve` runs under `Restart=always`.
+
+   As of 2026-08-27 the reading assistant goes through it: `radar-model`'s
+   `budget_from_vars` has no default, so an instance with no
+   `RADAR_MODEL_DAILY_USD` gets no agent at all rather than an unmetered one, and
+   every model call reserves before it spends and releases when it fails. That is
+   the first component in the running system that spends through a meter.
+
+   Every component that spends money on *data* still does not. `radar-backfill`
+   on CryptoHouse, `radar-sim` on Jupiter and RPC, and `radar-serve` on the
+   facilitator each hold their own HTTP agent and pass through no meter. There is
+   no daily ceiling on any of them. So this rule is enforced for the signer, the
+   paywall and the agent, and **not** for data spend.
 
 9. **Absent is not zero, and unknown is not safe.** A missing price impact is
    `u32::MAX`, not `0`. A capacity that could not be measured is `None`, and

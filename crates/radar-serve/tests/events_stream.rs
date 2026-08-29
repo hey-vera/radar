@@ -44,6 +44,8 @@ fn state_with_a_store() -> (Arc<AppState>, tempfile::TempDir) {
             store: Reader::open(dir.path()),
             x402: None,
             chat: None,
+            access: radar_serve::access::Mode::Off,
+            keys: radar_serve::access::KeyCache::new(),
         }),
         dir,
     )
@@ -136,6 +138,8 @@ async fn an_empty_store_does_not_stall_the_stream_open() {
         store: Reader::open(dir.path()),
         x402: None,
         chat: None,
+        access: radar_serve::access::Mode::Off,
+        keys: radar_serve::access::KeyCache::new(),
     });
 
     let response = app(state)

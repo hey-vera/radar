@@ -31,6 +31,8 @@ fn configured() -> axum::Router {
             margin_percent: 50,
         }),
         chat: None,
+        access: radar_serve::access::Mode::Off,
+        keys: radar_serve::access::KeyCache::new(),
     }))
 }
 
@@ -43,6 +45,8 @@ fn unconfigured() -> axum::Router {
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: None,
         chat: None,
+        access: radar_serve::access::Mode::Off,
+        keys: radar_serve::access::KeyCache::new(),
     }))
 }
 

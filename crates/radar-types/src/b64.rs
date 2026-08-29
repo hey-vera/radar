@@ -9,6 +9,14 @@
 
 const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// The URL-safe alphabet, which JSON Web Tokens use.
+///
+/// A separate alphabet rather than a translation step, so that `+` and `/` are
+/// *refused* in a URL-safe input rather than quietly accepted. Two spellings of
+/// the same token is one more thing an attacker can vary, and a verifier that
+/// accepts both is a verifier whose input is not canonical.
+const URL_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+
 /// Decodes standard base64, returning `None` on any character outside the
 /// alphabet.
 ///
@@ -17,18 +25,42 @@ const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwx
 /// every guarantee downstream is about the bytes that were read.
 #[must_use]
 pub fn decode(s: &str) -> Option<Vec<u8>> {
+    decode_with(ALPHABET, s, true)
+}
+
+/// Decodes unpadded URL-safe base64, the encoding JSON Web Tokens use.
+///
+/// Stricter than [`decode`] in two ways, both because the caller is a signature
+/// verifier rather than a transaction reader. Whitespace is refused rather than
+/// skipped, and `=` padding is refused rather than terminating the input: a JWT
+/// is defined as unpadded, so a padded one is not a JWT, and a verifier that
+/// accepts several spellings of one token is a verifier whose input is not
+/// canonical. That is the ground the interesting attacks are built on.
+#[must_use]
+pub fn decode_url(s: &str) -> Option<Vec<u8>> {
+    decode_with(URL_ALPHABET, s, false)
+}
+
+/// The shared routine.
+///
+/// `lenient` is the pre-existing behaviour of [`decode`], kept exactly as it
+/// was: whitespace skipped and `=` ending the input. Changing it would change
+/// what the signer accepts, which is not a thing to do in passing.
+fn decode_with(alphabet: &[u8; 64], s: &str, lenient: bool) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(s.len() / 4 * 3);
     let mut buffer = 0u32;
     let mut bits = 0u32;
 
     for byte in s.bytes() {
-        if byte == b'=' {
-            break;
+        if lenient {
+            if byte == b'=' {
+                break;
+            }
+            if byte.is_ascii_whitespace() {
+                continue;
+            }
         }
-        if byte.is_ascii_whitespace() {
-            continue;
-        }
-        let value = ALPHABET.iter().position(|c| *c == byte)?;
+        let value = alphabet.iter().position(|c| *c == byte)?;
         buffer = (buffer << 6) | u32::try_from(value).ok()?;
         bits += 6;
         if bits >= 8 {

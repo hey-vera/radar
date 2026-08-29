@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod access;
 pub mod api;
 pub mod chat;
 mod embed;
@@ -51,6 +52,15 @@ pub struct AppState {
     /// degradation available here -- answering from a cheaper model, or from
     /// cache -- would be reporting confidence Radar does not have.
     pub chat: Option<chat::Chat>,
+    /// Whether requests are checked against Cloudflare Access.
+    ///
+    /// There is no `Option` here and no default: `access::Mode::from_vars`
+    /// refuses to start unless the operator either configured Access or wrote
+    /// `RADAR_ACCESS=off` in as many words. Both possible defaults are wrong in
+    /// a way that is invisible.
+    pub access: access::Mode,
+    /// Cloudflare's published signing keys, fetched on demand.
+    pub keys: access::KeyCache,
 }
 
 /// Builds the router.
@@ -92,7 +102,77 @@ pub fn app(state: Arc<AppState>) -> Router {
             .route("/x402/v1/instruments/{name}", post(paid_instrument));
     }
 
-    router.with_state(state)
+    router
+        .layer(axum::middleware::from_fn_with_state(
+            Arc::clone(&state),
+            guard,
+        ))
+        .with_state(state)
+}
+
+/// Refuses anything that cannot prove who it is.
+///
+/// Placed as a layer rather than per-route on purpose: a per-route check is one
+/// somebody forgets on the route they add next year, and the route they add next
+/// year is the one that matters. Everything is private unless
+/// [`access::is_public`] says otherwise, which is the direction a mistake should
+/// fall in.
+async fn guard(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let access::Mode::Enforce(config) = &state.access else {
+        return next.run(request).await;
+    };
+    if access::is_public(request.uri().path()) {
+        return next.run(request).await;
+    }
+
+    let Some(token) = access::token_from(request.headers()) else {
+        return denied(&access::Denied::Missing);
+    };
+
+    // Blocking: fetching the key set is one HTTPS call an hour, and the
+    // signature check is microseconds. `block_in_place` rather than pretending
+    // either is async.
+    let verified = tokio::task::block_in_place(|| {
+        let keys = state.keys.get(config)?;
+        access::verify(&token, &keys, config, now_unix())
+    });
+
+    match verified {
+        Ok(_) => next.run(request).await,
+        Err(why) => denied(&why),
+    }
+}
+
+/// Seconds since the epoch, for the expiry check.
+///
+/// The clock the whole expiry check rests on, which is why it is asserted
+/// against a range rather than merely called. A version of this returning zero
+/// makes every token unexpired forever, and the interface would look entirely
+/// healthy while accepting an assertion issued to somebody who left the company
+/// last year.
+#[must_use]
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or_default()
+}
+
+/// A refusal that says enough to debug and no more.
+///
+/// 403 rather than 401: there is no `WWW-Authenticate` scheme Radar could name,
+/// and Cloudflare Access is what issues credentials. A 401 would invite a
+/// browser password prompt for an account that does not exist.
+fn denied(why: &access::Denied) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": why.to_string() })),
+    )
+        .into_response()
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -505,4 +585,31 @@ async fn mcp_endpoint(State(state): State<Arc<AppState>>, Json(body): Json<Value
     };
 
     (StatusCode::OK, Json(response)).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_clock_the_expiry_check_rests_on_reads_a_plausible_time() {
+        // A range known in advance rather than a lower bound. `> 0` passes for
+        // milliseconds, for nanoseconds, and for a constant of 1 -- and the
+        // failure mode of a wrong clock here is not a crash, it is expired
+        // assertions being accepted while everything looks healthy.
+        let now = now_unix();
+        assert!(
+            (1_750_000_000..2_000_000_000).contains(&now),
+            "seconds since 1970 is ~1.77e9 in 2026 and ~2.0e9 in 2033; got {now}"
+        );
+    }
+
+    #[test]
+    fn a_refusal_is_forbidden_rather_than_unauthorized() {
+        // 401 would invite a browser password prompt for an account that does
+        // not exist: Cloudflare Access issues the credential, not Radar, and
+        // there is no `WWW-Authenticate` scheme to name.
+        let response = denied(&access::Denied::Missing);
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
 }

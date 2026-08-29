@@ -126,6 +126,115 @@ The reload itself is safe in isolation: Caddy validates the new config and keeps
 the running one if it does not parse, so a malformed block costs a failed reload
 rather than an outage. The certificate account is the part that is shared.
 
+## Before the next deploy: two settings that gate startup
+
+Two changes landed after 2026-08-27 that a running instance will not have in its
+`/etc/radar/radar.env`, and the first of them **stops the binary from starting**.
+Set them before installing, not after — this is the same shape as the mistake
+that blanked the interface for a few minutes on 2026-08-27, where the binary
+shipped ahead of the CSP it needed.
+
+### `radar-serve` refuses to start until somebody decides who may look
+
+There is no default, and that is the point. Serving to everyone looks like it
+works; refusing everyone looks like a broken deploy. Neither should be what
+happens because nobody chose.
+
+```
+sudo tee -a /etc/radar/radar.env >/dev/null <<'ENV'
+RADAR_ACCESS_TEAM=heyvera.cloudflareaccess.com
+RADAR_ACCESS_AUD=<the Application Audience tag from the Access application>
+ENV
+```
+
+The AUD tag is on the Access application's **Overview** page. It is per
+application, not per team: using the team name, or another application's tag,
+means any token from any application in the team opens Radar — with a signature
+that verifies perfectly, which is why the audience check is the one worth
+getting right.
+
+Radar verifies the **signature** on `Cf-Access-Jwt-Assertion` against
+Cloudflare's published keys. It does **not** read
+`Cf-Access-Authenticated-User-Email`: that header is a claim by whoever sent the
+request, and "the origin is behind a tunnel" is a network topology rather than
+an authentication model.
+
+`/health` and `/x402/` stay reachable without a token — the first so uptime
+checks do not become false alarms, the second because the paid surface has its
+own paywall.
+
+To keep serving openly, say so in as many words instead:
+
+```
+echo 'RADAR_ACCESS=off' | sudo tee -a /etc/radar/radar.env
+```
+
+Setting both blocks is refused rather than resolved.
+
+**Verify in both directions after restarting**, because a guard checked only in
+the refusing direction is indistinguishable from a server that is simply broken:
+
+```
+curl -s -o /dev/null -w '%{http_code}
+' http://127.0.0.1:8402/health
+curl -s -o /dev/null -w '%{http_code}
+' http://127.0.0.1:8402/v1/funnel
+```
+
+With Access enforced those are `200` and `403`. Through the browser, signed in,
+the interface loads as before. If `/health` is not `200`, the unit did not start
+— read `journalctl -u radar-serve -n 20`, which will name the missing variable.
+
+### The reading assistant, when you want it
+
+Off unless a provider *and* a budget are configured, and it holds no credential
+of its own. The subscription path spawns the vendor CLI, which owns `auth.json`
+and its own refresh; Radar has no code that reads, writes or stores a token.
+
+That is a claim about Radar's source and not about the operating system: a CLI
+running as `guardian` has a credential file `guardian` can read. Give it its own
+user so the boundary is one the kernel enforces.
+
+```
+sudo useradd --system --create-home --home-dir /var/lib/radar-agent      --shell /usr/sbin/nologin radar-agent
+sudo install -d -o radar-agent -g radar-agent -m700 /var/lib/radar-agent/.codex
+```
+
+Seed the credential once, interactively. This is the only step that needs a
+human, and it needs the vendor CLI installed on the box first — check with
+`which codex`:
+
+```
+sudo -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex      codex login --device-auth
+```
+
+Then a wrapper that drops to that user, so `radar-serve` never runs the CLI as
+itself:
+
+```
+sudo tee /usr/local/bin/radar-codex >/dev/null <<'SH'
+#!/bin/sh
+exec sudo -n -u radar-agent env CODEX_HOME=/var/lib/radar-agent/.codex codex exec -
+SH
+sudo chmod 755 /usr/local/bin/radar-codex
+```
+
+`guardian` needs `NOPASSWD` for exactly that one command and nothing else — see
+the note in `MEMORY` about what `guardian` cannot sudo. Radar clears the child's
+environment and passes only `PATH`, `HOME`, `CODEX_HOME`, `LANG`, `LC_ALL` and
+`TMPDIR`, so nothing else in `/etc/radar/radar.env` reaches the CLI.
+
+Finally, in `/etc/radar/radar.env`:
+
+```
+RADAR_MODEL_DAILY_USD=2.00
+RADAR_MODEL_CODEX=/usr/local/bin/radar-codex
+```
+
+The startup log says which mode it is in. `radar-serve` prints `access` and
+`agent` lines on every start, and an instance serving without a check says so
+about itself in its own logs.
+
 ## Every deploy after that
 
 **Run these from a workstation that can reach `guardian-vps-tail`, not from the

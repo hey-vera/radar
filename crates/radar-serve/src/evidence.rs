@@ -353,11 +353,53 @@ mod tests {
     #[test]
     fn truncation_does_not_split_a_character_in_half() {
         // Instrument output is JSON containing token names, which are arbitrary
-        // Unicode. Cutting mid-character panics on a slice.
-        let wide = "🚀".repeat(MAX_BLOCK_BYTES);
-        let cut = truncate(&wide);
-        assert!(cut.ends_with("… [truncated]"));
-        assert!(cut.chars().count() > 1, "and it kept something");
+        // Unicode, so the cut routinely lands mid-character and slicing there
+        // panics.
+        //
+        // The first version of this test used `"🚀".repeat(MAX_BLOCK_BYTES)`
+        // and proved nothing: a four-byte character divides 4,000 exactly, so
+        // the cut landed *on* a boundary and the walk-back loop never ran. Four
+        // mutants of that loop survived, which is how it was noticed.
+        //
+        // So: pad by nought, one, two and three ASCII bytes. Three of the four
+        // put the cut inside a character.
+        for pad in 0..4usize {
+            let wide = format!("{}{}", "x".repeat(pad), "🚀".repeat(MAX_BLOCK_BYTES));
+            let cut = truncate(&wide);
+
+            assert!(cut.ends_with("… [truncated]"), "pad {pad}");
+            let kept = cut.strip_suffix("… [truncated]").expect("just checked");
+            // The walk-back moves the cut *earlier*, never later, so nothing
+            // beyond the limit survives and nothing is invented.
+            assert!(
+                kept.len() <= MAX_BLOCK_BYTES,
+                "pad {pad}: {} bytes",
+                kept.len()
+            );
+            assert!(
+                kept.len() > MAX_BLOCK_BYTES - 4,
+                "pad {pad}: it walked back further than one character"
+            );
+            assert!(
+                wide.starts_with(kept),
+                "pad {pad}: the kept part is a real prefix, not a re-encoding"
+            );
+        }
+    }
+
+    #[test]
+    fn a_cut_landing_exactly_on_a_boundary_is_not_walked_back() {
+        // The other half of the loop condition. A cut already on a boundary
+        // must be taken as it is, or every truncation loses a character it did
+        // not need to.
+        let ascii = "x".repeat(MAX_BLOCK_BYTES + 10);
+        let cut = truncate(&ascii);
+        let kept = cut.strip_suffix("… [truncated]").expect("truncated");
+        assert_eq!(
+            kept.len(),
+            MAX_BLOCK_BYTES,
+            "exactly the limit, no walk-back"
+        );
     }
 
     #[test]

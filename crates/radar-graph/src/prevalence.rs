@@ -162,7 +162,12 @@ pub const ROW_CAP: usize = 1_000;
 /// it classifies as [`Prevalence::Ordinary`] anyway — which keeps the result
 /// inside the row cap and makes an absent authority *correct* rather than
 /// merely convenient.
-#[derive(Clone, PartialEq, Eq, Debug, Default)]
+/// Deliberately **not** `Default`. A derived default would be indistinguishable
+/// from [`Table::unavailable`] — empty and incomplete — which is the safe answer
+/// by accident rather than by design, and it would let `Table::default()` stand
+/// in for a table somebody meant to fetch. A type whose default silently means
+/// "cannot see" is one that will eventually be defaulted by mistake.
+#[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Table {
     counts: BTreeMap<String, u64>,
     complete: bool,
@@ -399,7 +404,16 @@ mod tests {
         // report a broken query as a quiet market.
         let empty = Table::new([]);
         assert!(empty.is_complete() && empty.is_empty());
+        assert_eq!(empty.len(), 0);
         assert_eq!(empty.of("anyone"), Some(Prevalence::Ordinary));
+
+        // And a populated table is not empty. Asserted because `is_empty` tested
+        // only where it is true survives a version that always returns true --
+        // and a full table reading as empty is a monitor reporting a quiet
+        // market while the factories run.
+        let populated = Table::new([("factory".to_owned(), 8)]);
+        assert!(!populated.is_empty());
+        assert_eq!(populated.len(), 1);
 
         let broken = Table::unavailable();
         assert!(!broken.is_complete() && broken.is_empty());

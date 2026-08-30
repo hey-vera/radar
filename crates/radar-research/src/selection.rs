@@ -380,6 +380,137 @@ mod tests {
         }
     }
 
+    /// A refused decision carrying the given reasons.
+    fn refused_for(mint: u8, entry: Option<u64>, reasons: &[&str]) -> Decision {
+        let mut d = decision(mint, Conclusion::Passed, entry);
+        d.reasons = reasons.iter().map(|r| (*r).to_owned()).collect();
+        d
+    }
+
+    #[test]
+    fn a_refusal_counts_under_every_reason_it_carries() {
+        // Deliberate overlap. The question is what tokens refused for X did, not
+        // what tokens refused ONLY for X did -- the second is a much smaller and
+        // stranger population, and answering it would make each group describe a
+        // different, rarer kind of token.
+        let decisions = vec![refused_for(
+            1,
+            Some(1_000),
+            &["ExitCapacityTooSmall", "TokenReadingTooOld"],
+        )];
+        let outcomes = vec![outcome(1, 12_000, Some(2_000))];
+
+        let groups = by_reason(&decisions, &outcomes);
+        assert_eq!(groups.len(), 2, "one decision, two groups");
+        for reason in ["ExitCapacityTooSmall", "TokenReadingTooOld"] {
+            let cohort = groups.get(reason).unwrap_or_else(|| panic!("{reason}"));
+            assert_eq!(cohort.decisions, 1);
+            assert_eq!(cohort.scored, 1);
+            assert_eq!(cohort.returns_bps, vec![10_000], "doubled, so +100%");
+        }
+    }
+
+    #[test]
+    fn the_counts_are_counts_and_not_something_that_merely_moves() {
+        // `decisions` and `scored` are the denominators every rate in the
+        // breakdown is computed against. An increment that ran backwards, or
+        // stayed at zero, would leave the medians looking right and every
+        // percentage wrong -- which is the harder failure to notice.
+        let decisions = vec![
+            refused_for(1, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(2, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(3, Some(1_000), &["ExitCapacityTooSmall"]),
+        ];
+        let outcomes = vec![
+            outcome(1, 12_000, Some(2_000)),
+            outcome(2, 12_000, Some(500)),
+            outcome(3, 12_000, Some(1_000)),
+        ];
+
+        let groups = by_reason(&decisions, &outcomes);
+        let cohort = &groups["ExitCapacityTooSmall"];
+        assert_eq!(cohort.decisions, 3);
+        assert_eq!(cohort.scored, 3);
+        assert_eq!(cohort.returns_bps.len(), 3);
+    }
+
+    #[test]
+    fn a_decision_that_cannot_be_scored_still_counts_as_a_decision() {
+        // The two counters answer different questions and must move
+        // independently. Collapsing them would make "how often was this
+        // refusal used" and "how often could we tell whether it was right"
+        // the same number, and they are not: an unscoreable refusal is
+        // evidence about the filter's reach and about nothing else.
+        let decisions = vec![
+            // No entry price: nothing to compute a return from.
+            refused_for(1, None, &["NoExitSimulated"]),
+            refused_for(2, Some(1_000), &["NoExitSimulated"]),
+        ];
+        let outcomes = vec![outcome(2, 12_000, Some(1_500))];
+
+        let cohort = &by_reason(&decisions, &outcomes)["NoExitSimulated"];
+        assert_eq!(cohort.decisions, 2, "both were refused for it");
+        assert_eq!(cohort.scored, 1, "only one could be priced");
+        assert_eq!(cohort.returns_bps, vec![5_000]);
+    }
+
+    #[test]
+    fn proposals_are_not_in_the_breakdown_at_all() {
+        // It is a split of the CONTROL. A proposal appearing here would be
+        // compared against itself, and the reasons a proposal carries are the
+        // ones it survived rather than the ones it failed.
+        let mut proposed = decision(1, Conclusion::Proposed, Some(1_000));
+        proposed.reasons = vec!["ExitCapacityTooSmall".to_owned()];
+
+        let groups = by_reason(&[proposed], &[outcome(1, 12_000, Some(9_000))]);
+        assert!(groups.is_empty(), "{groups:?}");
+    }
+
+    #[test]
+    fn the_breakdown_reconciles_with_the_headline_it_qualifies() {
+        // Groups overlap, so their scored counts do not sum to the control's.
+        // What must hold is that no group is larger than the control and every
+        // scored decision appears somewhere -- a breakdown that scored
+        // decisions differently from `evaluate` would produce a discrepancy
+        // that reads as a finding.
+        let decisions = vec![
+            refused_for(1, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(2, Some(1_000), &["ExitCapacityTooSmall", "NoPrice"]),
+            refused_for(3, Some(1_000), &["NoPrice"]),
+        ];
+        let outcomes = vec![
+            outcome(1, 12_000, Some(2_000)),
+            outcome(2, 12_000, Some(500)),
+            outcome(3, 12_000, Some(1_000)),
+        ];
+
+        let report = evaluate(&decisions, &outcomes, 850);
+        let groups = by_reason(&decisions, &outcomes);
+
+        assert_eq!(report.refused.scored, 3);
+        for (reason, cohort) in &groups {
+            assert!(
+                cohort.scored <= report.refused.scored,
+                "{reason} has more scored than the whole control"
+            );
+        }
+        // Overlap is real: two groups totalling four across three decisions.
+        let total: usize = groups.values().map(|c| c.scored).sum();
+        assert_eq!(total, 4, "one decision counted twice, by design");
+    }
+
+    #[test]
+    fn a_control_with_no_reasons_produces_no_groups() {
+        // Not an error. A refusal recorded without a reason is a gap in the
+        // record, and inventing a bucket for it would put an unnamed cohort
+        // beside the named ones as though it meant something.
+        let groups = by_reason(
+            &[refused_for(1, Some(1_000), &[])],
+            &[outcome(1, 12_000, Some(2_000))],
+        );
+        assert!(groups.is_empty());
+    }
+
     #[test]
     fn the_population_baseline_is_a_loss_and_stays_one() {
         // Deleting the minus sign turns the bar Radar has to clear from -13.4%

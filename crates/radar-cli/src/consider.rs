@@ -723,6 +723,86 @@ pub const fn default_cap() -> usize {
 mod tests {
     use super::*;
 
+    /// A launch-block source that answers however a test needs it to.
+    struct StubBlocks(Result<radar_graph::prevalence::Table, String>);
+
+    impl LaunchBlockSource for StubBlocks {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Err("not used by these tests".to_owned())
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Err("not used by these tests".to_owned())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            self.0.clone()
+        }
+    }
+
+    #[test]
+    fn a_truncated_prevalence_table_is_refused_rather_than_used() {
+        // The load-bearing guard. A table that hit the thousand-row cap is
+        // missing the authorities the cut removed, and every one of them would
+        // then read as `Ordinary` -- the least alarming answer available --
+        // recorded on a decision as though it had been measured. Rule 9.
+        let capped: Vec<(String, u64)> = (0..radar_graph::prevalence::ROW_CAP)
+            .map(|i| (format!("authority-{i:04}"), 50))
+            .collect();
+        let truncated = radar_graph::prevalence::Table::new(capped);
+        assert!(
+            !truncated.is_complete(),
+            "the fixture is actually truncated"
+        );
+
+        assert_eq!(
+            prevalence_table_of(&StubBlocks(Ok(truncated))),
+            None,
+            "a truncated table must not be used"
+        );
+    }
+
+    #[test]
+    fn a_complete_prevalence_table_is_used() {
+        // The other direction, and it is not decoration: a guard that refused
+        // every table would disable the feature entirely while looking like a
+        // safety measure, and nothing else in the pass would say so.
+        let table = radar_graph::prevalence::Table::new([("factory".to_owned(), 8)]);
+        assert!(table.is_complete());
+
+        let kept = prevalence_table_of(&StubBlocks(Ok(table))).expect("a complete table is used");
+        assert_eq!(
+            kept.of("factory"),
+            Some(radar_graph::prevalence::Prevalence::Repeat)
+        );
+        assert_eq!(
+            kept.of("never-seen"),
+            Some(radar_graph::prevalence::Prevalence::Ordinary),
+            "below the floor, which is what the query means"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_prevalence_table_records_absence_rather_than_failing_the_pass() {
+        // A prevalence the pass could not fetch must not stop it deciding. The
+        // decision is still worth recording; what it carries is an absent
+        // prevalence, which is the honest value.
+        assert_eq!(
+            prevalence_table_of(&StubBlocks(Err("endpoint down".to_owned()))),
+            None
+        );
+    }
+
     fn a_candidate() -> Candidate {
         Candidate {
             mint: radar_types::Address::new([7u8; 32]),

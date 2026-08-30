@@ -811,3 +811,55 @@ had seen it work.
 assert and cheap to test, and the gap between the two is where entries 1, 9 and
 13 live. If a claim is worth a paragraph of comment, it is worth the twenty
 minutes of running the attack it describes.
+
+---
+
+## 17. A schema change that would have made the history unreadable
+
+**2026-08-30.** Caught before it shipped, and only because the deploy was being
+thought about rather than performed.
+
+`authority_prevalence` was added to the decisions table. The reader read it with
+`str_col`, which **errors** when a column is absent:
+
+```rust
+let prevalence = str_col(&batch, "authority_prevalence")?;
+```
+
+Production held roughly nine hundred decision rows written before that column
+existed. None of them have it. So the first read of any of them would have
+returned `MissingColumn`, and every caller that touches decisions — `radar
+selection`, the decisions check in `radar brief`, `/v1/funnel`, and therefore the
+entire interface — would have failed at once, on a store that was perfectly fine.
+
+**The codebase already contained the warning, in the exact words, twelve lines
+away from the mistake.** `optional_u64_col`'s doc comment reads:
+
+> a column the writer has always emitted going missing is a corrupted file and
+> should fail loudly, while a column added later is simply absent from older
+> files and must read as "not measured". **Using the erroring form for a new
+> column would make one schema change unreadable for every file written before
+> it.**
+
+The change was written, reviewed, mutation-tested at 100%, and merged. Every test
+passed because every test wrote its fixtures with the *current* writer, which
+emits the current schema. A test suite that only ever reads what it just wrote
+cannot see a schema change at all.
+
+**What catches a recurrence:** `older_files_still_read.rs`, which builds a
+decisions file by hand in the *old* shape — deliberately copied rather than
+derived from the live schema, because deriving it would make the test track
+whatever the schema currently is, which is the one thing it must not do.
+
+Verified in both directions: with the erroring accessor restored it fails with
+`MissingColumn`, and with the fix it reads the row intact and the absent column
+reads as `None`.
+
+**The general shape:** an append-only store's tests are written by its own
+writer, so they are blind to the difference between "the schema" and "the schema
+on disk". Any store that cannot rewrite its history needs at least one test that
+reads a shape the writer can no longer produce.
+
+**And the smaller lesson.** This was found by asking "what happens when this
+deploys", not by any check. The mutation score was 100% on the change that
+introduced it. Coverage of the code says nothing about coverage of the *data*.

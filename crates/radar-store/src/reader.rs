@@ -330,7 +330,13 @@ impl Reader {
                 let capacity = u64_col(&batch, "exit_capacity_micro_usd")?;
                 let cost_bps = u64_col(&batch, "assumed_round_trip_bps")?;
                 let coordination = str_col(&batch, "coordination")?;
-                let prevalence = str_col(&batch, "authority_prevalence")?;
+                // Optional, not erroring. This column was added on 2026-08-30
+                // and every decision file written before then lacks it —
+                // reading it with the erroring form would make the entire
+                // recorded history unreadable, which is the failure
+                // `optional_u64_col`'s doc comment describes and which this
+                // very change would otherwise have caused in production.
+                let prevalence = optional_str_col(&batch, "authority_prevalence");
                 let kernel = str_col(&batch, "kernel_outcome")?;
                 let digest = str_col(&batch, "inputs_digest")?;
                 // Optional by column, not just by row: a file written before
@@ -367,8 +373,8 @@ impl Reader {
                             .is_valid(i)
                             .then(|| coordination.value(i).to_owned()),
                         authority_prevalence: prevalence
-                            .is_valid(i)
-                            .then(|| prevalence.value(i).to_owned()),
+                            .filter(|c| c.is_valid(i))
+                            .map(|c| c.value(i).to_owned()),
                         // Same asymmetry: anything unrecognised is a refusal.
                         kernel_outcome: kernel.is_valid(i).then(|| match kernel.value(i) {
                             "authorised" => KernelOutcome::Authorised,
@@ -624,6 +630,21 @@ macro_rules! typed_col {
 }
 
 typed_col!(u64_col, UInt64Array);
+
+/// A string column if the file has one, or `None` if it does not.
+///
+/// The same distinction [`optional_u64_col`] draws, for the same reason: a
+/// column added after some files were written is absent from them, and absent
+/// must read as "not measured" rather than as a corrupt file.
+fn optional_str_col<'a>(
+    batch: &'a arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Option<&'a StringArray> {
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<StringArray>()
+}
 
 /// A `u64` column if the file has one, or `None` if it does not.
 ///

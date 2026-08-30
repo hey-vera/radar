@@ -208,6 +208,33 @@ fn a_position_opened_exactly_at_a_partition_boundary_is_still_read() {
 }
 
 #[test]
+fn positions_are_partitioned_by_the_slot_they_were_opened_at() {
+    // One file per partition, which is what makes the file-level watermark skip
+    // above worth having: a read at an early watermark opens one file instead
+    // of every file. A writer that reported no files written would leave the
+    // reader with nothing to skip and nothing to read.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 64).expect("open");
+    for partition in 0..3u64 {
+        writer
+            .append_position(open(
+                u8::try_from(partition).expect("small"),
+                partition * SLOTS_PER_PARTITION + 10,
+                1_000_000,
+            ))
+            .expect("append");
+    }
+    writer.flush().expect("flush");
+
+    assert_eq!(writer.written_rows(), 3);
+    assert_eq!(
+        writer.written_files(),
+        3,
+        "three partitions, three files -- not one file holding everything"
+    );
+}
+
+#[test]
 fn the_buffer_flushes_itself_when_it_fills() {
     // Not just "the rows arrive after an explicit flush" -- that passes even if
     // the threshold never fires and everything lands at the end. The point of

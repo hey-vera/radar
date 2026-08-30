@@ -14,6 +14,7 @@ use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, S
 mod basis;
 mod brief;
 mod consider;
+mod control;
 mod graduations;
 mod replay;
 mod selection;
@@ -58,6 +59,9 @@ commands:
   basis --store <dir>            how much of that return is the gap between a
                                  sell quote and a realised fill, rather than a
                                  gain; a correction `selection` owes
+  control --store <dir>          the selection against tokens Radar never
+                                 decided on, priced the same way on both sides
+                                 and matched on token age and holding period
 "
 }
 
@@ -519,6 +523,12 @@ fn basis_report(args: &[String]) -> Result<(), String> {
     basis::run(&reader)
 }
 
+/// Compares the selection against tokens Radar never decided on.
+fn control_report(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    control::run(&reader)
+}
+
 /// Records or re-checks decisions, proving they reproduce.
 fn replay_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -598,6 +608,7 @@ fn main() -> ExitCode {
         "study" => event_study(&args),
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
+        "control" => control_report(&args),
         "tools" => {
             tools();
             Ok(())

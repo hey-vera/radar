@@ -48,6 +48,7 @@
 #![forbid(unsafe_code)]
 
 pub mod basis;
+pub mod control;
 pub mod selection;
 pub mod study;
 

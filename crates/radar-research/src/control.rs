@@ -304,6 +304,17 @@ impl Band {
     }
 }
 
+/// Whether no proposal landed in any capacity band.
+///
+/// Phrased positively so the caller needs no `!`. A negation at a call site is a
+/// branch the predicate's own tests cannot reach — the same lesson `just
+/// mutants` taught twice already today, in `radar selection` and in this file's
+/// own `is_thin`.
+#[must_use]
+pub fn nothing_banded(bands: &[Band]) -> bool {
+    bands.iter().all(|b| b.n() == 0)
+}
+
 /// Does the depth Radar measured predict what the token then did?
 ///
 /// # Why this is the question the objective function forces
@@ -875,6 +886,48 @@ mod tests {
         assert_eq!(bands[4].label, "$60+");
         assert_eq!(bands[4].median(), Some(5_000));
         assert!(bands[1].returns_bps.is_empty());
+    }
+
+    #[test]
+    fn a_band_reports_its_own_count_and_zero_share() {
+        // Both accessors went in untested, and `just mutants` replaced each with
+        // a constant without anything failing. A band's count is what tells a
+        // reader whether its median is worth reading -- the $60+ band's n=16 is
+        // the entire caveat of research 0018 -- so a constant there is not
+        // cosmetic.
+        let band = Band {
+            label: "t".to_owned(),
+            returns_bps: vec![-100, 0, 0, 500],
+        };
+        assert_eq!(band.n(), 4);
+        assert_eq!(band.median(), Some(0));
+        assert_eq!(band.zero_share_bps(), Some(5_000));
+
+        let empty = Band {
+            label: "t".to_owned(),
+            returns_bps: Vec::new(),
+        };
+        assert_eq!(empty.n(), 0);
+        // Absent, never zero (rule 9): an empty band has no share, and reporting
+        // 0 would read as "none of these were flat".
+        assert_eq!(empty.zero_share_bps(), None);
+        assert_eq!(empty.median(), None);
+    }
+
+    #[test]
+    fn the_bands_are_printed_only_when_something_landed_in_one() {
+        let empty: Vec<Band> = CAPACITY_BANDS
+            .iter()
+            .map(|(label, _)| Band {
+                label: (*label).to_owned(),
+                returns_bps: Vec::new(),
+            })
+            .collect();
+        assert!(nothing_banded(&empty));
+
+        let mut some = empty.clone();
+        some[2].returns_bps.push(-1);
+        assert!(!nothing_banded(&some), "one banded proposal is enough");
     }
 
     #[test]

@@ -125,7 +125,7 @@ Share of each cohort that returned exactly zero:"
 /// records and never selects on.
 fn print_capacity_bands(decisions: &[Decision], outcomes: &[Outcome]) {
     let bands = radar_research::control::by_capacity(decisions, outcomes);
-    if bands.iter().all(|b| b.n() == 0) {
+    if radar_research::control::nothing_banded(&bands) {
         return;
     }
 

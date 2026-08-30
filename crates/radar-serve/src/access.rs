@@ -121,6 +121,26 @@ impl Mode {
         let team = get("RADAR_ACCESS_TEAM").filter(|v| !v.trim().is_empty());
         let aud = get("RADAR_ACCESS_AUD").filter(|v| !v.trim().is_empty());
 
+        // Before anything else: a value that is obviously an unsubstituted
+        // placeholder. Set to one, the server starts, enforces, fetches
+        // Cloudflare's keys and then refuses every real token -- because no
+        // token's audience contains that text. The site locks out completely.
+        //
+        // Fail-closed, which is the right direction, and useless as a
+        // diagnosis: it presents as "nobody can log in", which sends an
+        // operator to Cloudflare's dashboard rather than to their own env file.
+        // This happened on 2026-08-30, from a runbook whose command carried the
+        // placeholder inside a heredoc.
+        for (name, value) in [("RADAR_ACCESS_TEAM", &team), ("RADAR_ACCESS_AUD", &aud)] {
+            if let Some(value) = value.as_ref()
+                && let Some(why) = looks_unsubstituted(value)
+            {
+                return Err(format!(
+                    "{name} looks like an unsubstituted placeholder ({why});                      the audience tag is on the Access application's Overview page"
+                ));
+            }
+        }
+
         match (explicit_off, team, aud) {
             // Configured *and* switched off is a contradiction, and resolving it
             // either way silently is how an instance ends up open with an Access
@@ -148,6 +168,28 @@ impl Mode {
             }
         }
     }
+}
+
+/// Whether a configured value is obviously a placeholder rather than a value.
+///
+/// Deliberately narrow. It looks for the two things that appear in prose and
+/// never in a credential — whitespace and angle brackets — and **does not pin
+/// the format** of a Cloudflare audience tag, which is a vendor's to change. A
+/// regex for "64 hex characters" would reject a valid tag the day that changes,
+/// and would do it at startup on a server that had been working.
+///
+/// The failure it is for is a heredoc pasted with its own placeholder still in
+/// it, which is a mistake a careful person makes at three in the morning and
+/// which no amount of care in the runbook prevents.
+fn looks_unsubstituted(value: &str) -> Option<&'static str> {
+    let trimmed = value.trim();
+    if trimmed.contains(char::is_whitespace) {
+        return Some("it contains spaces");
+    }
+    if trimmed.contains('<') || trimmed.contains('>') {
+        return Some("it contains angle brackets");
+    }
+    None
 }
 
 /// Why a request was not admitted.
@@ -695,6 +737,45 @@ mod tests {
                 "{typo:?} must not read as off"
             );
         }
+    }
+
+    #[test]
+    fn a_placeholder_pasted_verbatim_is_refused_rather_than_enforced() {
+        // The real incident, on 2026-08-30. A runbook command carried its own
+        // placeholder inside a heredoc and the whole line went into the env
+        // file. Accepted, the server enforces against an audience no token can
+        // match and the site locks out completely -- fail-closed, and useless as
+        // a diagnosis, because it presents as "nobody can log in".
+        let pasted = vars(&[
+            ("RADAR_ACCESS_TEAM", "heyvera.cloudflareaccess.com"),
+            (
+                "RADAR_ACCESS_AUD",
+                "<Application Audience tag from the Access app's Overview page>",
+            ),
+        ]);
+        let why = Mode::from_vars(&pasted).expect_err("that is not an audience tag");
+        assert!(why.contains("RADAR_ACCESS_AUD"), "{why}");
+        assert!(why.contains("placeholder"), "{why}");
+        assert!(
+            why.contains("Overview page"),
+            "and says where to find it: {why}"
+        );
+    }
+
+    #[test]
+    fn the_placeholder_check_looks_for_prose_not_for_a_format() {
+        // Narrow on purpose. Pinning "64 hex characters" would reject a valid
+        // tag the day the vendor changes it, at startup, on a server that had
+        // been working -- which is a worse failure than the one being caught.
+        assert!(looks_unsubstituted("<TODO>").is_some());
+        assert!(looks_unsubstituted("your tag here").is_some());
+        assert!(looks_unsubstituted("  spaced value  ").is_some());
+
+        // A real tag is 64 hex characters today, and anything without spaces or
+        // brackets passes -- including shapes this code has never seen.
+        assert!(looks_unsubstituted(&"a3f9".repeat(16)).is_none());
+        assert!(looks_unsubstituted("heyvera.cloudflareaccess.com").is_none());
+        assert!(looks_unsubstituted("some-future-format_v2").is_none());
     }
 
     #[test]

@@ -856,6 +856,52 @@ mod tests {
     }
 
     #[test]
+    fn both_coverage_thresholds_are_inclusive_on_the_healthier_side() {
+        // Swept at the exact boundary rather than either side of it. The
+        // previous test steps over both thresholds without ever landing on one,
+        // so `<` could become `<=` and nothing noticed -- which would move a
+        // cohort sitting exactly on the line into the worse band.
+        let cohort = |screened: usize, unscreened: usize| -> Vec<radar_store::Decision> {
+            let mut v: Vec<radar_store::Decision> = (0..screened)
+                .map(|_| with_coordination(Some("Unlikely")))
+                .collect();
+            v.extend((0..unscreened).map(|_| with_coordination(None)));
+            v
+        };
+
+        // Exactly 9,000 bps -- the warn threshold. Clearing it is passing.
+        assert_eq!(screening_health(&cohort(90, 10)).status, Status::Ok);
+        assert_eq!(screening_health(&cohort(89, 11)).status, Status::Warn);
+
+        // Exactly 5,000 bps -- the fail threshold. Half the gate running is
+        // degraded, not failed; below half is failed.
+        assert_eq!(screening_health(&cohort(50, 50)).status, Status::Warn);
+        assert_eq!(screening_health(&cohort(49, 51)).status, Status::Fail);
+    }
+
+    #[test]
+    fn the_detail_names_how_many_candidates_skipped_the_screen() {
+        // The status says how bad it is; only the detail says how many. An
+        // operator reading `[warn] screening` needs the count to act, and
+        // nothing else asserts it -- so the subtraction that produces it was
+        // free to become an addition.
+        let mut decisions: Vec<radar_store::Decision> = (0..80)
+            .map(|_| with_coordination(Some("Unlikely")))
+            .collect();
+        decisions.extend((0..20).map(|_| with_coordination(None)));
+
+        let detail = screening_health(&decisions).detail;
+        assert!(
+            detail.contains("80 of 100"),
+            "must name both halves: {detail}"
+        );
+        assert!(
+            detail.contains("20 skipped"),
+            "must name the miss count, not the sum: {detail}"
+        );
+    }
+
+    #[test]
     fn an_empty_store_cannot_report_coverage_and_says_so() {
         // Absent is not zero (rule 9). No decisions is "cannot judge", not "the
         // gate never ran" -- reporting the latter would alarm on a fresh install.

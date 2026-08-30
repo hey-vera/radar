@@ -11,7 +11,7 @@
 //! pass records a few dozen.
 
 use radar_asof::AsOf;
-use radar_research::selection::{self, Verdict};
+use radar_research::selection::{self, Cohort, Verdict};
 use radar_store::{Decision, Outcome, Reader};
 
 /// Runs the comparison.
@@ -190,7 +190,7 @@ A high median under an exit-related reason is not an edge Radar passed up.
 /// no way to know which they are looking at.
 fn print_screening_split(decisions: &[Decision], outcomes: &[Outcome]) {
     let (screened, unscreened) = radar_research::selection::by_screening(decisions, outcomes);
-    if unscreened.decisions == 0 {
+    if !split_is_worth_printing(&unscreened) {
         return;
     }
 
@@ -224,6 +224,19 @@ Proposals, split by whether the coordination gate ran:
     );
 }
 
+/// Whether the screening split says anything worth printing.
+///
+/// Extracted from the printer so the condition can be tested without capturing
+/// stdout. It is a real branch rather than a formatting detail: inverted, it
+/// would hide the split exactly when candidates went unscreened and show an
+/// empty one when none did.
+///
+/// Nothing unscreened means the gate ran on everything, and a table of one
+/// cohort against an empty one would imply a caveat that does not apply.
+const fn split_is_worth_printing(unscreened: &Cohort) -> bool {
+    unscreened.decisions > 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +247,26 @@ mod tests {
         assert_eq!(render(None), "—");
         assert_eq!(render(Some(0)), "0");
         assert_eq!(render(Some(-1_340)), "-1340");
+    }
+
+    fn cohort(decisions: usize) -> Cohort {
+        Cohort {
+            decisions,
+            scored: 0,
+            returns_bps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_split_is_printed_only_when_something_went_unscreened() {
+        // Inverted, this hides the caveat exactly when it applies and prints an
+        // empty cohort when it does not -- which is the failure mode, not a
+        // cosmetic one.
+        assert!(split_is_worth_printing(&cohort(1)));
+        assert!(split_is_worth_printing(&cohort(528)));
+        assert!(
+            !split_is_worth_printing(&cohort(0)),
+            "a gate that ran on everything has no caveat to state"
+        );
     }
 }

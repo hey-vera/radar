@@ -11,7 +11,7 @@ authors.workspace = true
 
 [dependencies]
 arrow = { version = "56", default-features = false }
-parquet = { version = "56", default-features = false, features = ["arrow", "zstd"] }
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
 radar-asof.workspace = true
 radar-types.workspace = true
 serde.workspace = true

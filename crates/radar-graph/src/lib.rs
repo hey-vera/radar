@@ -47,6 +47,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod prevalence;
+
 use radar_types::EvidenceTier;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -172,6 +174,36 @@ pub trait LaunchBlockSource {
         mint: &radar_types::Address,
         slot: radar_types::Slot,
     ) -> Result<LaunchBlockShape, Self::Error>;
+
+    /// Which wallets signed inside the token's launch block.
+    ///
+    /// Cheap: the same single-block read as [`Self::shape_at`], returning the
+    /// addresses instead of a count.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the source cannot answer. An empty vector means
+    /// the block recorded no signing authority, which is a real observation; a
+    /// failure must not be reported that way.
+    fn authorities_at(
+        &self,
+        mint: &radar_types::Address,
+        slot: radar_types::Slot,
+    ) -> Result<Vec<String>, Self::Error>;
+
+    /// Every wallet that reached the repeat floor across the window.
+    ///
+    /// **Once per run, not once per candidate.** The per-candidate form of this
+    /// question took 32 seconds against the real endpoint; at forty candidates
+    /// an hour that is twenty minutes of query time per hour on an endpoint
+    /// Radar is a guest on. One window query answers for all of them.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Self::Error` if the source cannot answer. A source that hits its
+    /// row cap must return a table reporting itself incomplete rather than a
+    /// short one — see [`prevalence::Table`].
+    fn prevalence_table(&self) -> Result<prevalence::Table, Self::Error>;
 }
 
 /// Scores a launch block.

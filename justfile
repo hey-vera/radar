@@ -178,8 +178,16 @@ licence-headers:
     )
     exit $missing
 
+# The floor the frontend suite may not fall below.
+#
+# The same discipline `MIN_TESTS` applies to the Rust side, for the same reason:
+# a suite that quietly shrinks is a suite somebody deleted a test from, and the
+# number going down is the only thing that says so. Raise it when tests are
+# added; never lower it to make a run go green.
+export MIN_WEB_TESTS := "11"
+
 # The interface: install exactly the locked dependencies, check them for known
-# advisories, type-check, and build.
+# advisories, type-check, test, and build.
 #
 # `npm ci` rather than `npm install`, because the lockfile is the point: it is
 # what makes a build reproducible and what `npm audit` has an opinion about.
@@ -194,6 +202,26 @@ web:
     cd web
     npm ci
     npm audit --audit-level=high
+    # `NO_COLOR` because the count is grepped out of this, and vitest wraps the
+    # number in ANSI escapes that a naive pattern reads straight past -- which
+    # would leave the floor comparing against an empty string forever.
+    NO_COLOR=1 npm run test 2>&1 | tee /tmp/radar-web-tests.log
+    # The count, checked rather than trusted. `vitest run` exits zero when it
+    # finds no test files at all, so a broken `include` pattern would turn the
+    # whole suite off and still go green -- which is the failure LEARNINGS 5
+    # records one layer up: a check that reports absence the same way it reports
+    # success.
+    # `|| true` on both: under `pipefail` a grep that matches nothing exits
+    # non-zero and takes the recipe with it, which would report "no tests" as a
+    # crash rather than as the floor failing.
+    passed=$(grep -oE 'Tests +[0-9]+ passed' /tmp/radar-web-tests.log || true)
+    passed=$(echo "$passed" | grep -oE '[0-9]+' | head -1 || true)
+    passed=${passed:-0}
+    if [ "$passed" -lt "$MIN_WEB_TESTS" ]; then
+      echo "--- $passed web tests passed, floor is $MIN_WEB_TESTS ---" >&2
+      exit 1
+    fi
+    echo "--- $passed web tests passed ---"
     npm run build
 
 # --- operator commands --------------------------------------------------------

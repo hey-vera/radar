@@ -258,7 +258,7 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome]) -> Report {
         // The population has no decision to anchor on, so every observation is a
         // candidate entry. Anchoring on the first gives one return per mint,
         // which keeps a heavily measured token from outvoting a quiet one.
-        let Some(first) = series.first().map(|(at, _, _)| *at) else {
+        let Some(first) = series.first().map(|o| o.at) else {
             continue;
         };
         let Some(r) = realised_from(series, first) else {
@@ -312,45 +312,88 @@ pub fn stratum_of(table: &[(&str, u64)], value: u64) -> usize {
 /// Builds one return from a mint's observation series, entering at `anchor`.
 ///
 /// The entry is the observation nearest the anchor and the exit is the last
-/// observation strictly after that entry. Returns `None` when either end is
-/// missing, when they are the same observation, or when the entry price is zero
-/// — absent is not zero, and a zero entry would divide.
-fn realised_from(series: &[(u64, u64, u64)], anchor: u64) -> Option<Realised> {
-    let entry = series.iter().min_by_key(|(at, _, _)| at.abs_diff(anchor))?;
-    let exit = series.iter().rfind(|(at, _, _)| *at > entry.0)?;
+/// observation strictly after it **that recorded a trade in between**.
+///
+/// # Why the fill count is load-bearing
+///
+/// An [`Outcome`] reports what has happened *so far*, so once a token stops
+/// trading every later observation repeats the same `last_price`. On this venue
+/// most tokens die quickly, so pairing on time alone makes the majority of both
+/// cohorts a return of exactly zero — and the first run of this comparison
+/// produced a median of **0 bps in every stratum, on both sides**, over 201,465
+/// control tokens. That is not a market observation. It is the absence of one,
+/// wearing the shape of a number.
+///
+/// A price that has not moved because nobody traded is not a flat return; it is
+/// no return at all, and averaging it in drags every statistic toward zero
+/// regardless of what the live tokens did. So the exit must have strictly more
+/// fills than the entry: something actually changed hands during the hold.
+///
+/// Returns `None` when either end is missing, when nothing traded between them,
+/// or when the entry price is zero — absent is not zero, and a zero entry would
+/// divide.
+fn realised_from(series: &[Observation], anchor: u64) -> Option<Realised> {
+    let entry = series.iter().min_by_key(|o| o.at.abs_diff(anchor))?;
+    // The earliest observation reaching the highest fill count after entry --
+    // which is the last moment a trade actually happened. Taking the *last* such
+    // observation instead would price the token at a checkpoint that merely
+    // repeated a stale figure, overstating the hold while leaving the price
+    // unchanged, and so biasing every holding-period stratum.
+    let exit = series
+        .iter()
+        .filter(|o| o.at > entry.at && o.fills > entry.fills)
+        .min_by_key(|o| (std::cmp::Reverse(o.fills), o.at))?;
 
-    let (entry_at, entry_price, launch) = *entry;
+    let (entry_at, entry_price, launch) = (entry.at, entry.price, entry.launch);
     if entry_price == 0 {
         return None;
     }
-    let delta = i128::from(exit.1) - i128::from(entry_price);
+    let delta = i128::from(exit.price) - i128::from(entry_price);
     let bps = i64::try_from(delta.saturating_mul(10_000) / i128::from(entry_price)).ok()?;
 
     Some(Realised {
         entry_age_slots: entry_at.saturating_sub(launch),
-        hold_slots: exit.0.saturating_sub(entry_at),
+        hold_slots: exit.at.saturating_sub(entry_at),
         bps,
     })
 }
 
+/// One priced observation of a mint, reduced to what a return needs.
+#[derive(Clone, Copy, Debug)]
+struct Observation {
+    /// Slot the measurement was taken at.
+    at: u64,
+    /// Last observed fill price.
+    price: u64,
+    /// Slot the token launched in.
+    launch: u64,
+    /// Fills the price was computed from, cumulative.
+    ///
+    /// Carried so a pair can be required to straddle an actual trade. See
+    /// [`realised_from`].
+    fills: u64,
+}
+
 /// Groups priced observations by mint, ascending by slot.
 ///
-/// Each entry is `(measured_at, last_price, launch_slot)`. Observations with no
-/// price are dropped here rather than filtered at every use — a mint nobody
-/// priced has no return, which is different from a return of zero.
-fn group_by_mint(outcomes: &[Outcome]) -> BTreeMap<Address, Vec<(u64, u64, u64)>> {
-    let mut by_mint: BTreeMap<Address, Vec<(u64, u64, u64)>> = BTreeMap::new();
+/// Observations with no price are dropped here rather than filtered at every use
+/// — a mint nobody priced has no return, which is different from a return of
+/// zero.
+fn group_by_mint(outcomes: &[Outcome]) -> BTreeMap<Address, Vec<Observation>> {
+    let mut by_mint: BTreeMap<Address, Vec<Observation>> = BTreeMap::new();
     for o in outcomes {
         let Some(price) = o.last_price.filter(|p| *p > 0) else {
             continue;
         };
-        by_mint
-            .entry(o.mint)
-            .or_default()
-            .push((o.measured_at.get(), price, o.launch_slot.get()));
+        by_mint.entry(o.mint).or_default().push(Observation {
+            at: o.measured_at.get(),
+            price,
+            launch: o.launch_slot.get(),
+            fills: o.fills,
+        });
     }
     for series in by_mint.values_mut() {
-        series.sort_unstable_by_key(|(at, _, _)| *at);
+        series.sort_unstable_by_key(|o| o.at);
     }
     by_mint
 }
@@ -383,6 +426,12 @@ mod tests {
     }
 
     fn outcome(mint: u8, measured_at: u64, price: u64) -> Outcome {
+        outcome_with_fills(mint, measured_at, price, measured_at)
+    }
+
+    /// `fills` defaults to the slot above, so every fixture pair straddles a
+    /// trade unless a test deliberately says otherwise.
+    fn outcome_with_fills(mint: u8, measured_at: u64, price: u64, fills: u64) -> Outcome {
         Outcome {
             mint: Address::new([mint; 32]),
             measured_at: Slot(measured_at),
@@ -398,7 +447,7 @@ mod tests {
             peak_price: None,
             trough_price: None,
             vwap: None,
-            fills: 0,
+            fills,
         }
     }
 
@@ -508,6 +557,56 @@ mod tests {
         assert!(
             r.comparable().is_empty(),
             "and neither can be compared against the other"
+        );
+    }
+
+    #[test]
+    fn a_price_that_never_moved_because_nobody_traded_is_not_a_return() {
+        // The bug that made the first live run meaningless: every stratum, both
+        // cohorts, a median of exactly 0 bps over 201,465 control tokens.
+        //
+        // An `Outcome` reports what has happened so far, so a token that stopped
+        // trading repeats the same `last_price` at every later checkpoint. On
+        // this venue most tokens die quickly, so pairing on time alone makes the
+        // majority of both cohorts a flat zero and drags every statistic toward
+        // it regardless of what the live tokens did.
+        //
+        // A price that has not moved because nobody traded is the absence of a
+        // return, not a flat one.
+        let dead = [
+            outcome_with_fills(1, 4_000, 1_000, 7),
+            outcome_with_fills(1, 10_000, 1_000, 7),
+            outcome_with_fills(1, 90_000, 1_000, 7),
+        ];
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &dead);
+        assert_eq!(r.selected, 0, "no trade means no return to measure");
+
+        // The same series with one further fill is a real, measurable move.
+        let alive = [
+            outcome_with_fills(1, 4_000, 1_000, 7),
+            outcome_with_fills(1, 10_000, 1_100, 8),
+        ];
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &alive);
+        assert_eq!(r.selected, 1);
+        assert_eq!(r.strata[0].selected_bps, vec![1_000]);
+    }
+
+    #[test]
+    fn the_exit_is_the_last_observation_that_actually_traded() {
+        // Not simply the last observation. A token that traded, then went quiet,
+        // must be priced at its last real fill rather than at a checkpoint that
+        // merely repeated it -- otherwise the hold is overstated while the price
+        // is not, which biases the holding-period strata.
+        let series = [
+            outcome_with_fills(1, 4_000, 1_000, 5),
+            outcome_with_fills(1, 10_000, 1_200, 9),
+            outcome_with_fills(1, 400_000, 1_200, 9),
+        ];
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &series);
+        assert_eq!(r.selected, 1);
+        assert_eq!(
+            r.strata[0].hold, "<1h",
+            "the hold ends at the last trade, not the last checkpoint"
         );
     }
 

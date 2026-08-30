@@ -117,18 +117,7 @@ impl Bucket {
     /// The reading at a percentile, or `None` when the bucket is empty.
     #[must_use]
     pub fn percentile(&self, p: f64) -> Option<i64> {
-        if self.basis_bps.is_empty() {
-            return None;
-        }
-        let last = self.basis_bps.len() - 1;
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "an index into a cohort orders of magnitude below f64's exact integer range"
-        )]
-        let idx = ((self.basis_bps.len() as f64 * p) as usize).min(last);
-        Some(self.basis_bps[idx])
+        crate::percentile(&self.basis_bps, p)
     }
 
     /// The median, or `None` when the bucket is empty.

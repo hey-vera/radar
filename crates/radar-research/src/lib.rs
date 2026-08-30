@@ -47,6 +47,30 @@
 
 #![forbid(unsafe_code)]
 
+/// The reading at a percentile of an ascending slice, or `None` when it is empty.
+///
+/// Shared because [`basis`] and [`control`] both need it and a second copy is a
+/// second thing to test — `just mutants` found the duplicate untested while the
+/// original was covered, which is exactly what duplication costs.
+///
+/// Clamped at the top: `len * 1.0` is one past the last element, and a legitimate
+/// request for the maximum must not index out of bounds.
+#[must_use]
+pub fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
+    if sorted.is_empty() {
+        return None;
+    }
+    let last = sorted.len() - 1;
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an index into a cohort orders of magnitude below f64's exact integer range"
+    )]
+    let idx = ((sorted.len() as f64 * p) as usize).min(last);
+    Some(sorted[idx])
+}
+
 pub mod basis;
 pub mod control;
 pub mod selection;

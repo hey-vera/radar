@@ -48,7 +48,7 @@ pub fn run(reader: &Reader) -> Result<(), String> {
         "age", "hold", "sel n", "ctl n", "sel p25", "sel med", "sel p75", "ctl med", "edge"
     );
     for s in &report.strata {
-        let mark = if s.is_comparable() { "" } else { "  (thin)" };
+        let mark = if s.is_thin() { "  (thin)" } else { "" };
         println!(
             "{:<6} {:<6} {:>8} {:>8} {:>9} {:>9} {:>8} {:>9} {:>9}{mark}",
             s.age,
@@ -68,7 +68,7 @@ pub fn run(reader: &Reader) -> Result<(), String> {
 Share of each cohort that returned exactly zero:"
     );
     for s in &report.strata {
-        if !s.is_comparable() {
+        if s.is_thin() {
             continue;
         }
         println!(

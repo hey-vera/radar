@@ -125,6 +125,16 @@ impl Stratum {
         self.selected_bps.len() >= MIN_STRATUM && self.control_bps.len() >= MIN_STRATUM
     }
 
+    /// Whether a stratum is too thin on either side to compare.
+    ///
+    /// The complement of [`is_comparable`](Self::is_comparable), and it exists so
+    /// callers need no `!`. A negation at a call site is a branch the predicate's
+    /// own tests cannot reach, and `just mutants` deletes exactly that `!`.
+    #[must_use]
+    pub fn is_thin(&self) -> bool {
+        !self.is_comparable()
+    }
+
     /// The selected cohort's median, or `None` when it is empty.
     #[must_use]
     pub fn selected_median(&self) -> Option<i64> {
@@ -161,18 +171,7 @@ impl Stratum {
     /// The reading at a percentile of a sorted cohort, or `None` when empty.
     #[must_use]
     pub fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
-        if sorted.is_empty() {
-            return None;
-        }
-        let last = sorted.len() - 1;
-        #[expect(
-            clippy::cast_precision_loss,
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "an index into a cohort orders of magnitude below f64's exact integer range"
-        )]
-        let idx = ((sorted.len() as f64 * p) as usize).min(last);
-        Some(sorted[idx])
+        crate::percentile(sorted, p)
     }
 
     /// Selected minus control, in basis points, where both are present.
@@ -673,6 +672,74 @@ mod tests {
         // The zero observation is dropped, leaving one priced observation and so
         // no pair.
         assert_eq!(r.selected, 0);
+    }
+
+    #[test]
+    fn the_zero_share_counts_equality_and_scales_by_ten_thousand() {
+        // The diagnostic that made the live result readable, and it went in
+        // untested -- `==` could become `!=` and the division could become a
+        // remainder without anything noticing.
+        assert_eq!(Stratum::zero_share_bps(&[0, 0, 0, 1]), Some(7_500));
+        assert_eq!(Stratum::zero_share_bps(&[1, 2, 3]), Some(0));
+        assert_eq!(Stratum::zero_share_bps(&[0, 0]), Some(10_000));
+        // Absent is not zero: an empty cohort has no share, and reporting 0
+        // would read as "none of these were flat" (rule 9).
+        assert_eq!(Stratum::zero_share_bps(&[]), None);
+    }
+
+    #[test]
+    fn a_stratum_that_exactly_ties_does_not_favour_the_selection() {
+        // `strata_favouring_selection` counts edges strictly above zero. A tie is
+        // not a win, and widening it to `>=` would report the live result -- where
+        // two strata come out at exactly 0 -- as three of four favouring Radar.
+        let mut outcomes = Vec::new();
+        let mut decisions = Vec::new();
+        for i in 0u8..40 {
+            outcomes.extend(series(i, 4_000, 1_000, 10_000, 1_100));
+            decisions.push(decision(i, 4_000, Conclusion::Proposed));
+        }
+        for i in 100u8..140 {
+            outcomes.extend(series(i, 4_000, 1_000, 10_000, 1_100));
+        }
+        let r = evaluate(&decisions, &outcomes);
+        let Verdict::Measured {
+            median_edge_bps,
+            strata_favouring_selection,
+            ..
+        } = r.verdict()
+        else {
+            panic!("expected a measurement");
+        };
+        assert_eq!(median_edge_bps, 0);
+        assert_eq!(strata_favouring_selection, 0, "a tie is not a win");
+    }
+
+    #[test]
+    fn a_stratum_carries_the_labels_of_the_cell_it_is() {
+        // The labels are how a reader knows which cell they are looking at, and
+        // `..Default::default()` will happily leave them empty. A row labelled
+        // "" is a row nobody can act on.
+        let outcomes = series(1, 4_000, 1_000, 10_000, 1_100);
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &outcomes);
+        let s = &r.strata[0];
+        assert!(s.is_thin(), "one row is below the floor");
+        assert!(!s.age.is_empty(), "the age label must be set");
+        assert!(!s.hold.is_empty(), "the hold label must be set");
+        assert_eq!(s.age, "<40m");
+        assert_eq!(s.hold, "<1h");
+    }
+
+    #[test]
+    fn an_observation_at_the_entry_slot_is_not_an_exit() {
+        // The exit must be strictly later. Widened to `>=`, the entry could pair
+        // with a second observation taken at the same slot -- a hold of zero,
+        // which is not a holding period and would land in the tightest stratum.
+        let same_slot = [
+            outcome_with_fills(1, 4_000, 1_000, 5),
+            outcome_with_fills(1, 4_000, 2_000, 9),
+        ];
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &same_slot);
+        assert_eq!(r.selected, 0, "a hold of zero slots is not a hold");
     }
 
     #[test]

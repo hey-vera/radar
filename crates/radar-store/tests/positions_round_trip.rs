@@ -7,7 +7,7 @@
 //! not lose one.
 
 use radar_asof::AsOf;
-use radar_store::{Position, Reader, Writer, fold_positions};
+use radar_store::{Position, Reader, SLOTS_PER_PARTITION, Writer, fold_positions};
 use radar_types::{Address, Slot};
 
 fn open(mint: u8, opened_at: u64, notional: u64) -> Position {
@@ -177,4 +177,66 @@ fn an_empty_store_holds_no_positions_rather_than_failing() {
         .read_positions(AsOf::at(Slot(10_000)))
         .expect("an empty store is readable");
     assert!(read.is_empty());
+}
+
+#[test]
+fn a_position_opened_exactly_at_a_partition_boundary_is_still_read() {
+    // The file-level skip compares a PARTITION's start slot to the watermark,
+    // and it is an optimisation sitting in front of the per-row filter. Get the
+    // comparison wrong by one and it stops being an optimisation: a partition
+    // that begins exactly at the watermark holds a position opened exactly at
+    // the watermark, which is inside the watermark and must be read.
+    //
+    // Only reachable with a watermark on a partition boundary, which is why the
+    // other watermark test does not catch it -- every row there lives in the
+    // first partition.
+    let boundary = SLOTS_PER_PARTITION * 3;
+    let dir = store_with(vec![
+        open(1, boundary - 1, 1_000_000),
+        open(2, boundary, 2_000_000),
+    ]);
+
+    let read = Reader::open(dir.path())
+        .read_positions(AsOf::at(Slot(boundary)))
+        .expect("read");
+    assert_eq!(
+        read.len(),
+        2,
+        "the row at the boundary is inside the watermark: {read:?}"
+    );
+    assert!(read.iter().any(|p| p.opened_at == Slot(boundary)));
+}
+
+#[test]
+fn the_buffer_flushes_itself_when_it_fills() {
+    // Not just "the rows arrive after an explicit flush" -- that passes even if
+    // the threshold never fires and everything lands at the end. The point of
+    // the threshold is that a long run does not hold every row in memory, so
+    // the assertion has to be that rows reach disk BEFORE anyone asks.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 4).expect("open");
+
+    for i in 0..3u8 {
+        writer
+            .append_position(open(i, 10_000 + u64::from(i), 1_000_000))
+            .expect("append");
+    }
+    assert_eq!(writer.written_rows(), 0, "under the threshold, nothing yet");
+    assert_eq!(writer.buffered(), 3);
+
+    writer
+        .append_position(open(3, 10_003, 1_000_000))
+        .expect("append");
+    assert_eq!(
+        writer.written_rows(),
+        4,
+        "the fourth append reaches the threshold and flushes"
+    );
+    assert_eq!(writer.buffered(), 0, "and the buffer is empty again");
+
+    // On disk, without anybody calling flush.
+    let read = Reader::open(dir.path())
+        .read_positions(AsOf::at(Slot(40_000)))
+        .expect("read");
+    assert_eq!(read.len(), 4);
 }

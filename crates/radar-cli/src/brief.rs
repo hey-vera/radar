@@ -700,6 +700,7 @@ mod tests {
             exit_capacity_micro_usd: None,
             assumed_round_trip_bps: 850,
             coordination: None,
+            authority_prevalence: None,
             kernel_outcome: None,
             kernel_reasons: Vec::new(),
             entry_price: entry,

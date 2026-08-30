@@ -24,6 +24,7 @@ fn decision(mint: u8, decided_at: u64) -> Decision {
         exit_capacity_micro_usd: Some(31_520_000),
         assumed_round_trip_bps: 850,
         coordination: Some("unremarkable".to_owned()),
+        authority_prevalence: None,
         kernel_outcome: Some(radar_store::KernelOutcome::Refused),
         kernel_reasons: vec!["NoAutonomy".to_owned()],
         entry_price: Some(27_583_000_000),

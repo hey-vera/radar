@@ -64,19 +64,26 @@ pub const MIN_COHORT: usize = 30;
 
 /// The gap buckets, in slots, with the label each one reports under.
 ///
-/// Roughly one minute, five, twenty and sixty at the chain's ~2.5 slots a
-/// second. Held as data so a test can sweep the boundaries, and ordered so the
+/// At the chain's ~2.5 slots a second these run from ten minutes to three
+/// hours. Held as data so a test can sweep the boundaries, and ordered so the
 /// first bucket a gap fits is the one it lands in.
 ///
-/// The tightest bucket is the one that matters. It is also the smallest, which
-/// is the trade this measurement cannot escape: the closer the pairing, the less
-/// market movement contaminates it and the fewer pairs there are.
-pub const BUCKETS: [(&str, u64); 5] = [
-    ("<=1m", 150),
-    ("<=5m", 750),
+/// **The range is chosen from the cadence, not from what would be nice.** The
+/// outcome pass runs at `:17` and `radar consider` at `:37`, so no decision can
+/// be paired with an observation closer than roughly twenty minutes, and the
+/// first version of this constant spent its two tightest buckets on gaps that
+/// cannot occur. Measured on the live store, every one of 1,779 pairs inside
+/// twenty minutes sat between five and twenty, and a single bucket over that
+/// span cannot show whether the basis is moving inside it. These subdivide the
+/// range that exists.
+pub const BUCKETS: [(&str, u64); 7] = [
+    ("<=10m", 1_500),
+    ("<=15m", 2_250),
     ("<=20m", 3_000),
+    ("<=30m", 4_500),
     ("<=1h", 9_000),
-    (">1h", u64::MAX),
+    ("<=3h", 27_000),
+    (">3h", u64::MAX),
 ];
 
 /// One decision paired with the realised price nearest it in time.
@@ -135,29 +142,58 @@ impl Bucket {
 #[derive(Clone, PartialEq, Eq, Debug, Serialize)]
 #[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum Verdict {
-    /// Too few pairs in the tightest bucket to say anything.
-    ///
-    /// The tightest bucket is the only one that isolates the instrument, so a
-    /// verdict drawn from a well-populated hour-wide bucket would be a claim
-    /// about the market wearing this measurement's name.
+    /// No bucket holds enough pairs to report a median.
     NotEnoughData {
-        /// Pairs in the tightest bucket.
+        /// Pairs found across every bucket.
         paired: usize,
-        /// How many more are needed.
+        /// How many more the largest bucket needs.
         needed: usize,
     },
-    /// The basis at the tightest gap, which is the correction `selection` owes.
+    /// The basis at the tightest gap that could be measured.
+    ///
+    /// # Why this is a lower bound and not an estimate
+    ///
+    /// The basis at a gap is the instrument difference plus whatever the market
+    /// did over that gap. Those cannot be separated within one bucket — but they
+    /// can be bounded, and the direction of the market is known.
+    ///
+    /// This market drifts **down**: [`0011`] measures a population median
+    /// held-to-last of −863 bps, and [`Report::drifts_down`] checks the same
+    /// thing in this data rather than assuming it. A negative drift *subtracts*
+    /// from the basis, so the figure measured at any positive gap is **less than**
+    /// the instrument difference alone.
+    ///
+    /// So `tightest_median_bps` is a floor. The artefact is at least this large,
+    /// and reporting it as an estimate would understate the correction that
+    /// [`selection`](crate::selection) owes — in the direction that flatters the
+    /// selection, which is the direction this whole module exists to catch.
+    ///
+    /// [`0011`]: ../../docs/research/0011-graduation-predicts-volatility-not-profit.md
     Measured {
-        /// Median basis in the tightest bucket, in basis points.
+        /// Median basis in the tightest populated bucket, in basis points.
         tightest_median_bps: i64,
+        /// That bucket's label, so the reader knows the gap it was measured at.
+        ///
+        /// Load-bearing rather than decorative: a basis is only interpretable
+        /// beside the gap it was taken over, and a bare number here would invite
+        /// exactly the reading this type is shaped to prevent.
+        tightest_label: String,
         /// Pairs it was drawn from.
         tightest_n: usize,
-        /// Median basis in the widest populated bucket, for comparison.
+        /// Median basis in the widest populated bucket.
         ///
-        /// If this is close to the tightest, the basis does not grow with time
-        /// and is therefore an artefact rather than the market. If it is much
-        /// larger, most of what the wide bucket sees is real movement.
+        /// The comparison that says which of the two components dominates. A
+        /// figure close to the tightest means the basis does not move with time
+        /// and is therefore instrument; a much lower one means the market is
+        /// doing most of the work over the longer gap.
         widest_median_bps: Option<i64>,
+        /// Whether the basis falls as the gap widens across populated buckets.
+        ///
+        /// The premise the lower-bound reading rests on, carried beside the
+        /// conclusion so a reader can refuse it. If this is ever `false`, the
+        /// drift is not negative in this sample and `tightest_median_bps` stops
+        /// being a floor.
+        drifts_down: bool,
     },
 }
 
@@ -173,29 +209,51 @@ pub struct Report {
 }
 
 impl Report {
-    /// What can be said, given how much landed in the tightest bucket.
+    /// Populated buckets, tightest first.
+    ///
+    /// "Populated" means clearing [`MIN_COHORT`]. A bucket below it has a median
+    /// with the shape of a finding and the content of noise, and this repository
+    /// has been caught by exactly that three times.
+    #[must_use]
+    pub fn populated(&self) -> Vec<&Bucket> {
+        self.buckets
+            .iter()
+            .filter(|b| b.n() >= MIN_COHORT)
+            .collect()
+    }
+
+    /// Whether the basis falls as the gap widens, across populated buckets.
+    ///
+    /// Checked rather than assumed. The lower-bound reading of
+    /// [`Verdict::Measured`] needs the market's contribution to be negative, and
+    /// this is that premise measured in the same data as the conclusion.
+    ///
+    /// A single populated bucket cannot show a trend, so it reports `false` —
+    /// the direction that withholds the stronger claim rather than granting it
+    /// on no evidence.
+    #[must_use]
+    pub fn drifts_down(&self) -> bool {
+        let medians: Vec<i64> = self.populated().iter().filter_map(|b| b.median()).collect();
+        medians.len() >= 2 && medians.last() < medians.first()
+    }
+
+    /// What can be said, given how the pairs fell across the buckets.
     #[must_use]
     pub fn verdict(&self) -> Verdict {
-        let tightest = self.buckets.first();
-        let n = tightest.map_or(0, Bucket::n);
-        if n < MIN_COHORT {
+        let populated = self.populated();
+        let Some(tightest) = populated.first() else {
+            let largest = self.buckets.iter().map(Bucket::n).max().unwrap_or(0);
             return Verdict::NotEnoughData {
-                paired: n,
-                needed: MIN_COHORT - n,
+                paired: self.paired,
+                needed: MIN_COHORT.saturating_sub(largest),
             };
-        }
+        };
         Verdict::Measured {
-            // `n >= MIN_COHORT` above, so the bucket is non-empty and the median
-            // is present. Defaulting rather than unwrapping keeps a panic out of
-            // a reporting path.
-            tightest_median_bps: tightest.and_then(Bucket::median).unwrap_or(0),
-            tightest_n: n,
-            widest_median_bps: self
-                .buckets
-                .iter()
-                .rev()
-                .find(|b| b.n() >= MIN_COHORT)
-                .and_then(Bucket::median),
+            tightest_median_bps: tightest.median().unwrap_or(0),
+            tightest_label: tightest.label.clone(),
+            tightest_n: tightest.n(),
+            widest_median_bps: populated.last().and_then(|b| b.median()),
+            drifts_down: self.drifts_down(),
         }
     }
 }
@@ -455,11 +513,16 @@ mod tests {
     }
 
     #[test]
-    fn a_thin_tightest_bucket_refuses_to_report_however_full_the_rest_are() {
-        // The tightest bucket is the only one that isolates the instrument. A
-        // verdict drawn from a well-populated hour-wide bucket would be a claim
-        // about the market wearing this measurement's name, so a full wide
-        // bucket must not rescue an empty tight one.
+    fn a_wide_only_measurement_is_labelled_rather_than_passed_off_as_tight() {
+        // The first version of this module refused outright when the tightest
+        // bucket was empty. Run against the live store, the two tightest buckets
+        // were empty *by construction* -- the outcome pass runs at :17 and
+        // `consider` at :37, so no pair can be closer than about twenty minutes
+        // -- and a flat refusal threw away 1,779 usable pairs.
+        //
+        // The honest form is to report the tightest bucket that has data and
+        // name the gap it was taken over, so the reader can discount it. A bare
+        // number is what would mislead; a labelled one cannot.
         let decisions: Vec<_> = (0u64..40)
             .map(|i| decision(1, 100_000 + i, Some(10_000)))
             .collect();
@@ -468,11 +531,70 @@ mod tests {
             .collect();
 
         let r = measure(&decisions, &outcomes);
-        assert!(r.paired >= MIN_COHORT, "the wide bucket is well populated");
+        let Verdict::Measured { tightest_label, .. } = r.verdict() else {
+            panic!("expected a measurement from a populated wide bucket");
+        };
+        assert_eq!(tightest_label, "<=3h", "the gap must be named, not hidden");
+    }
+
+    #[test]
+    fn nothing_is_reported_when_no_bucket_clears_the_floor() {
+        let r = measure(
+            &[decision(1, 1_000, Some(10_000))],
+            &[outcome(1, 1_010, Some(10_100))],
+        );
         assert!(matches!(
             r.verdict(),
-            Verdict::NotEnoughData { paired: 0, .. }
+            Verdict::NotEnoughData { paired: 1, .. }
         ));
+    }
+
+    #[test]
+    fn the_drift_premise_is_measured_and_not_assumed() {
+        // `Verdict::Measured`'s lower-bound reading needs the market's
+        // contribution to be negative. That is checked in the same data as the
+        // conclusion, so a sample where it does not hold withholds the claim
+        // rather than making it anyway.
+        //
+        // Tight pairs read +500, wide pairs read -500: the basis falls with the
+        // gap, which is the shape the live store shows (+128 -> +72 -> -72).
+        let mut decisions = Vec::new();
+        let mut outcomes = Vec::new();
+        for i in 0u64..40 {
+            decisions.push(decision(1, 1_000 + i, Some(10_000)));
+            outcomes.push(outcome(1, 1_000 + i, Some(10_500)));
+            decisions.push(decision(2, 1_000 + i, Some(10_000)));
+            outcomes.push(outcome(2, 1_000 + i + 20_000, Some(9_500)));
+        }
+        let r = measure(&decisions, &outcomes);
+        assert!(r.drifts_down(), "tight +500 above wide -500 is a fall");
+
+        // Inverted: the wide bucket reads higher, so the premise fails and the
+        // floor claim is withheld.
+        let rising: Vec<Outcome> = outcomes
+            .iter()
+            .map(|o| {
+                let mut o = o.clone();
+                o.last_price = Some(if o.measured_at.get() > 15_000 {
+                    10_500
+                } else {
+                    9_500
+                });
+                o
+            })
+            .collect();
+        let r = measure(&decisions, &rising);
+        assert!(!r.drifts_down(), "a rising basis is not a downward drift");
+    }
+
+    #[test]
+    fn one_populated_bucket_cannot_show_a_trend() {
+        // Withholding the stronger claim on no evidence, rather than granting it.
+        let decisions: Vec<_> = (0u64..40)
+            .map(|i| decision(1, 1_000 + i, Some(10_000)))
+            .collect();
+        let outcomes = vec![outcome(1, 1_020, Some(10_150))];
+        assert!(!measure(&decisions, &outcomes).drifts_down());
     }
 
     #[test]

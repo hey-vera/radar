@@ -72,36 +72,52 @@ pub fn run(reader: &Reader) -> Result<(), String> {
     match report.verdict() {
         Verdict::NotEnoughData { paired, needed } => {
             println!(
-                "\nNOT ENOUGH DATA. {paired} pair(s) in the tightest bucket; {needed} more\n\
-                 before a median means anything. The tightest bucket is the only one\n\
-                 that isolates the instrument from the market, so a full hour-wide\n\
-                 bucket cannot stand in for it."
+                "
+NOT ENOUGH DATA. {paired} pair(s) found, and no single gap bucket holds
+                 enough to report a median -- the largest needs {needed} more. A median
+                 over a handful of rows has the shape of a finding and the content of
+                 noise."
             );
         }
         Verdict::Measured {
             tightest_median_bps,
+            tightest_label,
             tightest_n,
             widest_median_bps,
+            drifts_down,
         } => {
             println!(
-                "\nAt the tightest gap, over {tightest_n} pairs, the basis is \
-                 {tightest_median_bps} bps."
+                "
+At the tightest measurable gap ({tightest_label}), over {tightest_n} pairs,
+                 the basis is {tightest_median_bps} bps."
             );
-            match widest_median_bps {
-                Some(widest) if widest != tightest_median_bps => {
-                    println!(
-                        "The widest populated bucket reads {widest} bps. The difference is\n\
-                         the market moving over the longer gap; what the two share is the\n\
-                         instrument."
-                    );
-                }
-                _ => {}
+
+            if let Some(widest) = widest_median_bps {
+                println!("The widest populated bucket reads {widest} bps.");
             }
-            println!(
-                "\n`radar selection` measures returns across exactly this gap, so this\n\
-                 figure is owed as a correction to its median -- subtracted, because a\n\
-                 quote below a mid makes a flat position look like a gain."
-            );
+
+            if drifts_down {
+                println!(
+                    "
+The basis FALLS as the gap widens, so it is not a market effect --
+                     a market effect would grow with time, not shrink. What the buckets
+                     share is the instrument; what separates them is this market's
+                     downward drift, which SUBTRACTS from the basis.
+                     
+                     So {tightest_median_bps} bps is a FLOOR, not an estimate. The gap between a sell
+                     quote and a realised fill is at least this wide, and `radar selection`
+                     owes at least this much as a correction -- subtracted, because a quote
+                     below a mid makes a flat position look like a gain."
+                );
+            } else {
+                println!(
+                    "
+The basis does not fall as the gap widens, so the drift in this
+                     sample is not negative and {tightest_median_bps} bps cannot be read as a floor.
+                     It is the whole gap between the instruments at this distance, market
+                     movement included."
+                );
+            }
         }
     }
 

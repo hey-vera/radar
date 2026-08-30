@@ -557,6 +557,10 @@ mod tests {
         let r = evaluate(&decisions, &outcomes);
         let comparable = r.comparable();
         assert_eq!(comparable.len(), 1);
+        // Both directions. `a_stratum_carries_the_labels_of_the_cell_it_is`
+        // covers the thin case, so asserting the full one here is what stops
+        // `is_thin` being replaced by a constant in either direction.
+        assert!(!comparable[0].is_thin(), "a full stratum is not thin");
         assert_eq!(comparable[0].selected_median(), Some(2_000));
         assert_eq!(comparable[0].control_median(), Some(1_000));
 

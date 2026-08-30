@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0a30f98960379bc6aa7a6ee70e97259d24804d03128c43f3e284ef0716dff650 # shrinks to proposal = Proposal { mint: Address(11111111111111111111111111111111), creator: Address(11111111111111111111111111111111), action: Reduce, notional: MicroUsd($18446744073709.551615), estimated_round_trip_cost: MicroUsd($0.000000), oldest_input_slot: Slot(475159549), simulated_exit_capacity: None }, state = PortfolioState { now: Slot(0), deployed: MicroUsd($0.000000), per_creator: {}, realised_loss_today: MicroUsd($0.000000), consecutive_failures: 0, halted: false }, policy = Policy { autonomy: Approve, max_position: MicroUsd($9223372036854.775807), max_deployed: MicroUsd($0.000000), max_per_creator: MicroUsd($0.000000), max_daily_loss: MicroUsd($0.000001), max_round_trip_cost_bps: 0, max_canary: MicroUsd($0.000000), max_input_staleness: SlotDelta(0), max_consecutive_failures: 0 }

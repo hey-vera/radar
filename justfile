@@ -27,7 +27,7 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "856"
+export MIN_TESTS := "858"
 
 _default:
     @just --list --unsorted

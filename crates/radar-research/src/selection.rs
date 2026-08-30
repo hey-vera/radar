@@ -20,11 +20,28 @@
 //! An outcome measured before the decision describes a market the decision had
 //! not seen, and using it would be look-ahead pointing backwards.
 //!
-//! Both prices come from the sell side: the entry from the smallest rung of the
-//! exit probe's ladder, the exit from realised fills. Bid-to-bid is the right
-//! measure of what a position was worth, and the round-trip friction of getting
-//! in and out is the separate `cost_bps` term — which is why it is subtracted
-//! once rather than being folded into either price.
+//! **The two prices are not measured the same way, and an earlier version of
+//! this paragraph claimed they were.** It said "both prices come from the sell
+//! side". The entry does: it is the smallest rung of the exit probe's ladder, a
+//! sell quote. The exit does not — it is `argMax(lam / tok, (ts, sig))` over
+//! realised fills, which pools buys and sells and therefore sits near the mid.
+//!
+//! A bid measured against a mid is positive before the market has moved at all,
+//! so every return this module reports carries an upward artefact.
+//! [`0016`](../../docs/research/0016-the-entry-was-a-bid-and-the-exit-was-a-mid.md)
+//! measures it at **at least +128 bps**, against a gross median here of +21 —
+//! six times the signal, in the direction that flatters the selection. Read
+//! [`basis`](crate::basis) before reading any figure below.
+//!
+//! It is deliberately **not** subtracted here. 0016's figure is a floor rather
+//! than a point estimate, and baking a floor into a headline would overclaim in
+//! the opposite direction. The fix is to stop comparing across instruments —
+//! price the exit sell-side, or record a contemporaneous mid — not to apply a
+//! correction after the fact.
+//!
+//! The round-trip friction of getting in and out is the separate `cost_bps`
+//! term, which is why it is subtracted once rather than folded into either
+//! price.
 //!
 //! # Why it refuses to report a small sample
 //!

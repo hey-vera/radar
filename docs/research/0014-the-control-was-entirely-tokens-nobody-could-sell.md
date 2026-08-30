@@ -3,6 +3,19 @@
 **Date:** 2026-08-30
 **Status:** measured on the full recorded history, 4,374 decisions.
 
+> **Correction, 2026-08-30.** The **+21 bps** gross median below is measured
+> across two different instruments: the entry is a *sell quote* and the exit is
+> `argMax(lam / tok, (ts, sig))` over realised fills, which pools buys and sells
+> and sits near the mid. A bid against a mid is positive before the market moves.
+> [`0016`](0016-the-entry-was-a-bid-and-the-exit-was-a-mid.md) measures that
+> artefact at **at least +128 bps** — six times the figure it was hiding — so the
+> corrected gross median is **at most −107 bps**, and **−957 net** of the 850 bps
+> round trip.
+>
+> **"Noise around zero" is withdrawn. The selection's gross median is negative.**
+> The rest of this note stands: the control really is composed entirely of tokens
+> Radar could not sell, and that remains the more serious limitation.
+
 ## The number the project exists to produce
 
 Plan B/8: *"Join decisions to the price path and report what Radar's selection

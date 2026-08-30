@@ -39,6 +39,12 @@ The comparison against refusals that appeared to make it worse is unusable:
 every scoreable refusal is `CapacityBelowFloor`, so the control is composed
 entirely of tokens Radar measured and found it could not sell.
 
+[`0017`](docs/research/0017-a-control-that-could-have-been-traded.md) builds the
+control that comparison lacked, against 121,810 tokens Radar never decided on,
+priced the same way on both sides and matched on token age and holding period.
+It finds **no edge** — a median edge of 0 bps across four matched strata, and the
+two that can discriminate point opposite ways.
+
 Read that before adding a filter. The gross median says the selection is not
 finding an edge, and the 850 bps says the round trip is currently larger than
 anything the filter has found.

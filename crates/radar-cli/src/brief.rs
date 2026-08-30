@@ -545,7 +545,7 @@ fn screening_health(decisions: &[radar_store::Decision]) -> Check {
     let missed = total - screened;
 
     let detail = format!(
-        "{screened} of {total} candidates had their launch block read ({bps} bps);          {missed} skipped the coordination screen"
+        "{screened} of {total} candidates had their launch block read ({bps} bps); {missed} skipped the coordination screen"
     );
     let status = if bps < SCREENED_FAIL_BPS {
         Status::Fail
@@ -894,6 +894,10 @@ mod tests {
         assert!(
             detail.contains("80 of 100"),
             "must name both halves: {detail}"
+        );
+        assert!(
+            !detail.contains("  "),
+            "no run of spaces in a line an operator reads: {detail}"
         );
         assert!(
             detail.contains("20 skipped"),

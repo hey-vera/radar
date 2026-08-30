@@ -96,6 +96,13 @@ That is a null result, and it is the honest headline. It is not evidence the
 selection is *harmful* — the control that suggested that is unusable — and it is
 not evidence it works.
 
+> **Followed up, 2026-08-30.** The first bullet below — that a real control needs
+> the strategy to refuse something after the exit probe — was too pessimistic.
+> [`0017`](0017-a-control-that-could-have-been-traded.md) builds one without it,
+> by pricing both cohorts from realised fills instead of comparing a quote
+> against a fill. It finds **no edge**: a median edge of 0 bps across four
+> matched strata, with the two that can discriminate pointing opposite ways.
+
 ## What would move this
 
 - **A control that could actually have been traded.** The obvious candidate is

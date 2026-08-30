@@ -11,7 +11,7 @@
 //! pass records a few dozen.
 
 use radar_asof::AsOf;
-use radar_research::selection::{self, Verdict};
+use radar_research::selection::{self, Cohort, Verdict};
 use radar_store::{Decision, Outcome, Reader};
 
 /// Runs the comparison.
@@ -66,6 +66,7 @@ pub fn run(reader: &Reader, cost_bps: u64) -> Result<(), String> {
     println!("\nReturns are gross, in basis points, from the price the decision saw to");
     println!("the last price observed after it. Costs are applied in the verdict below.");
 
+    print_screening_split(&decisions, &outcomes);
     print_refusal_breakdown(&decisions, &outcomes, cost_bps);
 
     match report.verdict() {
@@ -182,6 +183,61 @@ A high median under an exit-related reason is not an edge Radar passed up.
     );
 }
 
+/// Splits the proposed cohort by whether the coordination gate actually ran.
+///
+/// Printed beside the headline rather than in a separate command, because a
+/// blend of two populations reads exactly like one population and the reader has
+/// no way to know which they are looking at.
+fn print_screening_split(decisions: &[Decision], outcomes: &[Outcome]) {
+    let (screened, unscreened) = radar_research::selection::by_screening(decisions, outcomes);
+    if nothing_went_unscreened(&unscreened) {
+        return;
+    }
+
+    println!(
+        "
+Proposals, split by whether the coordination gate ran:
+"
+    );
+    println!(
+        "{:<12} {:>10} {:>8} {:>10} {:>10} {:>10}",
+        "cohort", "decisions", "scored", "median", "p25", "p75"
+    );
+    for (name, cohort) in [("screened", &screened), ("unscreened", &unscreened)] {
+        println!(
+            "{name:<12} {:>10} {:>8} {:>10} {:>10} {:>10}",
+            cohort.decisions,
+            cohort.scored,
+            render(cohort.median()),
+            render(cohort.percentile(0.25)),
+            render(cohort.percentile(0.75)),
+        );
+    }
+    println!(
+        "
+`unscreened` is a candidate whose launch block CryptoHouse could not serve,
+         so it was proposed without the screen research 0008 measures at 11.7x on
+         instant graduation. `creator_edge` is right not to let a missing reading
+         refuse -- that would refuse the population whenever the vendor hiccups -- but
+         it means the headline above blends a population Radar selected with one it
+         merely failed to reject. `radar brief`'s screening check watches the rate."
+    );
+}
+
+/// Whether the gate ran on everything, leaving no split to report.
+///
+/// Extracted from the printer so the condition can be tested without capturing
+/// stdout, and phrased positively so the caller needs no `!`. That is not a
+/// style preference: a negation at the call site is a branch the extracted
+/// predicate's tests cannot reach, and `just mutants` deletes exactly that `!`.
+/// A guard worth extracting is worth extracting all of.
+///
+/// A table of one cohort against an empty one would imply a caveat that does not
+/// apply, so the split is withheld when nothing went unscreened.
+const fn nothing_went_unscreened(unscreened: &Cohort) -> bool {
+    unscreened.decisions == 0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +248,26 @@ mod tests {
         assert_eq!(render(None), "—");
         assert_eq!(render(Some(0)), "0");
         assert_eq!(render(Some(-1_340)), "-1340");
+    }
+
+    fn cohort(decisions: usize) -> Cohort {
+        Cohort {
+            decisions,
+            scored: 0,
+            returns_bps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_split_is_printed_only_when_something_went_unscreened() {
+        // Inverted, this hides the caveat exactly when it applies and prints an
+        // empty cohort when it does not -- which is the failure mode, not a
+        // cosmetic one.
+        assert!(
+            nothing_went_unscreened(&cohort(0)),
+            "a gate that ran on everything has no caveat to state"
+        );
+        assert!(!nothing_went_unscreened(&cohort(1)));
+        assert!(!nothing_went_unscreened(&cohort(528)));
     }
 }

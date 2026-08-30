@@ -281,6 +281,64 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
     }
 }
 
+/// The proposed cohort, split by whether the coordination gate actually ran.
+///
+/// # Why this split and not another
+///
+/// `consider.rs` records `coordination = None` when CryptoHouse cannot serve the
+/// launch block, and `creator_edge` correctly declines to let `None` refuse —
+/// inventing evidence would refuse the whole population every time the vendor
+/// hiccups. The consequence is that a candidate whose block went unread is
+/// proposed **without** the screen [`0008`] measures at 11.7× on instant
+/// graduation.
+///
+/// Measured on 2026-08-30 over 2,706 paid-tier candidates, 528 had an unreadable
+/// launch block, and they were proposed at **55.0%** against 51.8% overall. So
+/// roughly a fifth of the cohort every figure in this module reports was never
+/// screened at all, and the unscreened share was proposed slightly *more* often
+/// rather than less.
+///
+/// That makes the headline a blend of two populations — one Radar selected and
+/// one it merely failed to reject — and those are different claims. This
+/// separates them, and it needs no re-run because the column was recorded all
+/// along.
+///
+/// Returns `(screened, unscreened)`.
+///
+/// [`0008`]: ../../docs/research/0008-the-launch-block-gives-the-bundle-away.md
+#[must_use]
+pub fn by_screening(decisions: &[Decision], outcomes: &[Outcome]) -> (Cohort, Cohort) {
+    let empty = || Cohort {
+        decisions: 0,
+        scored: 0,
+        returns_bps: Vec::new(),
+    };
+    let (mut screened, mut unscreened) = (empty(), empty());
+
+    for decision in decisions {
+        if !matches!(decision.conclusion, Conclusion::Proposed) {
+            continue;
+        }
+        // `Some` means a verdict was reached, whatever it was. `None` means the
+        // block could not be read -- which is the distinction here, not whether
+        // coordination was found.
+        let cohort = if decision.coordination.is_some() {
+            &mut screened
+        } else {
+            &mut unscreened
+        };
+        cohort.decisions += 1;
+        if let Some(bps) = scored_return(decision, outcomes) {
+            cohort.scored += 1;
+            cohort.returns_bps.push(bps);
+        }
+    }
+
+    screened.returns_bps.sort_unstable();
+    unscreened.returns_bps.sort_unstable();
+    (screened, unscreened)
+}
+
 /// The refused cohort, split by the reason it was refused.
 ///
 /// # The question this exists to answer
@@ -668,6 +726,44 @@ mod tests {
         assert_eq!(report.proposed.returns_bps, vec![2_000]);
         assert_eq!(report.refused.returns_bps, vec![-7_000]);
         assert_eq!(report.scored, 2);
+    }
+
+    #[test]
+    fn the_screening_split_separates_the_two_populations_and_ignores_the_verdict() {
+        // `Some` means the gate ran, whatever it concluded. A mutant keying on
+        // the verdict's *value* -- say `== Some("Likely")` -- would put an
+        // ordinary screened token in the unscreened cohort, which is the whole
+        // distinction this function exists to draw.
+        let mut screened_clean = decision(1, Conclusion::Proposed, Some(1_000));
+        screened_clean.coordination = Some("Unlikely".to_owned());
+        let mut screened_likely = decision(2, Conclusion::Proposed, Some(1_000));
+        screened_likely.coordination = Some("Likely".to_owned());
+        let unread = decision(3, Conclusion::Proposed, Some(1_000));
+
+        let (screened, unscreened) = by_screening(
+            &[screened_clean, screened_likely, unread],
+            &[
+                outcome(1, 20_000, Some(1_100)),
+                outcome(2, 20_000, Some(1_100)),
+                outcome(3, 20_000, Some(900)),
+            ],
+        );
+        assert_eq!(screened.decisions, 2, "both verdicts count as screened");
+        assert_eq!(unscreened.decisions, 1);
+        assert_eq!(screened.scored, 2);
+        assert_eq!(unscreened.median(), Some(-1_000));
+    }
+
+    #[test]
+    fn the_screening_split_covers_proposals_only() {
+        // A refusal is not part of the cohort whose headline this qualifies, and
+        // pooling them would put the refused population back into a number that
+        // exists to describe the proposed one.
+        let mut refused = decision(1, Conclusion::Passed, Some(1_000));
+        refused.coordination = None;
+        let (screened, unscreened) = by_screening(&[refused], &[outcome(1, 20_000, Some(1_100))]);
+        assert_eq!(screened.decisions, 0);
+        assert_eq!(unscreened.decisions, 0);
     }
 
     #[test]

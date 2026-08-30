@@ -66,6 +66,7 @@ pub fn run(reader: &Reader, cost_bps: u64) -> Result<(), String> {
     println!("\nReturns are gross, in basis points, from the price the decision saw to");
     println!("the last price observed after it. Costs are applied in the verdict below.");
 
+    print_screening_split(&decisions, &outcomes);
     print_refusal_breakdown(&decisions, &outcomes, cost_bps);
 
     match report.verdict() {
@@ -179,6 +180,47 @@ Groups overlap: a decision counts under every reason it carries, so these
 A high median under an exit-related reason is not an edge Radar passed up.
          It is a paper return on a token nobody could sell, which is what that
          refusal is for. LEARNINGS 11 is the same mistake made with MFE."
+    );
+}
+
+/// Splits the proposed cohort by whether the coordination gate actually ran.
+///
+/// Printed beside the headline rather than in a separate command, because a
+/// blend of two populations reads exactly like one population and the reader has
+/// no way to know which they are looking at.
+fn print_screening_split(decisions: &[Decision], outcomes: &[Outcome]) {
+    let (screened, unscreened) = radar_research::selection::by_screening(decisions, outcomes);
+    if unscreened.decisions == 0 {
+        return;
+    }
+
+    println!(
+        "
+Proposals, split by whether the coordination gate ran:
+"
+    );
+    println!(
+        "{:<12} {:>10} {:>8} {:>10} {:>10} {:>10}",
+        "cohort", "decisions", "scored", "median", "p25", "p75"
+    );
+    for (name, cohort) in [("screened", &screened), ("unscreened", &unscreened)] {
+        println!(
+            "{name:<12} {:>10} {:>8} {:>10} {:>10} {:>10}",
+            cohort.decisions,
+            cohort.scored,
+            render(cohort.median()),
+            render(cohort.percentile(0.25)),
+            render(cohort.percentile(0.75)),
+        );
+    }
+    println!(
+        "
+`unscreened` is a candidate whose launch block CryptoHouse could not serve,
+         so it was proposed without the screen research 0008 measures at 11.7x on
+         instant graduation. `creator_edge` is right not to let a missing reading
+         refuse -- that would refuse the population whenever the vendor hiccups -- but
+         it means the headline above blends a population Radar selected with one it
+         merely failed to reject. `radar brief`'s screening check watches the rate."
     );
 }
 

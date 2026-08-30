@@ -116,6 +116,7 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     checks.push(outcomes(&reader));
     checks.push(decisions(&reader));
     checks.push(coordination(&reader));
+    checks.push(screening(&reader));
     // Probed once and read twice. The agent's state is inside the health body
     // the serving check already fetched, so a second request would be a second
     // thing that can fail -- and it would fail whenever the server is down,
@@ -465,6 +466,97 @@ pub enum ServingProbe {
 /// in its passing direction is the bug this function was added for.
 ///
 /// [`Quoter`]: https://github.com/hey-vera/radar
+/// How often the coordination gate actually ran.
+///
+/// # Why this is separate from [`coordination`]
+///
+/// That check judges the detector's *calibration*, and to do so it deliberately
+/// excludes decisions whose launch block could not be read — "counting an unread
+/// block as clean is how a gate goes quiet". Correct for calibration, and it
+/// leaves the detector blind to the one failure that matters most here: if every
+/// launch-block read started failing, `observed` would fall to zero and that
+/// check would report `NotEnoughData`, which is a **`Warn`**, which is **not an
+/// alarm**. The strongest refusal signal in the system could stop running
+/// entirely with `radar brief` still exiting zero.
+///
+/// So coverage is measured on its own. It asks a different question — not "is
+/// the detector calibrated" but "did it get to look at all".
+///
+/// # What a miss costs
+///
+/// `consider.rs` records `coordination = None` when CryptoHouse cannot serve the
+/// launch block, and `creator_edge` correctly refuses to let `None` refuse —
+/// inventing evidence would refuse the whole population whenever the vendor
+/// hiccups. The consequence is that a candidate whose block went unread proceeds
+/// **without** the screen that [`0008`] measures at 11.7× on instant
+/// graduation, and nothing downstream says so.
+///
+/// Measured on 2026-08-30 over 2,706 paid-tier candidates: 528 had an unreadable
+/// launch block, and they were proposed at 55.0% against 51.8% overall.
+///
+/// [`0008`]: ../../docs/research/0008-the-launch-block-gives-the-bundle-away.md
+fn screening(reader: &Reader) -> Check {
+    let Ok(Some(top)) = reader.watermark() else {
+        return Check::new(Status::Unknown, "screening", "cannot read the watermark");
+    };
+    let Ok(decisions) = reader.read_decisions(AsOf::at(top)) else {
+        return Check::new(Status::Unknown, "screening", "cannot read decisions");
+    };
+    screening_health(&decisions)
+}
+
+/// Coverage below which the gate is warned about, per ten thousand.
+///
+/// **Set from the spread, not from a round number.** Measured per hourly run on
+/// 2026-08-30 the unreadable share moved between 5.1% and 39.5% — so a threshold
+/// on one run would fire on noise, and this is judged over the same trailing
+/// window the calibration uses. Ninety per cent is above the whole of that
+/// observed band, so anything inside normal operation reads as degraded, which
+/// it is.
+const SCREENED_WARN_BPS: u64 = 9_000;
+
+/// Coverage below which it is an alarm, per ten thousand.
+///
+/// Half. Below this the gate is more off than on, and describing that as
+/// degradation rather than failure would be a euphemism.
+///
+/// Deliberately far below the *current* rate. A check that fails from the day it
+/// ships teaches its reader to ignore it, and the state this catches — the gate
+/// mostly gone — has not happened. The warn threshold is what speaks to today.
+const SCREENED_FAIL_BPS: u64 = 5_000;
+
+/// The rule, separated from the read.
+fn screening_health(decisions: &[radar_store::Decision]) -> Check {
+    // Newest last, as `read_decisions` returns them, so the tail is the window.
+    let recent: Vec<&radar_store::Decision> =
+        decisions.iter().rev().take(CALIBRATION_WINDOW).collect();
+    let total = recent.len();
+    if total == 0 {
+        return Check::new(
+            Status::Warn,
+            "screening",
+            "no decisions recorded yet, so the gate's coverage cannot be judged",
+        );
+    }
+    let screened = recent.iter().filter(|d| d.coordination.is_some()).count();
+    // Integer throughout, so the same counts always give the same verdict.
+    let bps = u64::try_from(screened).unwrap_or(0).saturating_mul(10_000)
+        / u64::try_from(total).unwrap_or(1);
+    let missed = total - screened;
+
+    let detail = format!(
+        "{screened} of {total} candidates had their launch block read ({bps} bps);          {missed} skipped the coordination screen"
+    );
+    let status = if bps < SCREENED_FAIL_BPS {
+        Status::Fail
+    } else if bps < SCREENED_WARN_BPS {
+        Status::Warn
+    } else {
+        Status::Ok
+    };
+    Check::new(status, "screening", detail)
+}
+
 fn serving(probed: Option<(&str, ServingProbe)>) -> Check {
     // Rule 8. A monitor with no target must say it cannot see, rather than
     // report the silence as health -- which is exactly how a server that was
@@ -712,6 +804,68 @@ mod tests {
         let mut d = a_decision(999_900, false, None);
         d.coordination = verdict.map(std::borrow::ToOwned::to_owned);
         d
+    }
+
+    #[test]
+    fn the_gate_going_completely_silent_is_an_alarm_where_calibration_only_warns() {
+        // The exact gap `screening` exists to close, asserted as a relationship
+        // rather than as two separate facts.
+        //
+        // `an_unread_launch_block_is_excluded_from_both_halves_of_the_rate`
+        // below establishes that 300 unread blocks leave `coordination` at
+        // `Warn`, and `Status::is_alarm` covers only `Fail` and `Unknown` -- so
+        // on that check alone the strongest refusal signal in the system could
+        // stop running entirely and `radar brief` would still exit zero.
+        let decisions: Vec<radar_store::Decision> =
+            (0..300).map(|_| with_coordination(None)).collect();
+
+        assert!(
+            !coordination_health(&decisions).status.is_alarm(),
+            "the calibration check cannot see this, which is why screening exists"
+        );
+        assert_eq!(
+            screening_health(&decisions).status,
+            Status::Fail,
+            "a gate that never ran must alarm"
+        );
+        assert!(screening_health(&decisions).status.is_alarm());
+    }
+
+    #[test]
+    fn full_coverage_passes_and_partial_coverage_is_graded() {
+        // Swept across the thresholds rather than sampled at one point, because
+        // the interesting property is that each band is reachable -- a threshold
+        // no input can land between is a threshold that does nothing.
+        let cohort = |screened: usize, unscreened: usize| -> Vec<radar_store::Decision> {
+            let mut v: Vec<radar_store::Decision> = (0..screened)
+                .map(|_| with_coordination(Some("Unlikely")))
+                .collect();
+            v.extend((0..unscreened).map(|_| with_coordination(None)));
+            v
+        };
+
+        assert_eq!(screening_health(&cohort(100, 0)).status, Status::Ok);
+        // 95% -- inside the band, clear of the warn threshold.
+        assert_eq!(screening_health(&cohort(95, 5)).status, Status::Ok);
+        // 80% -- the rate actually measured in production on 2026-08-30.
+        assert_eq!(screening_health(&cohort(80, 20)).status, Status::Warn);
+        // 60% -- degraded but the gate is still mostly running.
+        assert_eq!(screening_health(&cohort(60, 40)).status, Status::Warn);
+        // 40% -- more off than on.
+        assert_eq!(screening_health(&cohort(40, 60)).status, Status::Fail);
+    }
+
+    #[test]
+    fn an_empty_store_cannot_report_coverage_and_says_so() {
+        // Absent is not zero (rule 9). No decisions is "cannot judge", not "the
+        // gate never ran" -- reporting the latter would alarm on a fresh install.
+        let check = screening_health(&[]);
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains("cannot be judged"),
+            "must say why: {}",
+            check.detail
+        );
     }
 
     #[test]

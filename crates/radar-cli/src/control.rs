@@ -13,7 +13,7 @@
 
 use radar_asof::AsOf;
 use radar_research::control::{self, Stratum, Verdict};
-use radar_store::Reader;
+use radar_store::{Decision, Outcome, Reader};
 
 /// Runs the comparison.
 ///
@@ -80,6 +80,8 @@ Share of each cohort that returned exactly zero:"
         );
     }
 
+    print_capacity_bands(&decisions, &outcomes);
+
     println!(
         "\nBoth sides are priced outcome to outcome, so the instrument is the same\n\
          on each and on both ends -- which is what research 0016 found `radar\n\
@@ -113,6 +115,46 @@ Share of each cohort that returned exactly zero:"
     }
 
     Ok(())
+}
+
+/// Does the depth Radar measured predict what the token then did?
+///
+/// Printed here rather than in its own command because it answers the question
+/// the control raises: if the selection has no edge overall, the next thing to
+/// ask is whether any *part* of it does — and depth is the one dimension Radar
+/// records and never selects on.
+fn print_capacity_bands(decisions: &[Decision], outcomes: &[Outcome]) {
+    let bands = radar_research::control::by_capacity(decisions, outcomes);
+    if radar_research::control::nothing_banded(&bands) {
+        return;
+    }
+
+    println!(
+        "
+Proposals by the exit capacity Radar measured:
+"
+    );
+    println!(
+        "{:<8} {:>8} {:>10} {:>12}",
+        "capacity", "n", "median", "zero share"
+    );
+    for b in &bands {
+        println!(
+            "{:<8} {:>8} {:>10} {:>12}",
+            b.label,
+            b.n(),
+            render(b.median()),
+            render_u(b.zero_share_bps()),
+        );
+    }
+    println!(
+        "
+Radar sizes every position as a share of this number, so it decides how
+         much money can move -- and across 2,365 proposals its median is $31, because
+         it is closer to a property of the pump.fun curve than of the token. Radar
+         has never selected FOR depth. If the deep bands behave differently, that is
+         the first selection lever nobody has pulled."
+    );
 }
 
 /// A figure, or a dash where nothing was measured.

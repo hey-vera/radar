@@ -253,6 +253,125 @@ impl Report {
     }
 }
 
+/// Exit-capacity bands, in micro-USD, that define the depth cohorts.
+///
+/// Read off the measured distribution rather than chosen for roundness. Across
+/// 2,365 recorded proposals capacity has a p10 of $26.90, a median of $31.03 and
+/// a p90 of $34.59 — **eighty per cent inside a ±13% band** — because every
+/// pre-graduation pump.fun token rides the same bonding curve with the same
+/// supply. So the bands are tight where the mass is and wide in the tail, which
+/// is the only part that can differ.
+///
+/// The tail is the whole question. Twenty-eight of those 2,365 cleared $60 and
+/// ten cleared $100, and nobody has looked at what they did.
+pub const CAPACITY_BANDS: [(&str, u64); 5] = [
+    ("<$25", 25_000_000),
+    ("$25-30", 30_000_000),
+    ("$30-35", 35_000_000),
+    ("$35-60", 60_000_000),
+    ("$60+", u64::MAX),
+];
+
+/// One capacity band's realised returns.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize, Default)]
+pub struct Band {
+    /// The band's label.
+    pub label: String,
+    /// Realised returns from proposals in this band, ascending.
+    pub returns_bps: Vec<i64>,
+}
+
+impl Band {
+    /// How many proposals landed here.
+    #[must_use]
+    pub fn n(&self) -> usize {
+        self.returns_bps.len()
+    }
+
+    /// The median, or `None` when the band is empty.
+    #[must_use]
+    pub fn median(&self) -> Option<i64> {
+        median(&self.returns_bps)
+    }
+
+    /// The share returning exactly zero, per ten thousand.
+    ///
+    /// Carried for the same reason [`Stratum::zero_share_bps`] is: a median of
+    /// zero over a cohort that is mostly zero is a report about the point mass.
+    #[must_use]
+    pub fn zero_share_bps(&self) -> Option<u64> {
+        Stratum::zero_share_bps(&self.returns_bps)
+    }
+}
+
+/// Whether no proposal landed in any capacity band.
+///
+/// Phrased positively so the caller needs no `!`. A negation at a call site is a
+/// branch the predicate's own tests cannot reach — the same lesson `just
+/// mutants` taught twice already today, in `radar selection` and in this file's
+/// own `is_thin`.
+#[must_use]
+pub fn nothing_banded(bands: &[Band]) -> bool {
+    bands.iter().all(|b| b.n() == 0)
+}
+
+/// Does the depth Radar measured predict what the token then did?
+///
+/// # Why this is the question the objective function forces
+///
+/// Radar sizes every position as a share of measured exit capacity, so capacity
+/// decides how much money can move. Measured across 2,365 proposals the median
+/// notional is **$6.21**, because capacity is close to a constant of the venue
+/// rather than a property of the token. At that size an 850 bps round trip needs
+/// a +8.5% move to break even, and no improvement to the *filter* changes it.
+///
+/// So the first question is not "can the selection be made better" but "is there
+/// any depth here at all, and do the deeper tokens behave differently". Radar has
+/// never selected **for** capacity — it selects on creator history and sizes off
+/// whatever depth happens to be present.
+///
+/// Priced realised-to-realised, the same way [`evaluate`] prices both its
+/// cohorts, because [`0016`] showed the quote-to-fill comparison carries an
+/// artefact larger than anything it was measuring.
+///
+/// [`0016`]: ../../docs/research/0016-the-entry-was-a-bid-and-the-exit-was-a-mid.md
+#[must_use]
+pub fn by_capacity(decisions: &[Decision], outcomes: &[Outcome]) -> Vec<Band> {
+    let by_mint = group_by_mint(outcomes);
+    let mut bands: Vec<Band> = CAPACITY_BANDS
+        .iter()
+        .map(|(label, _)| Band {
+            label: (*label).to_owned(),
+            returns_bps: Vec::new(),
+        })
+        .collect();
+
+    for decision in decisions {
+        if !matches!(decision.conclusion, Conclusion::Proposed) {
+            continue;
+        }
+        // Absent is not zero (rule 9). A proposal with no recorded capacity was
+        // not measured as shallow; it was not measured.
+        let Some(capacity) = decision.exit_capacity_micro_usd else {
+            continue;
+        };
+        let Some(series) = by_mint.get(&decision.mint) else {
+            continue;
+        };
+        let Some(r) = realised_from(series, decision.decided_at.get()) else {
+            continue;
+        };
+        bands[stratum_of(&CAPACITY_BANDS, capacity)]
+            .returns_bps
+            .push(r.bps);
+    }
+
+    for band in &mut bands {
+        band.returns_bps.sort_unstable();
+    }
+    bands
+}
+
 /// Compares Radar's proposals against matched tokens it never decided on.
 ///
 /// Both cohorts are priced **outcome to outcome**, so the instrument is the same
@@ -747,12 +866,100 @@ mod tests {
     }
 
     #[test]
+    fn capacity_bands_separate_proposals_by_the_depth_that_was_measured() {
+        let mut outcomes = Vec::new();
+        let mut decisions = Vec::new();
+        // A shallow proposal that lost, and a deep one that gained.
+        let mut shallow = decision(1, 4_000, Conclusion::Proposed);
+        shallow.exit_capacity_micro_usd = Some(20_000_000);
+        outcomes.extend(series(1, 4_000, 1_000, 10_000, 900));
+        decisions.push(shallow);
+
+        let mut deep = decision(2, 4_000, Conclusion::Proposed);
+        deep.exit_capacity_micro_usd = Some(120_000_000);
+        outcomes.extend(series(2, 4_000, 1_000, 10_000, 1_500));
+        decisions.push(deep);
+
+        let bands = by_capacity(&decisions, &outcomes);
+        assert_eq!(bands[0].label, "<$25");
+        assert_eq!(bands[0].median(), Some(-1_000));
+        assert_eq!(bands[4].label, "$60+");
+        assert_eq!(bands[4].median(), Some(5_000));
+        assert!(bands[1].returns_bps.is_empty());
+    }
+
+    #[test]
+    fn a_band_reports_its_own_count_and_zero_share() {
+        // Both accessors went in untested, and `just mutants` replaced each with
+        // a constant without anything failing. A band's count is what tells a
+        // reader whether its median is worth reading -- the $60+ band's n=16 is
+        // the entire caveat of research 0018 -- so a constant there is not
+        // cosmetic.
+        let band = Band {
+            label: "t".to_owned(),
+            returns_bps: vec![-100, 0, 0, 500],
+        };
+        assert_eq!(band.n(), 4);
+        assert_eq!(band.median(), Some(0));
+        assert_eq!(band.zero_share_bps(), Some(5_000));
+
+        let empty = Band {
+            label: "t".to_owned(),
+            returns_bps: Vec::new(),
+        };
+        assert_eq!(empty.n(), 0);
+        // Absent, never zero (rule 9): an empty band has no share, and reporting
+        // 0 would read as "none of these were flat".
+        assert_eq!(empty.zero_share_bps(), None);
+        assert_eq!(empty.median(), None);
+    }
+
+    #[test]
+    fn the_bands_are_printed_only_when_something_landed_in_one() {
+        let empty: Vec<Band> = CAPACITY_BANDS
+            .iter()
+            .map(|(label, _)| Band {
+                label: (*label).to_owned(),
+                returns_bps: Vec::new(),
+            })
+            .collect();
+        assert!(nothing_banded(&empty));
+
+        let mut some = empty.clone();
+        some[2].returns_bps.push(-1);
+        assert!(!nothing_banded(&some), "one banded proposal is enough");
+    }
+
+    #[test]
+    fn a_proposal_with_no_measured_capacity_is_not_banded_as_shallow() {
+        // Rule 9. `None` means the depth was never measured, not that it was
+        // small -- and filing it in the lowest band would invent evidence that
+        // the deepest cohort is thinner than it is.
+        let outcomes = series(1, 4_000, 1_000, 10_000, 1_100);
+        let mut d = decision(1, 4_000, Conclusion::Proposed);
+        d.exit_capacity_micro_usd = None;
+        let bands = by_capacity(&[d], &outcomes);
+        assert!(bands.iter().all(|b| b.returns_bps.is_empty()));
+    }
+
+    #[test]
+    fn refusals_never_enter_a_capacity_band() {
+        // The question is what Radar's *proposals* did at each depth. A refusal
+        // is not a position it would have taken.
+        let outcomes = series(1, 4_000, 1_000, 10_000, 1_100);
+        let mut d = decision(1, 4_000, Conclusion::Passed);
+        d.exit_capacity_micro_usd = Some(31_000_000);
+        let bands = by_capacity(&[d], &outcomes);
+        assert!(bands.iter().all(|b| b.returns_bps.is_empty()));
+    }
+
+    #[test]
     fn every_stratum_table_admits_every_value() {
         // `stratum_of` falls back to the last index, and that fallback is
         // unreachable only while every table ends at `u64::MAX`. Asserted rather
         // than assumed, so narrowing a table fails here instead of silently
         // routing values into the fallback.
-        for table in [&AGE_STRATA[..], &HOLD_STRATA[..]] {
+        for table in [&AGE_STRATA[..], &HOLD_STRATA[..], &CAPACITY_BANDS[..]] {
             assert_eq!(
                 table.last().expect("a stratum table is not empty").1,
                 u64::MAX,

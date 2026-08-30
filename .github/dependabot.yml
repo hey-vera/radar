@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# What watches the dependencies, and how loudly.
+#
+# Radar compiles both ecosystems into one artifact: the web bundle is embedded in
+# `radar-serve` by `rust-embed`, so an npm dependency ships inside the same binary
+# the deploy hashes. That is the reason both are here — treating the frontend as
+# somebody else's problem would leave half the supply chain of a single file
+# unwatched.
+#
+# Weekly rather than daily. A pull request nobody reads is worse than none: it
+# trains whoever is on review to merge without looking, and the one that mattered
+# arrives in the same stream.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Grouped, because ten separate patch bumps is ten CI runs and one decision.
+    # Security updates are deliberately NOT grouped — see below.
+    groups:
+      cargo-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    commit-message:
+      prefix: "deps"
+
+  # The workflows themselves. Every action in this repository is SHA-pinned,
+  # which is the right call and makes them invisible to a human reading a diff —
+  # a pinned SHA never looks out of date. This is what notices.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: "deps"

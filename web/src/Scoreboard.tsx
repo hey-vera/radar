@@ -17,30 +17,10 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, research, type Scoreboard as Board } from "./api";
+import { clearedCost, median, pct } from "./honesty";
 
 /** Below this many scored proposals, no comparison is reported at all. */
 const MIN_COHORT = 30;
-
-/** Basis points as a percentage, signed, at one decimal. */
-function pct(bps: number): string {
-  const sign = bps > 0 ? "+" : "";
-  return `${sign}${(bps / 100).toFixed(1)}%`;
-}
-
-/** The median of a return distribution, or null if it is empty. */
-function median(returns: number[]): number | null {
-  if (returns.length === 0) return null;
-  const sorted = [...returns].sort((a, b) => a - b);
-  const mid = Math.floor(sorted.length / 2);
-  return sorted.length % 2 === 0
-    ? Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2)
-    : (sorted[mid] ?? null);
-}
-
-/** How many of a distribution cleared the assumed round-trip cost. */
-function clearedCost(returns: number[], costBps: number): number {
-  return returns.filter((r) => r > costBps).length;
-}
 
 export function Scoreboard() {
   const [board, setBoard] = useState<Board | null>(null);

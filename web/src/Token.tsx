@@ -13,23 +13,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, research, type DecisionRecord, type TokenEvidence } from "./api";
-
-/// Refusals that are consequences of the policy being shut, not findings about
-/// a token.
-///
-/// Under `Policy::CLOSED` every limit is zero, so `0 >= 0` is true at zero
-/// realised loss, a staleness ceiling of zero fails every input, and a cost
-/// ceiling of zero fails any cost. One fact — the policy is closed — arrives as
-/// several, and only the kernel knows which is which.
-const POLICY_ARTIFACTS = new Set([
-  "NoAutonomy",
-  "OverPositionLimit",
-  "OverDeploymentLimit",
-  "OverCreatorLimit",
-  "DailyLossReached",
-  "RoundTripTooExpensive",
-  "InputsTooStale",
-]);
+import { POLICY_ARTIFACTS } from "./honesty";
 
 export function Token({ mint }: { mint: string }) {
   const [evidence, setEvidence] = useState<TokenEvidence | null>(null);

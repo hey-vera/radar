@@ -20,8 +20,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { agent, ApiError, type Answered, type Progress } from "./api";
 
-/** Renders both panels, or nothing if the agent is not configured. */
-export function Agent() {
+/**
+ * Renders both panels, or nothing if the agent is not configured.
+ *
+ * `alwaysShow` is for the tab that exists to show this: a tab that renders
+ * empty is worse than one that says why it is empty, because the reader cannot
+ * tell a missing provider from a broken page.
+ */
+export function Agent({ alwaysShow = false }: { alwaysShow?: boolean }) {
   const [available, setAvailable] = useState<boolean | null>(null);
 
   useEffect(() => {
@@ -39,13 +45,19 @@ export function Agent() {
     return () => controller.abort();
   }, []);
 
-  if (available !== true) return null;
+  if (available !== true) {
+    if (!alwaysShow) return null;
+    return (
+      <p className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
+        {available === null
+          ? "Asking…"
+          : "No model provider is configured, so there is nothing to ask. Set RADAR_MODEL_DAILY_USD and a provider; the routes do not exist until both are set."}
+      </p>
+    );
+  }
 
   return (
-    <section className="mt-12 border-t border-[var(--color-line)] pt-8">
-      <h2 className="mb-4 text-sm font-medium uppercase tracking-wide text-[var(--color-dim)]">
-        Reading assistant
-      </h2>
+    <section>
       <Link />
       <Chat />
     </section>

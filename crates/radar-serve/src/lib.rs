@@ -82,6 +82,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/funnel", get(funnel))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
+        .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/events", get(events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
@@ -180,6 +181,29 @@ fn denied(why: &access::Denied) -> Response {
         Json(json!({ "error": why.to_string() })),
     )
         .into_response()
+}
+
+/// What Radar's selection returned, against its own refusals.
+///
+/// The cost is a query parameter with a documented default rather than a
+/// hardcoded constant, because it is an assumption and the reader should be able
+/// to move it and watch the answer move.
+async fn scoreboard(State(state): State<Arc<AppState>>) -> Response {
+    let Ok(Some(watermark)) = state.store.watermark() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(json!({ "error": "the store has recorded nothing yet" })),
+        )
+            .into_response();
+    };
+    match api::scoreboard(&state.store, AsOf::at(watermark), api::ASSUMED_COST_BPS) {
+        Ok(report) => Json(report).into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
 }
 
 async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {

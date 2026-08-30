@@ -255,8 +255,7 @@ pub enum Table {
 }
 
 impl Table {
-    /// Every table, for iteration.
-    /// Every table, including outcomes. For directory setup and file listings —
+    /// Every table, including outcomes, decisions and positions. For directory setup and file listings —
     /// **not** for read loops. See [`EVENT_TABLES`](Self::EVENT_TABLES).
     pub const ALL: &'static [Self] = &[
         Self::Launches,
@@ -264,6 +263,7 @@ impl Table {
         Self::Graduations,
         Self::Outcomes,
         Self::Decisions,
+        Self::Positions,
     ];
 
     /// The tables that hold chain events, which is what

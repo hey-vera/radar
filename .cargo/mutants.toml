@@ -58,4 +58,17 @@ exclude_re = [
     # look if this line ever changes.
     'replace \- with \+ in Reader::count',
     'replace \- with / in Reader::count',
+    # `loss_micro_usd`: the filter is `realised < 0`, and the mutation widens it
+    # to `<= 0`. The extra value admitted is exactly zero, which then goes
+    # through `checked_neg` and comes back as zero — the same answer the filter
+    # was there to give. A round trip that broke exactly even contributes
+    # nothing to a daily loss either way.
+    #
+    # Checked by applying it: the suite passes because both versions return 0
+    # for `Some(0)`, not because nothing covers it. `a_break_even_round_trip_is
+    # _not_a_loss` asserts that value directly and passes under both.
+    #
+    # The direction that WOULD matter is narrowing it — `< 0` to `< -1`, say —
+    # which would drop the smallest losses. Nothing mutates it that way here.
+    'replace < with <= in Position::loss_micro_usd',
 ]

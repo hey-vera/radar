@@ -12,7 +12,7 @@
 //! research 0011 shows move the population median on their own.
 
 use radar_asof::AsOf;
-use radar_research::control::{self, Verdict};
+use radar_research::control::{self, Stratum, Verdict};
 use radar_store::Reader;
 
 /// Runs the comparison.
@@ -44,20 +44,39 @@ pub fn run(reader: &Reader) -> Result<(), String> {
     );
 
     println!(
-        "{:<8} {:<8} {:>9} {:>9} {:>10} {:>10} {:>9}",
-        "age", "hold", "selected", "control", "sel median", "ctl median", "edge"
+        "{:<6} {:<6} {:>8} {:>8} {:>9} {:>9} {:>8} {:>9} {:>9}",
+        "age", "hold", "sel n", "ctl n", "sel p25", "sel med", "sel p75", "ctl med", "edge"
     );
     for s in &report.strata {
         let mark = if s.is_comparable() { "" } else { "  (thin)" };
         println!(
-            "{:<8} {:<8} {:>9} {:>9} {:>10} {:>10} {:>9}{mark}",
+            "{:<6} {:<6} {:>8} {:>8} {:>9} {:>9} {:>8} {:>9} {:>9}{mark}",
             s.age,
             s.hold,
             s.selected_bps.len(),
             s.control_bps.len(),
+            render(Stratum::percentile(&s.selected_bps, 0.25)),
             render(s.selected_median()),
+            render(Stratum::percentile(&s.selected_bps, 0.75)),
             render(s.control_median()),
             render(s.edge_bps()),
+        );
+    }
+
+    println!(
+        "
+Share of each cohort that returned exactly zero:"
+    );
+    for s in &report.strata {
+        if !s.is_comparable() {
+            continue;
+        }
+        println!(
+            "  {:<6} {:<6} selected {:>5} bps   control {:>5} bps",
+            s.age,
+            s.hold,
+            render_u(Stratum::zero_share_bps(&s.selected_bps)),
+            render_u(Stratum::zero_share_bps(&s.control_bps)),
         );
     }
 
@@ -101,5 +120,10 @@ pub fn run(reader: &Reader) -> Result<(), String> {
 /// A dash rather than a zero: an empty cohort has no median, and zero would read
 /// as "these performed identically" (rule 9).
 fn render(v: Option<i64>) -> String {
+    v.map_or_else(|| "—".to_owned(), |v| v.to_string())
+}
+
+/// An unsigned figure, or a dash where nothing was measured.
+fn render_u(v: Option<u64>) -> String {
     v.map_or_else(|| "—".to_owned(), |v| v.to_string())
 }

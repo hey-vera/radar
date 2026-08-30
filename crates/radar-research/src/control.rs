@@ -137,6 +137,44 @@ impl Stratum {
         median(&self.control_bps)
     }
 
+    /// The share of a cohort that returned exactly zero, per ten thousand.
+    ///
+    /// Diagnostic, and it earned its place. The first two runs of this
+    /// comparison reported a median of exactly 0 in the largest strata, and a
+    /// median cannot distinguish "the distribution is centred on zero" from "more
+    /// than half of it *is* zero". Those want opposite responses: the first is a
+    /// finding, the second is a measurement still admitting tokens that never
+    /// moved.
+    ///
+    /// A large share here is a warning about the cohort, not a fact about the
+    /// market.
+    #[must_use]
+    pub fn zero_share_bps(returns: &[i64]) -> Option<u64> {
+        if returns.is_empty() {
+            return None;
+        }
+        let zeros = u64::try_from(returns.iter().filter(|r| **r == 0).count()).unwrap_or(0);
+        let total = u64::try_from(returns.len()).unwrap_or(1);
+        Some(zeros.saturating_mul(10_000) / total)
+    }
+
+    /// The reading at a percentile of a sorted cohort, or `None` when empty.
+    #[must_use]
+    pub fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
+        if sorted.is_empty() {
+            return None;
+        }
+        let last = sorted.len() - 1;
+        #[expect(
+            clippy::cast_precision_loss,
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "an index into a cohort orders of magnitude below f64's exact integer range"
+        )]
+        let idx = ((sorted.len() as f64 * p) as usize).min(last);
+        Some(sorted[idx])
+    }
+
     /// Selected minus control, in basis points, where both are present.
     ///
     /// Positive means Radar's cohort did better than a matched token it never

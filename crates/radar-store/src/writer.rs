@@ -7,7 +7,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use arrow::array::{
-    ArrayRef, BooleanBuilder, ListBuilder, StringBuilder, UInt32Builder, UInt64Builder,
+    ArrayRef, BooleanBuilder, Int64Builder, ListBuilder, StringBuilder, UInt32Builder,
+    UInt64Builder,
 };
 use arrow::record_batch::RecordBatch;
 use parquet::arrow::ArrowWriter;
@@ -57,6 +58,7 @@ pub struct Writer {
     /// Separate for the same reason outcomes are: a decision has no signature
     /// and no transaction position, because nothing happened on chain.
     pending_decisions: BTreeMap<u64, Vec<Decision>>,
+    pending_positions: BTreeMap<u64, Vec<crate::Position>>,
     buffered: usize,
     flush_at: usize,
     written_rows: u64,
@@ -80,6 +82,7 @@ impl Writer {
             pending: BTreeMap::new(),
             pending_outcomes: BTreeMap::new(),
             pending_decisions: BTreeMap::new(),
+            pending_positions: BTreeMap::new(),
             buffered: 0,
             flush_at: flush_at.max(1),
             written_rows: 0,
@@ -149,6 +152,30 @@ impl Writer {
         Ok(())
     }
 
+    /// Buffers a position, flushing if the buffer is full.
+    ///
+    /// Append-only: opening writes a row and closing writes another with the
+    /// same `(mint, opened_at)`. Both are partitioned by `opened_at`, so a
+    /// close lands beside the open it supersedes and a reader at any watermark
+    /// sees the state as of then.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a flush fails.
+    pub fn append_position(&mut self, position: crate::Position) -> Result<(), StoreError> {
+        let slot = position.opened_at;
+        self.highest_slot = Some(self.highest_slot.map_or(slot, |h| h.max(slot)));
+        self.pending_positions
+            .entry(partition_of(slot))
+            .or_default()
+            .push(position);
+        self.buffered += 1;
+        if self.buffered >= self.flush_at {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
     /// Events buffered but not yet on disk.
     #[must_use]
     pub const fn buffered(&self) -> usize {
@@ -199,6 +226,18 @@ impl Writer {
             let rows = decisions.len() as u64;
             let batch = build_decision_batch(&decisions)?;
             let path = self.next_path(Table::Decisions, partition);
+            write_parquet(&path, &batch)?;
+            self.written_rows += rows;
+            self.written_files += 1;
+        }
+
+        for (partition, positions) in std::mem::take(&mut self.pending_positions) {
+            if positions.is_empty() {
+                continue;
+            }
+            let rows = positions.len() as u64;
+            let batch = build_position_batch(&positions)?;
+            let path = self.next_path(Table::Positions, partition);
             write_parquet(&path, &batch)?;
             self.written_rows += rows;
             self.written_files += 1;
@@ -270,6 +309,42 @@ fn reason_item() -> Arc<arrow::datatypes::Field> {
 }
 
 /// Builds the Parquet batch for a run of decisions.
+fn build_position_batch(positions: &[crate::Position]) -> Result<RecordBatch, StoreError> {
+    let (mut mint, mut creator) = (StringBuilder::new(), StringBuilder::new());
+    let mut opened_at = UInt64Builder::new();
+    let mut notional = UInt64Builder::new();
+    let mut entry = UInt64Builder::new();
+    let mut closed_at = UInt64Builder::new();
+    let mut exit = UInt64Builder::new();
+    let mut realised = Int64Builder::new();
+
+    for p in positions {
+        mint.append_value(p.mint.to_string());
+        creator.append_value(p.creator.to_string());
+        opened_at.append_value(p.opened_at.get());
+        notional.append_value(p.notional_micro_usd);
+        entry.append_option(p.entry_price);
+        closed_at.append_option(p.closed_at.map(Slot::get));
+        exit.append_option(p.exit_price);
+        realised.append_option(p.realised_micro_usd);
+    }
+
+    RecordBatch::try_new(
+        schema_for(Table::Positions),
+        vec![
+            Arc::new(mint.finish()),
+            Arc::new(creator.finish()),
+            Arc::new(opened_at.finish()),
+            Arc::new(notional.finish()),
+            Arc::new(entry.finish()),
+            Arc::new(closed_at.finish()),
+            Arc::new(exit.finish()),
+            Arc::new(realised.finish()),
+        ],
+    )
+    .map_err(StoreError::from)
+}
+
 fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreError> {
     let (mut mint, mut creator) = (StringBuilder::new(), StringBuilder::new());
     let (mut decided, mut launch) = (UInt64Builder::new(), UInt64Builder::new());
@@ -536,8 +611,10 @@ fn build_batch(table: Table, events: &[Event]) -> Result<RecordBatch, StoreError
             }
             cols.push(Arc::new(mint.finish()));
         }
-        Table::Outcomes | Table::Decisions => {
-            unreachable!("not events; see build_outcome_batch / build_decision_batch")
+        Table::Outcomes | Table::Decisions | Table::Positions => {
+            unreachable!(
+                "not events; see build_outcome_batch / build_decision_batch /                  build_position_batch"
+            )
         }
     }
 

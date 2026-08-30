@@ -12,7 +12,7 @@
 
 use radar_asof::AsOf;
 use radar_research::selection::{self, Verdict};
-use radar_store::Reader;
+use radar_store::{Decision, Outcome, Reader};
 
 /// Runs the comparison.
 ///
@@ -65,6 +65,8 @@ pub fn run(reader: &Reader, cost_bps: u64) -> Result<(), String> {
     }
     println!("\nReturns are gross, in basis points, from the price the decision saw to");
     println!("the last price observed after it. Costs are applied in the verdict below.");
+
+    print_refusal_breakdown(&decisions, &outcomes, cost_bps);
 
     match report.verdict() {
         Verdict::NotEnoughData { scored, needed } => {
@@ -126,6 +128,58 @@ The control is the refusals, priced the same way in the same passes:
 /// different findings, and zero is far better than this population's median.
 fn render(value: Option<i64>) -> String {
     value.map_or_else(|| "—".to_owned(), |v| v.to_string())
+}
+
+/// The control, split by why each token was refused.
+///
+/// A function rather than a block because the flat comparison it sits under is
+/// the headline and this is the caveat, and the two should be readable apart.
+///
+/// The flat comparison cannot distinguish "the selection is wrong" from "the
+/// control is flattered by returns nobody could have realised", and those want
+/// opposite responses. A token refused because its exit capacity was below the
+/// floor was refused *precisely because nobody could have sold it*.
+fn print_refusal_breakdown(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) {
+    let groups = selection::by_reason(decisions, outcomes);
+    if groups.is_empty() {
+        return;
+    }
+
+    println!(
+        "
+the control, split by why it was refused:"
+    );
+    println!(
+        "{:<26} {:>10} {:>8} {:>10} {:>10}",
+        "reason", "decisions", "scored", "median", "cleared"
+    );
+    for (reason, cohort) in &groups {
+        // Integer arithmetic on a per-ten-thousand rate. A float here would be
+        // a lossy cast on a number that is already exact.
+        let cleared = cohort.beat_cost_bps(cost_bps).map_or_else(
+            || "     -".to_owned(),
+            |bps| format!("{}.{:02}%", bps / 100, bps % 100),
+        );
+        println!(
+            "{reason:<26} {:>10} {:>8} {:>10} {cleared:>10}",
+            cohort.decisions,
+            cohort.scored,
+            render(cohort.median()),
+        );
+    }
+
+    println!(
+        "
+Groups overlap: a decision counts under every reason it carries, so these
+         do not sum to the control. The question is what tokens refused for X did,
+         not what tokens refused ONLY for X did -- a much smaller, stranger population."
+    );
+    println!(
+        "
+A high median under an exit-related reason is not an edge Radar passed up.
+         It is a paper return on a token nobody could sell, which is what that
+         refusal is for. LEARNINGS 11 is the same mistake made with MFE."
+    );
 }
 
 #[cfg(test)]

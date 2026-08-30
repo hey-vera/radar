@@ -37,6 +37,8 @@
 //! [Research 0009]: ../../docs/research/0009-what-a-token-actually-does-to-your-money.md
 //! [LEARNINGS]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
 
+use std::collections::BTreeMap;
+
 use radar_store::{Conclusion, Decision, Outcome};
 use serde::Serialize;
 
@@ -243,16 +245,7 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
         // Only an observation taken *after* the decision says anything about
         // what followed it. An earlier one describes a market the decision had
         // not seen.
-        let Some(later) = outcomes
-            .iter()
-            .filter(|o| o.mint == decision.mint && o.measured_at > decision.decided_at)
-            .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
-            .max_by_key(|(at, _)| *at)
-            .map(|(_, price)| price)
-        else {
-            continue;
-        };
-        let Some(bps) = decision.return_bps(later) else {
+        let Some(bps) = scored_return(decision, outcomes) else {
             continue;
         };
         cohort.scored += 1;
@@ -269,6 +262,75 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
         refused,
         cost_bps,
     }
+}
+
+/// The refused cohort, split by the reason it was refused.
+///
+/// # The question this exists to answer
+///
+/// `evaluate` compares Radar's proposals to its refusals, and on 2026-08-30 the
+/// refusals came out **ahead**: median −462 bps against −829, and 46.5% clearing
+/// costs against 8.1%. Read flat, that says the selection is anti-predictive.
+///
+/// It may not say that. Refusals are not one population. A token refused for
+/// `NoExitSimulated` or because its exit capacity was below the floor was
+/// refused *precisely because nobody could have sold it* — and a paper return on
+/// a token with no exit is not money anyone could have taken. That cohort's p75
+/// of +6,059 bps is exactly the shape of unrealisable gains.
+///
+/// So the flat comparison cannot distinguish "the selection is wrong" from "the
+/// control is flattered by returns that could not be realised", and those want
+/// opposite responses. This splits it.
+///
+/// One decision contributes to **every** reason it carries, so the groups
+/// overlap and their sizes do not sum to the cohort. That is deliberate: the
+/// question is "what did tokens refused for X do", not "what did tokens refused
+/// only for X do", and the second is a much smaller and stranger population.
+#[must_use]
+pub fn by_reason(decisions: &[Decision], outcomes: &[Outcome]) -> BTreeMap<String, Cohort> {
+    let mut groups: BTreeMap<String, Cohort> = BTreeMap::new();
+
+    for decision in decisions {
+        if matches!(decision.conclusion, Conclusion::Proposed) {
+            continue;
+        }
+        let scored = scored_return(decision, outcomes);
+        for reason in &decision.reasons {
+            let cohort = groups.entry(reason.clone()).or_insert_with(|| Cohort {
+                decisions: 0,
+                scored: 0,
+                returns_bps: Vec::new(),
+            });
+            cohort.decisions += 1;
+            if let Some(bps) = scored {
+                cohort.scored += 1;
+                cohort.returns_bps.push(bps);
+            }
+        }
+    }
+
+    for cohort in groups.values_mut() {
+        cohort.returns_bps.sort_unstable();
+    }
+    groups
+}
+
+/// The return a decision earned, if it can be scored at all.
+///
+/// Factored out of [`evaluate`] so the two cannot drift: a breakdown that scored
+/// decisions differently from the headline would produce groups that do not
+/// reconcile with the cohort they came from, and the discrepancy would look like
+/// a finding.
+fn scored_return(decision: &Decision, outcomes: &[Outcome]) -> Option<i64> {
+    // Only an observation taken *after* the decision says anything about what
+    // followed it. An earlier one describes a market the decision had not seen.
+    let later = outcomes
+        .iter()
+        .filter(|o| o.mint == decision.mint && o.measured_at > decision.decided_at)
+        .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, price)| price)?;
+    decision.return_bps(later)
 }
 
 #[cfg(test)]
@@ -316,6 +378,137 @@ mod tests {
             vwap: None,
             fills: 3,
         }
+    }
+
+    /// A refused decision carrying the given reasons.
+    fn refused_for(mint: u8, entry: Option<u64>, reasons: &[&str]) -> Decision {
+        let mut d = decision(mint, Conclusion::Passed, entry);
+        d.reasons = reasons.iter().map(|r| (*r).to_owned()).collect();
+        d
+    }
+
+    #[test]
+    fn a_refusal_counts_under_every_reason_it_carries() {
+        // Deliberate overlap. The question is what tokens refused for X did, not
+        // what tokens refused ONLY for X did -- the second is a much smaller and
+        // stranger population, and answering it would make each group describe a
+        // different, rarer kind of token.
+        let decisions = vec![refused_for(
+            1,
+            Some(1_000),
+            &["ExitCapacityTooSmall", "TokenReadingTooOld"],
+        )];
+        let outcomes = vec![outcome(1, 12_000, Some(2_000))];
+
+        let groups = by_reason(&decisions, &outcomes);
+        assert_eq!(groups.len(), 2, "one decision, two groups");
+        for reason in ["ExitCapacityTooSmall", "TokenReadingTooOld"] {
+            let cohort = groups.get(reason).unwrap_or_else(|| panic!("{reason}"));
+            assert_eq!(cohort.decisions, 1);
+            assert_eq!(cohort.scored, 1);
+            assert_eq!(cohort.returns_bps, vec![10_000], "doubled, so +100%");
+        }
+    }
+
+    #[test]
+    fn the_counts_are_counts_and_not_something_that_merely_moves() {
+        // `decisions` and `scored` are the denominators every rate in the
+        // breakdown is computed against. An increment that ran backwards, or
+        // stayed at zero, would leave the medians looking right and every
+        // percentage wrong -- which is the harder failure to notice.
+        let decisions = vec![
+            refused_for(1, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(2, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(3, Some(1_000), &["ExitCapacityTooSmall"]),
+        ];
+        let outcomes = vec![
+            outcome(1, 12_000, Some(2_000)),
+            outcome(2, 12_000, Some(500)),
+            outcome(3, 12_000, Some(1_000)),
+        ];
+
+        let groups = by_reason(&decisions, &outcomes);
+        let cohort = &groups["ExitCapacityTooSmall"];
+        assert_eq!(cohort.decisions, 3);
+        assert_eq!(cohort.scored, 3);
+        assert_eq!(cohort.returns_bps.len(), 3);
+    }
+
+    #[test]
+    fn a_decision_that_cannot_be_scored_still_counts_as_a_decision() {
+        // The two counters answer different questions and must move
+        // independently. Collapsing them would make "how often was this
+        // refusal used" and "how often could we tell whether it was right"
+        // the same number, and they are not: an unscoreable refusal is
+        // evidence about the filter's reach and about nothing else.
+        let decisions = vec![
+            // No entry price: nothing to compute a return from.
+            refused_for(1, None, &["NoExitSimulated"]),
+            refused_for(2, Some(1_000), &["NoExitSimulated"]),
+        ];
+        let outcomes = vec![outcome(2, 12_000, Some(1_500))];
+
+        let cohort = &by_reason(&decisions, &outcomes)["NoExitSimulated"];
+        assert_eq!(cohort.decisions, 2, "both were refused for it");
+        assert_eq!(cohort.scored, 1, "only one could be priced");
+        assert_eq!(cohort.returns_bps, vec![5_000]);
+    }
+
+    #[test]
+    fn proposals_are_not_in_the_breakdown_at_all() {
+        // It is a split of the CONTROL. A proposal appearing here would be
+        // compared against itself, and the reasons a proposal carries are the
+        // ones it survived rather than the ones it failed.
+        let mut proposed = decision(1, Conclusion::Proposed, Some(1_000));
+        proposed.reasons = vec!["ExitCapacityTooSmall".to_owned()];
+
+        let groups = by_reason(&[proposed], &[outcome(1, 12_000, Some(9_000))]);
+        assert!(groups.is_empty(), "{groups:?}");
+    }
+
+    #[test]
+    fn the_breakdown_reconciles_with_the_headline_it_qualifies() {
+        // Groups overlap, so their scored counts do not sum to the control's.
+        // What must hold is that no group is larger than the control and every
+        // scored decision appears somewhere -- a breakdown that scored
+        // decisions differently from `evaluate` would produce a discrepancy
+        // that reads as a finding.
+        let decisions = vec![
+            refused_for(1, Some(1_000), &["ExitCapacityTooSmall"]),
+            refused_for(2, Some(1_000), &["ExitCapacityTooSmall", "NoPrice"]),
+            refused_for(3, Some(1_000), &["NoPrice"]),
+        ];
+        let outcomes = vec![
+            outcome(1, 12_000, Some(2_000)),
+            outcome(2, 12_000, Some(500)),
+            outcome(3, 12_000, Some(1_000)),
+        ];
+
+        let report = evaluate(&decisions, &outcomes, 850);
+        let groups = by_reason(&decisions, &outcomes);
+
+        assert_eq!(report.refused.scored, 3);
+        for (reason, cohort) in &groups {
+            assert!(
+                cohort.scored <= report.refused.scored,
+                "{reason} has more scored than the whole control"
+            );
+        }
+        // Overlap is real: two groups totalling four across three decisions.
+        let total: usize = groups.values().map(|c| c.scored).sum();
+        assert_eq!(total, 4, "one decision counted twice, by design");
+    }
+
+    #[test]
+    fn a_control_with_no_reasons_produces_no_groups() {
+        // Not an error. A refusal recorded without a reason is a gap in the
+        // record, and inventing a bucket for it would put an unnamed cohort
+        // beside the named ones as though it meant something.
+        let groups = by_reason(
+            &[refused_for(1, Some(1_000), &[])],
+            &[outcome(1, 12_000, Some(2_000))],
+        );
+        assert!(groups.is_empty());
     }
 
     #[test]

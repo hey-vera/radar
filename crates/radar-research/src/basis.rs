@@ -497,6 +497,74 @@ mod tests {
     }
 
     #[test]
+    fn a_percentile_indexes_the_distribution_and_does_not_merely_return_a_member() {
+        // Every other test here uses a fixture whose values are identical, so
+        // any index returns the same number and the arithmetic is untested. This
+        // one has a known, varied distribution and pins each percentile to a
+        // distinct value, so `len * p` cannot be replaced by `len + p` or
+        // `len / p` without landing somewhere else.
+        let bucket = Bucket {
+            label: "t".to_owned(),
+            basis_bps: (0..100).map(|i| i * 10).collect(),
+        };
+        assert_eq!(bucket.percentile(0.00), Some(0));
+        assert_eq!(bucket.percentile(0.25), Some(250));
+        assert_eq!(bucket.median(), Some(500));
+        assert_eq!(bucket.percentile(0.75), Some(750));
+    }
+
+    #[test]
+    fn the_top_percentile_clamps_instead_of_indexing_past_the_end() {
+        // `len * 1.0` is `len`, which is one past the last element. The `.min`
+        // is what saves it, and `last = len - 1` is what `.min` clamps to -- so a
+        // mutation of either is a panic on a call that is perfectly legitimate.
+        // Nothing else in this module asks for the top of a distribution, which
+        // is exactly why it went untested.
+        let bucket = Bucket {
+            label: "t".to_owned(),
+            basis_bps: vec![-5, 0, 5],
+        };
+        assert_eq!(bucket.percentile(1.0), Some(5), "the maximum, not a panic");
+        assert_eq!(bucket.percentile(2.0), Some(5), "clamped, not indexed");
+    }
+
+    #[test]
+    fn an_unchanged_basis_across_buckets_is_not_a_downward_drift() {
+        // Flat is not falling. The distinction is load-bearing rather than
+        // pedantic: `drifts_down` is the premise that lets the tightest bucket be
+        // read as a FLOOR, and a flat basis cannot distinguish "the drift is
+        // zero" from "these buckets have no resolution". Withholding the
+        // stronger claim is the direction that under-claims.
+        let mut decisions = Vec::new();
+        let mut outcomes = Vec::new();
+        for i in 0u64..40 {
+            decisions.push(decision(1, 1_000 + i, Some(10_000)));
+            outcomes.push(outcome(1, 1_000 + i, Some(10_500)));
+            decisions.push(decision(2, 1_000 + i, Some(10_000)));
+            // Same basis, far larger gap.
+            outcomes.push(outcome(2, 1_000 + i + 20_000, Some(10_500)));
+        }
+        let r = measure(&decisions, &outcomes);
+        assert_eq!(r.populated().len(), 2, "two buckets to compare");
+        assert!(!r.drifts_down(), "equal medians are not a fall");
+    }
+
+    #[test]
+    fn the_last_bucket_catches_every_gap_so_the_search_cannot_fail() {
+        // `bucket_of` falls back to the last index if no ceiling matches, and
+        // that fallback is unreachable *because* the last ceiling is `u64::MAX`.
+        // The unreachability is the reason two mutants of it are filed as
+        // equivalent in `.cargo/mutants.toml`, so it is asserted here rather
+        // than assumed: change the last ceiling and this fails, which is the
+        // signal to re-examine that exemption instead of trusting it.
+        assert_eq!(
+            BUCKETS.last().expect("buckets are not empty").1,
+            u64::MAX,
+            "the last ceiling must admit every gap"
+        );
+    }
+
+    #[test]
     fn every_bucket_boundary_falls_on_the_tighter_side() {
         // Swept rather than sampled. A ceiling is inclusive, so a gap exactly at
         // one belongs to that bucket and one slot past it to the next -- an

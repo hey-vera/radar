@@ -71,4 +71,24 @@ exclude_re = [
     # The direction that WOULD matter is narrowing it — `< 0` to `< -1`, say —
     # which would drop the smallest losses. Nothing mutates it that way here.
     'replace < with <= in Position::loss_micro_usd',
+    # `bucket_of`: the fallback index `BUCKETS.len() - 1` is unreachable, so
+    # every value it could take is unobservable. `position` tests
+    # `gap_slots <= ceiling` and the last ceiling is `u64::MAX`, which makes the
+    # predicate a tautology on the final element — for any `u64` gap, `position`
+    # returns `Some` at or before the last index and `unwrap_or` never fires.
+    # This is a proof rather than a sample: there is no `u64` for which the
+    # branch runs.
+    #
+    # Checked by applying both mutations: the suite passes, and it passes because
+    # the line is dead rather than because nothing covers `bucket_of` --
+    # `every_bucket_boundary_falls_on_the_tighter_side` sweeps every ceiling and
+    # the slot past it, and fails immediately on a real off-by-one in the
+    # `position` predicate.
+    #
+    # The premise is asserted rather than trusted.
+    # `the_last_bucket_catches_every_gap_so_the_search_cannot_fail` pins the last
+    # ceiling at `u64::MAX`, so narrowing it fails a test — which is the signal to
+    # re-examine this entry rather than to keep believing it.
+    'replace \- with \+ in bucket_of',
+    'replace \- with / in bucket_of',
 ]

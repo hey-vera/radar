@@ -34,13 +34,29 @@
 //! threshold rather than by a hand-written denylist. A denylist would need
 //! maintaining by whoever noticed the next router, and nobody notices.
 //!
-//! # This refuses nothing
+//! # What recurrence predicts, so far
 //!
-//! Deliberately. The measurement says *who* recurs; it says nothing yet about
-//! whether recurrence predicts anything about money, because that needs a join
-//! against Radar's own outcomes that has not been run. Recording it beside the
-//! decision is what makes that join possible later — the same order 0008 and the
-//! decisions table were built in.
+//! [`docs/research/0013`](../../docs/research/0013-a-repeat-launcher-in-the-block-predicts-a-deader-token.md)
+//! measured it, on two disjoint windows: **a launch whose block contains a
+//! repeat launcher is about twice as likely to be dead immediately** — no
+//! transfer at all after its own launch block — **and about half as likely to
+//! reach ten participants.** The direction replicates; the magnitudes move.
+//!
+//! # This still refuses nothing, and the reason is specific
+//!
+//! The outcome above is *activity*, and activity is not money.
+//!
+//! [`0011`](../../docs/research/0011-graduation-predicts-volatility-not-profit.md)
+//! is this repository's own cautionary case about exactly that substitution:
+//! graduation looked like a success measure, was used as a profit proxy, and
+//! turned out to predict volatility — "a volatility signal that has been used as
+//! a profit proxy, and every threshold fitted against it inherits that". A token
+//! that kept trading is not a token that made anyone money.
+//!
+//! So this is recorded beside the decision and acted on by nothing, which is the
+//! order 0008 and the decisions table were built in. What would change it is the
+//! measurement 0013 still does not make: prices, against Radar's own recorded
+//! outcomes, on a cohort large enough to have a median.
 
 use std::collections::BTreeMap;
 
@@ -109,11 +125,18 @@ impl Prevalence {
 
     /// How direct the evidence behind this reading is.
     ///
-    /// Never better than [`EvidenceTier::Weak`], and that is the honest answer
-    /// today. The count is observed directly, but "this wallet runs a factory"
-    /// is an inference from one ninety-minute window with **no measured link to
-    /// any outcome**. 0008's signal earns `Strong` because three populations
-    /// were compared; this has compared none.
+    /// Never better than [`EvidenceTier::Weak`], and that is still the honest
+    /// answer.
+    ///
+    /// An earlier version of this said the reading had "no measured link to any
+    /// outcome". That was true when written and is now false — research 0013
+    /// found one, on two disjoint windows. The wording is corrected rather than
+    /// left to age, which is the failure LEARNINGS 13 records twice in one day.
+    ///
+    /// It stays `Weak` because the outcome measured is *activity*, not money.
+    /// 0008 earns `Strong` by comparing three populations against a graduation
+    /// outcome; this has two windows and a proxy that 0011 is the cautionary
+    /// case against trusting.
     #[must_use]
     pub const fn tier(self) -> EvidenceTier {
         EvidenceTier::Weak
@@ -122,9 +145,12 @@ impl Prevalence {
     /// Whether this should change a decision.
     ///
     /// Always false, and it is a method rather than an absence so that the
-    /// answer is written down where somebody would look for it. Nothing refuses
-    /// on prevalence until the outcome join in 0012's *What this does not
-    /// establish* has been run.
+    /// answer is written down where somebody would look for it.
+    ///
+    /// It stays false *after* 0013 found an outcome link, which is the
+    /// deliberate part: the link is to activity rather than to money, and
+    /// substituting one for the other is the specific mistake 0011 records.
+    /// Prices against Radar's own outcomes are what would change this.
     #[must_use]
     pub const fn is_actionable(self) -> bool {
         false

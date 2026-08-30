@@ -37,6 +37,8 @@
 //! [Research 0009]: ../../docs/research/0009-what-a-token-actually-does-to-your-money.md
 //! [LEARNINGS]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
 
+use std::collections::BTreeMap;
+
 use radar_store::{Conclusion, Decision, Outcome};
 use serde::Serialize;
 
@@ -243,16 +245,7 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
         // Only an observation taken *after* the decision says anything about
         // what followed it. An earlier one describes a market the decision had
         // not seen.
-        let Some(later) = outcomes
-            .iter()
-            .filter(|o| o.mint == decision.mint && o.measured_at > decision.decided_at)
-            .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
-            .max_by_key(|(at, _)| *at)
-            .map(|(_, price)| price)
-        else {
-            continue;
-        };
-        let Some(bps) = decision.return_bps(later) else {
+        let Some(bps) = scored_return(decision, outcomes) else {
             continue;
         };
         cohort.scored += 1;
@@ -269,6 +262,75 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
         refused,
         cost_bps,
     }
+}
+
+/// The refused cohort, split by the reason it was refused.
+///
+/// # The question this exists to answer
+///
+/// `evaluate` compares Radar's proposals to its refusals, and on 2026-08-30 the
+/// refusals came out **ahead**: median −462 bps against −829, and 46.5% clearing
+/// costs against 8.1%. Read flat, that says the selection is anti-predictive.
+///
+/// It may not say that. Refusals are not one population. A token refused for
+/// `NoExitSimulated` or because its exit capacity was below the floor was
+/// refused *precisely because nobody could have sold it* — and a paper return on
+/// a token with no exit is not money anyone could have taken. That cohort's p75
+/// of +6,059 bps is exactly the shape of unrealisable gains.
+///
+/// So the flat comparison cannot distinguish "the selection is wrong" from "the
+/// control is flattered by returns that could not be realised", and those want
+/// opposite responses. This splits it.
+///
+/// One decision contributes to **every** reason it carries, so the groups
+/// overlap and their sizes do not sum to the cohort. That is deliberate: the
+/// question is "what did tokens refused for X do", not "what did tokens refused
+/// only for X do", and the second is a much smaller and stranger population.
+#[must_use]
+pub fn by_reason(decisions: &[Decision], outcomes: &[Outcome]) -> BTreeMap<String, Cohort> {
+    let mut groups: BTreeMap<String, Cohort> = BTreeMap::new();
+
+    for decision in decisions {
+        if matches!(decision.conclusion, Conclusion::Proposed) {
+            continue;
+        }
+        let scored = scored_return(decision, outcomes);
+        for reason in &decision.reasons {
+            let cohort = groups.entry(reason.clone()).or_insert_with(|| Cohort {
+                decisions: 0,
+                scored: 0,
+                returns_bps: Vec::new(),
+            });
+            cohort.decisions += 1;
+            if let Some(bps) = scored {
+                cohort.scored += 1;
+                cohort.returns_bps.push(bps);
+            }
+        }
+    }
+
+    for cohort in groups.values_mut() {
+        cohort.returns_bps.sort_unstable();
+    }
+    groups
+}
+
+/// The return a decision earned, if it can be scored at all.
+///
+/// Factored out of [`evaluate`] so the two cannot drift: a breakdown that scored
+/// decisions differently from the headline would produce groups that do not
+/// reconcile with the cohort they came from, and the discrepancy would look like
+/// a finding.
+fn scored_return(decision: &Decision, outcomes: &[Outcome]) -> Option<i64> {
+    // Only an observation taken *after* the decision says anything about what
+    // followed it. An earlier one describes a market the decision had not seen.
+    let later = outcomes
+        .iter()
+        .filter(|o| o.mint == decision.mint && o.measured_at > decision.decided_at)
+        .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
+        .max_by_key(|(at, _)| *at)
+        .map(|(_, price)| price)?;
+    decision.return_bps(later)
 }
 
 #[cfg(test)]

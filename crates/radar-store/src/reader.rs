@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arrow::array::{Array, BooleanArray, StringArray, UInt32Array, UInt64Array};
+use arrow::array::{Array, BooleanArray, Int64Array, StringArray, UInt32Array, UInt64Array};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use radar_asof::{AsOf, PointInTime};
 use radar_types::{Address, Signature, Slot};
@@ -241,6 +241,60 @@ impl Reader {
             }
         }
         out.sort_by_key(|o| (o.measured_at.get(), o.mint));
+        Ok(out)
+    }
+    /// Every position row recorded at or before the watermark.
+    ///
+    /// Rows, not positions: opening writes one and closing writes another with
+    /// the same `(mint, opened_at)`. Folding them is
+    /// [`crate::fold_positions`]'s job, and it is separate so that the read
+    /// stays a read — a reader that quietly resolved supersession would make
+    /// "what did Radar hold on Tuesday" unanswerable without re-reading.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a file cannot be read.
+    pub fn read_positions(&self, as_of: AsOf) -> Result<Vec<crate::Position>, StoreError> {
+        let mut out = Vec::new();
+        for path in self.files(Table::Positions)? {
+            if start_slot_of(&path).is_some_and(|start| start > as_of.slot().get()) {
+                continue;
+            }
+            let file = fs::File::open(&path)?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+            for batch in reader {
+                let batch = batch?;
+                let mint = str_col(&batch, "mint")?;
+                let creator = str_col(&batch, "creator")?;
+                let opened = u64_col(&batch, "opened_at")?;
+                let notional = u64_col(&batch, "notional_micro_usd")?;
+                let entry = optional_u64_col(&batch, "entry_price");
+                let closed = u64_col(&batch, "closed_at")?;
+                let exit = optional_u64_col(&batch, "exit_price");
+                let realised = i64_col(&batch, "realised_micro_usd")?;
+
+                for i in 0..batch.num_rows() {
+                    let opened_at = Slot(opened.value(i));
+                    // The watermark applies to the row, the same way it does in
+                    // every other read here. A position opened after the
+                    // watermark did not exist as of it.
+                    if opened_at > as_of.slot() {
+                        continue;
+                    }
+                    out.push(crate::Position {
+                        mint: parse(mint.value(i), "mint")?,
+                        creator: parse(creator.value(i), "creator")?,
+                        opened_at,
+                        notional_micro_usd: notional.value(i),
+                        entry_price: cell(entry, i),
+                        closed_at: closed.is_valid(i).then(|| Slot(closed.value(i))),
+                        exit_price: cell(exit, i),
+                        realised_micro_usd: realised.is_valid(i).then(|| realised.value(i)),
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|p| (p.opened_at, p.mint));
         Ok(out)
     }
 
@@ -535,8 +589,10 @@ fn read_file(path: &Path, table: Table) -> Result<Vec<Event>, StoreError> {
                     origin,
                     mint,
                 })),
-                Table::Outcomes | Table::Decisions => {
-                    unreachable!("not events; read by read_outcomes / read_decisions")
+                Table::Outcomes | Table::Decisions | Table::Positions => {
+                    unreachable!(
+                        "not events; read by read_outcomes / read_decisions / read_positions"
+                    )
                 }
             });
         }
@@ -592,6 +648,7 @@ fn cell(column: Option<&UInt64Array>, i: usize) -> Option<u64> {
     let column = column?;
     column.is_valid(i).then(|| column.value(i))
 }
+typed_col!(i64_col, Int64Array);
 typed_col!(u32_col, UInt32Array);
 typed_col!(bool_col, BooleanArray);
 typed_col!(str_col, StringArray);

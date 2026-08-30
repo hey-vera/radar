@@ -22,10 +22,12 @@
 pub mod assemble;
 pub mod avoidance;
 pub mod creator_edge;
+pub mod portfolio;
 
 pub use assemble::{Universe, universe};
 pub use avoidance::{PassReason, disqualify};
 pub use creator_edge::CreatorEdge;
+pub use portfolio::{Operator, state_from};
 
 use radar_asof::AsOf;
 use radar_risk::Proposal;

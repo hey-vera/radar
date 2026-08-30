@@ -245,11 +245,17 @@ pub enum Table {
     /// record of what Radar did, which is the only thing that can later be
     /// joined against prices to ask whether the selection was worth making.
     Decisions,
+    /// What Radar holds and what it held.
+    ///
+    /// Append-only like the rest: opening writes a row and closing writes
+    /// another with the same `opened_at`, so "what did Radar hold on Tuesday"
+    /// is answerable at any watermark. A mutable row would answer it with
+    /// today's state.
+    Positions,
 }
 
 impl Table {
-    /// Every table, for iteration.
-    /// Every table, including outcomes. For directory setup and file listings —
+    /// Every table, including outcomes, decisions and positions. For directory setup and file listings —
     /// **not** for read loops. See [`EVENT_TABLES`](Self::EVENT_TABLES).
     pub const ALL: &'static [Self] = &[
         Self::Launches,
@@ -257,6 +263,7 @@ impl Table {
         Self::Graduations,
         Self::Outcomes,
         Self::Decisions,
+        Self::Positions,
     ];
 
     /// The tables that hold chain events, which is what
@@ -297,6 +304,7 @@ impl Table {
             Self::Launches | Self::Trades | Self::Graduations => "slot",
             Self::Outcomes => "measured_at",
             Self::Decisions => "decided_at",
+            Self::Positions => "opened_at",
         }
     }
 
@@ -309,6 +317,7 @@ impl Table {
             Self::Graduations => "graduations",
             Self::Outcomes => "outcomes",
             Self::Decisions => "decisions",
+            Self::Positions => "positions",
         }
     }
 }

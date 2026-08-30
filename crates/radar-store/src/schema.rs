@@ -72,7 +72,7 @@ fn event_schema(table: Table) -> Arc<Schema> {
             Field::new("accepted_any_price", DataType::Boolean, false),
         ]),
         Table::Graduations => fields.push(Field::new("mint", DataType::Utf8, false)),
-        Table::Outcomes | Table::Decisions => {
+        Table::Outcomes | Table::Decisions | Table::Positions => {
             unreachable!("not chain events; handled by recorded_schema")
         }
     }
@@ -115,6 +115,27 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             Field::new("vwap", DataType::UInt64, true),
             // Not nullable: zero fills is a real, informative measurement.
             Field::new("fills", DataType::UInt64, false),
+        ])),
+        // Append-only: opening writes a row and closing writes another with the
+        // same `(mint, opened_at)`. Reading folds them, so the history is
+        // answerable at any watermark rather than only as of now.
+        Table::Positions => Arc::new(Schema::new(vec![
+            Field::new("mint", DataType::Utf8, false),
+            Field::new("creator", DataType::Utf8, false),
+            // Half the identity, with the mint.
+            Field::new("opened_at", DataType::UInt64, false),
+            Field::new("notional_micro_usd", DataType::UInt64, false),
+            // Null means the fill price was not recorded. Zero would mean it was
+            // free, and a return computed against it would report a total loss.
+            Field::new("entry_price", DataType::UInt64, true),
+            // Null is an OPEN position, which is the load-bearing reading: an
+            // open position counts against every exposure limit.
+            Field::new("closed_at", DataType::UInt64, true),
+            Field::new("exit_price", DataType::UInt64, true),
+            // Signed, and null rather than zero: zero is a round trip that broke
+            // exactly even, and a realised-loss limit reading unknown as zero is
+            // a limit that never binds.
+            Field::new("realised_micro_usd", DataType::Int64, true),
         ])),
         Table::Decisions => Arc::new(Schema::new(vec![
             Field::new("mint", DataType::Utf8, false),

@@ -142,7 +142,7 @@ pub fn run(
         &mut examined,
     );
 
-    let verdicts_by_mint = verdicts(&proposals, watermark);
+    let verdicts_by_mint = verdicts(&proposals, watermark, reader);
 
     if let Some(dir) = record_to {
         // The kernel's verdict is folded in only now, because a decision is not
@@ -188,6 +188,29 @@ recorded {} decision(s) to {dir}/decisions",
         examined.len()
     );
     Ok(())
+}
+
+/// The kernel's view of the portfolio, from the positions on record.
+///
+/// A read that fails is treated as *no positions*, and that is safe only
+/// because it is also true: nothing writes a position yet, so an empty store
+/// and an unreadable one hold the same thing. When something does trade this
+/// must become a refusal — a kernel handed an empty portfolio because the read
+/// failed would size against capital it cannot see.
+fn portfolio_state(reader: &Reader, watermark: radar_types::Slot) -> PortfolioState {
+    let rows = reader
+        .read_positions(AsOf::at(watermark))
+        .inspect_err(|e| eprintln!("  positions unreadable, treating as none: {e}"))
+        .unwrap_or_default();
+
+    radar_strategy::state_from(
+        &radar_store::fold_positions(rows),
+        watermark,
+        radar_strategy::Operator {
+            halted: false,
+            consecutive_failures: 0,
+        },
+    )
 }
 
 /// The paid tier: the two calls that cost money, in the order that spends least.
@@ -648,6 +671,7 @@ fn report_one(
 fn verdicts(
     proposals: &[radar_risk::Proposal],
     watermark: radar_types::Slot,
+    reader: &Reader,
 ) -> BTreeMap<Address, Verdict> {
     let mut by_mint = BTreeMap::new();
     println!(
@@ -662,7 +686,17 @@ fn verdicts(
     // The shipped policy. Building the trading lane deploys no capital; only
     // changing this does, and changing it is a decision with an owner.
     let policy = Policy::CLOSED;
-    let state = PortfolioState::flat(watermark);
+    // Rebuilt from what was recorded rather than assumed empty. It *is* empty
+    // today, because nothing has ever traded -- but `flat()` would keep saying
+    // so on the day something does, and a position limit measured against a
+    // portfolio that is always empty is not a limit.
+    //
+    // `halted` and `consecutive_failures` are supplied rather than defaulted:
+    // positions cannot know either, and the permissive answer arriving silently
+    // from a component that does not know is the shape rule 9 warns about.
+    // Zero failures is honest while nothing executes; there is no execution
+    // record yet to read them from.
+    let state = portfolio_state(reader, watermark);
 
     println!("\nrisk kernel, under the policy this instance actually holds:");
     for proposal in proposals {

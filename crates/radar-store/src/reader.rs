@@ -276,6 +276,7 @@ impl Reader {
                 let capacity = u64_col(&batch, "exit_capacity_micro_usd")?;
                 let cost_bps = u64_col(&batch, "assumed_round_trip_bps")?;
                 let coordination = str_col(&batch, "coordination")?;
+                let prevalence = str_col(&batch, "authority_prevalence")?;
                 let kernel = str_col(&batch, "kernel_outcome")?;
                 let digest = str_col(&batch, "inputs_digest")?;
                 // Optional by column, not just by row: a file written before
@@ -311,6 +312,9 @@ impl Reader {
                         coordination: coordination
                             .is_valid(i)
                             .then(|| coordination.value(i).to_owned()),
+                        authority_prevalence: prevalence
+                            .is_valid(i)
+                            .then(|| prevalence.value(i).to_owned()),
                         // Same asymmetry: anything unrecognised is a refusal.
                         kernel_outcome: kernel.is_valid(i).then(|| match kernel.value(i) {
                             "authorised" => KernelOutcome::Authorised,

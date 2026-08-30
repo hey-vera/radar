@@ -137,6 +137,10 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             // Null means the launch block could not be read — never that it
             // looked clean, which is the distinction the whole gate rests on.
             Field::new("coordination", DataType::Utf8, true),
+            // Null means the prevalence table could not be read, including the
+            // case where it was truncated — a table that cannot be trusted, not
+            // one that found nothing. Never that the wallets looked ordinary.
+            Field::new("authority_prevalence", DataType::Utf8, true),
             // Null means the kernel never saw a proposal, which is a gap in the
             // pipeline rather than a refusal.
             Field::new("kernel_outcome", DataType::Utf8, true),

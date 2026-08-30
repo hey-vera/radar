@@ -113,6 +113,18 @@ pub struct Decision {
     /// `None` means the source could not answer, never that the launch looked
     /// clean — the distinction the whole gate rests on.
     pub coordination: Option<String>,
+    /// How widely the launch block's signing wallets appear in other launch
+    /// blocks, as [`radar_graph::prevalence::Prevalence`] labels it.
+    ///
+    /// `None` means the prevalence table could not be read — including the case
+    /// where it was truncated, which is a table that cannot be trusted rather
+    /// than one that found nothing. Never that the wallets looked ordinary.
+    ///
+    /// Recorded and not acted on. Research 0012 measured *who* recurs and not
+    /// whether recurrence predicts anything about money, so this exists to make
+    /// that second question answerable later — the same order the coordination
+    /// gate and the decisions table were built in.
+    pub authority_prevalence: Option<String>,
     /// What the risk kernel did, if it was handed a proposal.
     pub kernel_outcome: Option<KernelOutcome>,
     /// Why the kernel refused, if it did.
@@ -207,6 +219,7 @@ mod tests {
             exit_capacity_micro_usd: None,
             assumed_round_trip_bps: 850,
             coordination: None,
+            authority_prevalence: None,
             kernel_outcome: None,
             kernel_reasons: Vec::new(),
             entry_price: None,

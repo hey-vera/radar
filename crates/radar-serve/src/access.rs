@@ -768,6 +768,18 @@ mod tests {
         // tag the day the vendor changes it, at startup, on a server that had
         // been working -- which is a worse failure than the one being caught.
         assert!(looks_unsubstituted("<TODO>").is_some());
+        // One bracket, not two. `<TODO>` alone passes a check that requires
+        // BOTH, and a half-pasted placeholder -- a heredoc cut at a line
+        // boundary, a value copied without its closing bracket -- is exactly
+        // the shape that would then slip through.
+        assert!(
+            looks_unsubstituted("<TODO").is_some(),
+            "an opening bracket alone"
+        );
+        assert!(
+            looks_unsubstituted("TODO>").is_some(),
+            "a closing bracket alone"
+        );
         assert!(looks_unsubstituted("your tag here").is_some());
         assert!(looks_unsubstituted("  spaced value  ").is_some());
 

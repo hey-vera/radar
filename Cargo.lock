@@ -1556,6 +1556,7 @@ dependencies = [
  "radar-asof",
  "radar-instruments",
  "radar-model",
+ "radar-research",
  "radar-risk",
  "radar-store",
  "radar-types",

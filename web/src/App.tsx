@@ -11,7 +11,11 @@
 //! what was authorised, and under the shipped policy the last one is zero.
 
 import { useCallback, useEffect, useState } from "react";
+
 import { Agent } from "./Agent";
+import { Health } from "./Health";
+import { Scoreboard } from "./Scoreboard";
+import { TokenLookup } from "./Token";
 import { api, ApiError, subscribe, type Funnel } from "./api";
 
 /** What the page is doing right now. */
@@ -53,17 +57,62 @@ function useFunnel(): [Load<Funnel>, () => void] {
   return [load, refresh];
 }
 
+/// The five screens, in the order the product argues for itself: what was
+/// refused, then what one token's evidence looks like, then what the selection
+/// actually returned, then whether the instance is working, then the assistant.
+const SCREENS = [
+  "Funnel",
+  "Token",
+  "Scoreboard",
+  "Health",
+  "Assistant",
+] as const;
+
+type Screen = (typeof SCREENS)[number];
+
 export function App() {
   const [load] = useFunnel();
+  // Deliberately not a router. The plan argued for TanStack Router on the
+  // grounds that a drill-down needs shareable, typed search params -- and it
+  // will, once a screen takes a filter. Today none does, so a router would be
+  // 45KB of dependency buying a `useState`. It goes in when the first screen
+  // needs a URL that means something, not before.
+  const [screen, setScreen] = useState<Screen>("Funnel");
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-12">
-      <header className="mb-10">
+      <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">Radar</h1>
         <p className="mt-1 text-sm text-[var(--color-dim)]">
           Solana research intelligence. A record of what was refused, and why.
         </p>
       </header>
+
+      <nav className="mb-8 flex flex-wrap gap-1 border-b border-[var(--color-line)]">
+        {SCREENS.map((name) => (
+          <button
+            key={name}
+            type="button"
+            onClick={() => setScreen(name)}
+            aria-current={screen === name ? "page" : undefined}
+            className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+              screen === name
+                ? "border-[var(--color-good)] text-[var(--color-text)]"
+                : "border-transparent text-[var(--color-dim)] hover:text-[var(--color-text)]"
+            }`}
+          >
+            {name}
+          </button>
+        ))}
+      </nav>
+
+      {screen === "Token" && <TokenLookup />}
+      {screen === "Scoreboard" && <Scoreboard />}
+      {screen === "Health" && <Health />}
+      {screen === "Assistant" && <Agent alwaysShow />}
+
+      {screen === "Funnel" && (
+        <>
 
       {load.state === "loading" && <Placeholder>Reading the store…</Placeholder>}
 
@@ -76,8 +125,8 @@ export function App() {
       )}
 
       {load.state === "ready" && <FunnelView funnel={load.value} />}
-
-      <Agent />
+        </>
+      )}
     </main>
   );
 }

@@ -139,3 +139,70 @@ export const agent = {
   /** Asks a question. */
   ask: (question: string) => send<Answered>("/v1/chat", { question }),
 };
+
+/** One price measurement of a token. */
+export interface Measurement {
+  measured_at: number;
+  fills: number;
+  first_price: number | null;
+  last_price: number | null;
+  peak_price: number | null;
+  trough_price: number | null;
+  graduated_at: number | null;
+  held_to_end_bps: number | null;
+}
+
+/** One recorded decision. */
+export interface DecisionRecord {
+  mint: string;
+  creator: string;
+  decided_at: number;
+  conclusion: string;
+  reasons: string[];
+  coordination: string | null;
+  authority_prevalence: string | null;
+  kernel_outcome: string | null;
+  kernel_reasons: string[];
+  notional_micro_usd: number | null;
+  exit_capacity_micro_usd: number | null;
+}
+
+/** Everything recorded about one mint. */
+export interface TokenEvidence {
+  mint: string;
+  decisions: DecisionRecord[];
+  measurements: Measurement[];
+}
+
+/** One cohort's return distribution. */
+export interface Cohort {
+  scored: number;
+  returns_bps: number[];
+}
+
+/** Radar's selection against its own refusals. */
+export interface Scoreboard {
+  decisions: number;
+  scored: number;
+  proposed: Cohort;
+  refused: Cohort;
+  cost_bps: number;
+}
+
+/** What the server says about itself. */
+export interface Health {
+  status: string;
+  version: string;
+  instruments: number;
+  watermarkSlot: number | null;
+  paidSurface: boolean;
+  agent: { configured: boolean; [k: string]: unknown };
+}
+
+export const research = {
+  token: (mint: string, signal?: AbortSignal) =>
+    get<TokenEvidence>(`/v1/tokens/${encodeURIComponent(mint)}`, signal),
+  scoreboard: (signal?: AbortSignal) => get<Scoreboard>("/v1/scoreboard", signal),
+  health: (signal?: AbortSignal) => get<Health>("/health", signal),
+  store: (signal?: AbortSignal) => get<StoreCounts>("/v1/store", signal),
+};

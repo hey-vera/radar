@@ -225,6 +225,39 @@ pub const fn is_proposal(decision: &Decision) -> bool {
     matches!(decision.conclusion, Conclusion::Proposed)
 }
 
+/// The round-trip cost the scoreboard assumes.
+///
+/// 850 bps, measured. Research 0009 found fewer than one token in ten ever
+/// finishes above it, which is the single most important number on the page and
+/// the reason the scoreboard exists at all.
+pub const ASSUMED_COST_BPS: u64 = 850;
+
+/// The honest scoreboard: what Radar's selection returned against its own
+/// refusals.
+///
+/// The comparison is the **matched control**, not a constant. An earlier version
+/// of this compared Radar's cohort to research 0009's population median, and
+/// those are different quantities: 0009 enters at the token's first fill and
+/// Radar enters forty minutes later, and the constant itself moved from −1,340
+/// to −863 bps as the cohort grew. Refusals are priced in the same passes, the
+/// same way, over the same universe — which is what makes a difference between
+/// them attributable to the selection rather than to the measurement.
+///
+/// # Errors
+///
+/// Returns [`radar_store::StoreError`] if the store cannot be read.
+pub fn scoreboard(
+    reader: &Reader,
+    as_of: AsOf,
+    cost_bps: u64,
+) -> Result<radar_research::selection::Report, radar_store::StoreError> {
+    let decisions = reader.read_decisions(as_of)?;
+    let outcomes = reader.read_outcomes(as_of)?;
+    Ok(radar_research::selection::evaluate(
+        &decisions, &outcomes, cost_bps,
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

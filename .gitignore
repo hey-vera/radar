@@ -17,3 +17,9 @@ web/dist/*
 web/node_modules/
 tsconfig.tsbuildinfo
 web/tsconfig.tsbuildinfo
+
+# Release binaries downloaded for a deploy. `deploy/README.md` says to fetch
+# them with `gh run download --dir ./dist`, so this path is created by following
+# the runbook -- and a 12 MB binary swept in by `git add -A` is the same accident
+# that put an untracked research document into two pull requests.
+/dist

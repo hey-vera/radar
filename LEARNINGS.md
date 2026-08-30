@@ -863,3 +863,78 @@ reads a shape the writer can no longer produce.
 **And the smaller lesson.** This was found by asking "what happens when this
 deploys", not by any check. The mutation score was 100% on the change that
 introduced it. Coverage of the code says nothing about coverage of the *data*.
+
+---
+
+## 18. Two instruments compared as if they were one
+
+**2026-08-30.** Found by an adversarial re-grounding, by reading what the two
+prices in a comparison actually were rather than what the comment beside them
+said.
+
+`radar selection` reports the number this project exists to produce. It prices a
+decision's entry from the smallest rung of the exit probe — a **sell quote**,
+which is a bid net of fees — and its exit from `argMax(lam / tok, (ts, sig))`
+over realised fills, which pools buys and sells and therefore sits near the
+**mid**.
+
+A bid measured against a mid is positive before the market has moved at all.
+
+`selection.rs`'s own module documentation said, in as many words:
+
+> Both prices come from the sell side: the entry from the smallest rung of the
+> exit probe's ladder, the exit from realised fills.
+
+The first clause is true and the second contradicts it in the same sentence.
+Realised fills are not the sell side; the price query filters by transfer type
+and by size and deliberately not by side.
+
+**Cost:** the headline. `0014` published a gross median of **+21 bps** and called
+it "noise around zero". Measured, the artefact is **at least +128 bps** — six
+times the signal it was hiding — so the corrected median is at most **−107 bps**.
+The published reading was not "we cannot tell"; it was the wrong sign.
+
+**What made it survive:** every check that could have caught it was internal.
+`return_bps` is correct arithmetic on its two inputs. `entry_price_of` is tested,
+including `the_entry_price_is_on_the_same_scale_as_a_recorded_outcome` — which
+asserts the two numbers share a *scale*, and a shared scale is exactly what makes
+two incomparable prices look comparable. The test that would have caught it does
+not exist in the suite and could not: it needs the live store, because the gap
+between the instruments is a market fact and not a property of the code.
+
+**What catches a recurrence:** `radar basis`, which measures the gap instead of
+arguing about it, and reports it bucketed by the time between the two
+observations — because the instrument difference and the market's own movement
+can only be separated by how they behave with time. A pure artefact is flat
+across the buckets; real movement grows with the gap.
+
+**The part worth keeping is what the first run of that tool did.** Its two
+tightest buckets held **zero** pairs, and not because the sample was thin: the
+outcome pass runs at `:17` and `radar consider` at `:37`, so no pair can be
+closer than about twenty minutes. Two of five buckets were spent on gaps that
+cannot occur, and the verdict then refused to report because the bucket it cared
+about was empty — discarding 1,779 usable pairs to protect a resolution the
+system does not have.
+
+**A measurement has to be designed against the cadence that exists, not the one
+that would be convenient.** The buckets were wrong in the direction that looks
+rigorous, which is the hardest direction to notice: a tool that refuses to answer
+looks careful rather than mis-specified.
+
+**And the shape of the answer mattered more than the answer.** The corrected
+buckets read +128, +72, +46, −84 as the gap widens. Monotonic decay is neither a
+pure artefact (which would be flat) nor a pure market effect (which would grow) —
+it is a positive constant with a negative drift added. That is what licenses
+reading +128 as a **floor** rather than an estimate, and the premise it rests on
+is computed in the same data as the conclusion and carried beside it, so a reader
+can refuse it. A one-sided claim that survives is worth more than a two-sided one
+that needs extrapolation.
+
+**The general shape, and it is entry 9's with money attached:** entry 9 recorded
+an invariant documented more strongly than its enforcement, and cost nothing
+because the code was right. This is the same failure where the code was wrong —
+and the documentation was not merely stronger than the enforcement, it was
+self-contradicting in a single sentence that had been read and reviewed and
+merged. **Two numbers with the same units and the same scale are not therefore
+the same measurement**, and the only thing that distinguishes them is where each
+one came from.

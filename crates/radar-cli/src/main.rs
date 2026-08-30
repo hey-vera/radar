@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
+mod basis;
 mod brief;
 mod consider;
 mod graduations;
@@ -54,6 +55,9 @@ commands:
                                  did the selection beat the population it
                                  selected from; the question the project exists
                                  to answer
+  basis --store <dir>            how much of that return is the gap between a
+                                 sell quote and a realised fill, rather than a
+                                 gain; a correction `selection` owes
 "
 }
 
@@ -509,6 +513,12 @@ fn selection_report(args: &[String]) -> Result<(), String> {
     selection::run(&reader, cost_bps)
 }
 
+/// Reports the gap between the quoted and realised price instruments.
+fn basis_report(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    basis::run(&reader)
+}
+
 /// Records or re-checks decisions, proving they reproduce.
 fn replay_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -587,6 +597,7 @@ fn main() -> ExitCode {
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
         "selection" => selection_report(&args),
+        "basis" => basis_report(&args),
         "tools" => {
             tools();
             Ok(())

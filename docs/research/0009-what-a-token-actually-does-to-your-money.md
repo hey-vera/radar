@@ -136,3 +136,10 @@ survive `creator_edge`. That is a strictly harder query — it needs decisions
 recorded alongside prices — and it is the point of the paper lane. Until then,
 **−13.4% is the number any selection has to beat**, and it is now measured rather
 than assumed.
+
+---
+
+**Followed up by [`0014`](0014-the-control-was-entirely-tokens-nobody-could-sell.md)**,
+which produced the selected-cohort figure this note's "Next" asked for — and
+found that the control it was measured against consists entirely of tokens
+refused for having no exit, so the comparison could not say what it appeared to.

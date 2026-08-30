@@ -25,6 +25,19 @@ Two facts set the tone, and both are load-bearing:
 So the first deliverable is not a trade. It is a **recorder with a point-in-time
 guarantee**, because the dataset only accumulates forward.
 
+**The recorder has now produced its first verdict on the selection, and it is a
+null result.** Over 4,374 decisions,
+[`0014`](docs/research/0014-the-control-was-entirely-tokens-nobody-could-sell.md)
+measures Radar's proposals at a **gross median of +21 bps** — noise around zero —
+which is **−829 bps** after the measured 850 bps round trip, with 8.05% clearing
+costs. The comparison against refusals that appeared to make it worse is
+unusable: every scoreable refusal is `CapacityBelowFloor`, so the control is
+composed entirely of tokens Radar measured and found it could not sell.
+
+Read that before adding a filter. The gross median says the selection is not
+finding an edge, and the 850 bps says the round trip is currently larger than
+anything the filter has found.
+
 The trading lane exists and is shut, and it is worth being exact about *where*
 it is shut, because an earlier version of this paragraph was not.
 

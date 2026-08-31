@@ -154,3 +154,103 @@ fn a_decision_file_written_before_authority_prevalence_still_reads() {
     assert_eq!(decision.kernel_reasons, vec!["NoAutonomy".to_owned()]);
     assert_eq!(decision.decided_at, Slot(10_000));
 }
+
+/// The outcomes schema as it stood *before* the window extremes.
+///
+/// Copied deliberately rather than derived from `schema_for`, for the reason the
+/// decisions half of this file gives: deriving it would make the test track
+/// whatever the schema currently is, which is the one thing it must not do.
+fn outcomes_schema_before_window_extremes() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("mint", DataType::Utf8, false),
+        Field::new("measured_at", DataType::UInt64, false),
+        Field::new("launch_slot", DataType::UInt64, false),
+        Field::new("first_transfer_slot", DataType::UInt64, true),
+        Field::new("last_transfer_slot", DataType::UInt64, true),
+        Field::new("transfers", DataType::UInt64, false),
+        Field::new("unique_senders", DataType::UInt64, false),
+        Field::new("unique_receivers", DataType::UInt64, false),
+        Field::new("graduated_at", DataType::UInt64, true),
+        Field::new("first_price", DataType::UInt64, true),
+        Field::new("last_price", DataType::UInt64, true),
+        Field::new("peak_price", DataType::UInt64, true),
+        Field::new("trough_price", DataType::UInt64, true),
+        // `window_peak_price` and `window_trough_price` belong here and are
+        // absent on purpose. That absence is the whole test.
+        Field::new("vwap", DataType::UInt64, true),
+        Field::new("fills", DataType::UInt64, false),
+    ]))
+}
+
+fn write_old_outcome_file(dir: &std::path::Path) {
+    let outcomes = dir.join("outcomes");
+    std::fs::create_dir_all(&outcomes).expect("a directory");
+
+    let schema = outcomes_schema_before_window_extremes();
+    let mut mint = StringBuilder::new();
+    mint.append_value("So11111111111111111111111111111111111111112");
+
+    let u64_col = |v: Option<u64>| -> ArrayRef {
+        let mut b = UInt64Builder::new();
+        b.append_option(v);
+        Arc::new(b.finish())
+    };
+
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(mint.finish()),
+            u64_col(Some(9_000)),
+            u64_col(Some(1_000)),
+            u64_col(None),
+            u64_col(None),
+            u64_col(Some(12)),
+            u64_col(Some(4)),
+            u64_col(Some(5)),
+            u64_col(None),
+            u64_col(Some(1_000)),
+            u64_col(Some(1_500)),
+            u64_col(Some(2_000)),
+            u64_col(Some(900)),
+            u64_col(Some(1_400)),
+            u64_col(Some(12)),
+        ],
+    )
+    .expect("a batch in the old shape");
+
+    let path = outcomes.join("slot_000000009000_g0000.parquet");
+    let file = std::fs::File::create(path).expect("a file");
+    let mut writer = ArrowWriter::try_new(file, schema, None).expect("a writer");
+    writer.write(&batch).expect("writes");
+    writer.close().expect("closes");
+}
+
+#[test]
+fn an_outcome_file_written_before_the_window_extremes_still_reads() {
+    // The same failure as the decisions half, one table over. Production holds
+    // roughly a million outcome measurements written before these two columns
+    // existed, and reading them with the erroring accessor would fail every
+    // research command, the interface, and `radar brief` at once — on a store
+    // that is perfectly fine.
+    let dir = tempfile::tempdir().expect("a temporary directory");
+    write_old_outcome_file(dir.path());
+
+    let reader = Reader::open(dir.path());
+    let outcomes = reader
+        .read_outcomes(AsOf::at(Slot(10_000)))
+        .expect("a file missing a later column still reads");
+
+    assert_eq!(outcomes.len(), 1, "the row is there");
+    let outcome = &outcomes[0];
+
+    // The columns that existed are intact.
+    assert_eq!(outcome.peak_price, Some(2_000));
+    assert_eq!(outcome.trough_price, Some(900));
+    assert_eq!(outcome.fills, 12);
+
+    // And the ones that did not read as "not measured" rather than as zero.
+    // Zero would be a claim: that the window's high was nothing, which would
+    // make every exit-rule simulation over this row nonsense.
+    assert_eq!(outcome.window_peak_price, None);
+    assert_eq!(outcome.window_trough_price, None);
+}

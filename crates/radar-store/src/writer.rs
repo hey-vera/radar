@@ -490,6 +490,7 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
     let mut graduated_at = UInt64Builder::new();
     let (mut first_price, mut last_price) = (UInt64Builder::new(), UInt64Builder::new());
     let (mut peak_price, mut trough_price) = (UInt64Builder::new(), UInt64Builder::new());
+    let (mut window_peak, mut window_trough) = (UInt64Builder::new(), UInt64Builder::new());
     let (mut vwap, mut fills) = (UInt64Builder::new(), UInt64Builder::new());
 
     for o in outcomes {
@@ -506,6 +507,8 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
         last_price.append_option(o.last_price);
         peak_price.append_option(o.peak_price);
         trough_price.append_option(o.trough_price);
+        window_peak.append_option(o.window_peak_price);
+        window_trough.append_option(o.window_trough_price);
         vwap.append_option(o.vwap);
         fills.append_value(o.fills);
     }
@@ -526,6 +529,8 @@ fn build_outcome_batch(outcomes: &[Outcome]) -> Result<RecordBatch, StoreError> 
             Arc::new(last_price.finish()),
             Arc::new(peak_price.finish()),
             Arc::new(trough_price.finish()),
+            Arc::new(window_peak.finish()),
+            Arc::new(window_trough.finish()),
             Arc::new(vwap.finish()),
             Arc::new(fills.finish()),
         ],

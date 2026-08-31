@@ -47,6 +47,8 @@ fn outcome(mint: u8, measured_at: u64) -> Outcome {
         last_price: Some(870),
         peak_price: Some(1_400),
         trough_price: Some(800),
+        window_peak_price: None,
+        window_trough_price: None,
         vwap: Some(1_050),
         fills: 9,
     }

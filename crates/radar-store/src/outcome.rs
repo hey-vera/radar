@@ -75,6 +75,34 @@ pub struct Outcome {
     /// What a stop would have had to survive. A strategy whose MAE routinely
     /// exceeds its stop is one that would have been stopped out of its winners.
     pub trough_price: Option<u64>,
+    /// The highest fill price **within the most recent price window**.
+    ///
+    /// # Why this exists beside `peak_price`
+    ///
+    /// [`peak_price`](Self::peak_price) is folded from **launch**, so it can only
+    /// ever widen and it says nothing about when the peak happened. A token that
+    /// spiked on its first day carries that spike forever, and
+    /// [`0020`](https://github.com/hey-vera/radar) could not answer whether an
+    /// exit rule helps because of exactly that: counting only *new all-time*
+    /// extremes left 96% of price paths looking motionless.
+    ///
+    /// This is the same measurement without the fold — the extreme the price
+    /// query saw in the window it just read.
+    ///
+    /// **The window overlaps, and the name says `window` rather than `interval`
+    /// for that reason.** `WINDOW_HOURS` is six and the pass runs hourly, so a
+    /// peak set five hours ago appears in six consecutive measurements. It is a
+    /// bounded recent lookback, not the movement since the previous checkpoint,
+    /// and reading it as the latter would overstate how fresh a move is.
+    ///
+    /// `None` on every row written before this column existed, which is most of
+    /// the store (LEARNINGS 17).
+    pub window_peak_price: Option<u64>,
+    /// The lowest fill price within the most recent price window.
+    ///
+    /// The other half of [`window_peak_price`](Self::window_peak_price), and the
+    /// same caveats apply.
+    pub window_trough_price: Option<u64>,
     /// Volume-weighted average price across every observed fill.
     pub vwap: Option<u64>,
     /// Fills the prices above were computed from.
@@ -276,6 +304,8 @@ mod tests {
             last_price: None,
             peak_price: None,
             trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         }

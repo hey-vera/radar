@@ -98,6 +98,19 @@ pub struct Prices {
     pub trough: Option<u64>,
 }
 
+impl Prices {
+    /// The extremes of the window just read, before any fold.
+    ///
+    /// `peak` and `trough` become running totals the moment [`Prices::fold`]
+    /// touches them. These are the same two numbers as this window saw them, and
+    /// they are what makes recent movement visible at all — see
+    /// [`Outcome::window_peak_price`](radar_store::Outcome::window_peak_price).
+    #[must_use]
+    pub const fn window(&self) -> (Option<u64>, Option<u64>) {
+        (self.peak, self.trough)
+    }
+}
+
 /// How small a transaction may be and still count as a trade, as a divisor of
 /// the mint's own median.
 ///
@@ -452,6 +465,12 @@ pub fn apply(
                 (None, Some(now)) => Some(*now),
                 (None, None) => None,
             };
+            // Taken from *this window* rather than from the fold, and only when
+            // this window actually returned something. Carrying the prior
+            // window's extremes forward would make them a running total again by
+            // a slower route, which is the whole thing they exist to avoid.
+            let (window_peak, window_trough) =
+                priced.get(&key).map_or((None, None), Prices::window);
             if let Some(p) = folded {
                 o.first_price = p.first;
                 o.last_price = p.last;
@@ -459,6 +478,8 @@ pub fn apply(
                 o.trough_price = p.trough;
                 o.vwap = p.vwap;
                 o.fills = p.fills;
+                o.window_peak_price = window_peak;
+                o.window_trough_price = window_trough;
             }
             o
         })
@@ -514,6 +535,8 @@ mod tests {
             last_price: None,
             peak_price: None,
             trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         }
@@ -773,6 +796,8 @@ mod tests {
             last_price: Some(28_940_978_733_955),
             peak_price: Some(68_758_447_614_858),
             trough_price: Some(1_886_773_264_632),
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: Some(21_002_820_020_797),
             fills: 45,
         };
@@ -782,6 +807,72 @@ mod tests {
             o.held_to_end_gain_bps(),
             Some(-2_555),
             "and -25.6% for anyone who simply held"
+        );
+    }
+
+    #[test]
+    fn the_window_extremes_are_this_windows_and_not_the_folded_lifetime_ones() {
+        // The property the whole change exists for, and the one that fails
+        // silently: if `apply` took the extremes from the fold, these columns
+        // would be a slower copy of `peak_price` and `trough_price` and every
+        // exit-rule simulation over them would be back where 0020 left off.
+        //
+        // The prior window peaked at 5,000 and bottomed at 100. This one is
+        // narrower on both sides -- so the folded lifetime figures must keep the
+        // old extremes and the window figures must show the new ones. Nothing
+        // else distinguishes the two.
+        let key = radar_types::Address::new([1u8; 32]).to_string();
+        let prior = to_prices(&[row(&key, "10", "1000", "1200", "5000", "100")]);
+        let now = to_prices(&[row(&key, "5", "1300", "1400", "2000", "900")]);
+
+        let applied = apply(vec![outcome(1)], &now, &prior);
+        let o = &applied[0];
+
+        assert_eq!(o.peak_price, Some(5_000), "the lifetime peak still folds");
+        assert_eq!(o.trough_price, Some(100), "and so does the lifetime trough");
+        assert_eq!(
+            o.window_peak_price,
+            Some(2_000),
+            "the window peak is this window's, not the fold's"
+        );
+        assert_eq!(
+            o.window_trough_price,
+            Some(900),
+            "and so is the window trough"
+        );
+    }
+
+    #[test]
+    fn a_mint_this_window_did_not_price_gets_no_window_extremes() {
+        // Absent, never carried forward. Reusing the previous window's extremes
+        // would make them a running total again by a slower route -- and a value
+        // that stops moving while the token does is worse than no value, because
+        // it looks like a measurement.
+        let key = radar_types::Address::new([1u8; 32]).to_string();
+        let prior = to_prices(&[row(&key, "10", "1000", "1200", "5000", "100")]);
+        let empty = BTreeMap::new();
+
+        let applied = apply(vec![outcome(1)], &empty, &prior);
+        let o = &applied[0];
+
+        assert_eq!(o.peak_price, Some(5_000), "the lifetime figures carry");
+        assert_eq!(o.window_peak_price, None, "the window figures do not");
+        assert_eq!(o.window_trough_price, None);
+    }
+
+    #[test]
+    fn window_returns_the_pair_before_any_fold_touches_it() {
+        let prices = to_prices(&[row("M", "3", "1000", "1100", "1800", "700")])["M"];
+        assert_eq!(prices.window(), (Some(1_800), Some(700)));
+
+        // And a fold does not change what the *later* window reports, which is
+        // what `apply` relies on.
+        let earlier = to_prices(&[row("M", "9", "500", "600", "9000", "50")])["M"];
+        assert_eq!(prices.window(), (Some(1_800), Some(700)));
+        assert_eq!(
+            earlier.fold(prices).peak,
+            Some(9_000),
+            "the fold still folds"
         );
     }
 

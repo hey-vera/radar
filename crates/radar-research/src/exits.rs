@@ -425,6 +425,8 @@ mod tests {
             last_price: Some(last),
             peak_price: Some(peak),
             trough_price: Some(trough),
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         }

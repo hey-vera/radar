@@ -210,6 +210,12 @@ impl Reader {
                 let last_price = optional_u64_col(&batch, "last_price");
                 let peak_price = optional_u64_col(&batch, "peak_price");
                 let trough_price = optional_u64_col(&batch, "trough_price");
+                // Optional by column, not just by row: these were added on
+                // 2026-08-31 and no earlier file has them. The erroring
+                // accessor here would make the whole recorded history
+                // unreadable, which is LEARNINGS 17 exactly.
+                let window_peak = optional_u64_col(&batch, "window_peak_price");
+                let window_trough = optional_u64_col(&batch, "window_trough_price");
                 let vwap = optional_u64_col(&batch, "vwap");
                 let fills = optional_u64_col(&batch, "fills");
 
@@ -234,6 +240,8 @@ impl Reader {
                         last_price: cell(last_price, i),
                         peak_price: cell(peak_price, i),
                         trough_price: cell(trough_price, i),
+                        window_peak_price: cell(window_peak, i),
+                        window_trough_price: cell(window_trough, i),
                         vwap: cell(vwap, i),
                         fills: cell(fills, i).unwrap_or(0),
                     });

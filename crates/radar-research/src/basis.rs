@@ -390,6 +390,8 @@ mod tests {
             last_price: last,
             peak_price: None,
             trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         }

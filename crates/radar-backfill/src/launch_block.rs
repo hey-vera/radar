@@ -96,16 +96,23 @@ pub fn query_for_prevalence() -> String {
 }
 
 /// Reads launch-block shapes from CryptoHouse.
-#[derive(Default)]
 pub struct CryptoHouseBlocks {
     client: Client,
+    /// The lower bound every query here carries.
+    ///
+    /// Held rather than recomputed per call so one run asks one question of the
+    /// endpoint, and so a long run cannot drift its own window underneath itself.
+    since: String,
 }
 
 impl CryptoHouseBlocks {
-    /// Builds one against a given client.
+    /// Builds one against a given client, looking back from `now`.
     #[must_use]
-    pub const fn new(client: Client) -> Self {
-        Self { client }
+    pub fn new(client: Client, now: &str) -> Self {
+        Self {
+            client,
+            since: since(now),
+        }
     }
 }
 
@@ -133,21 +140,62 @@ pub fn query_for_shape(mint: &Address, slot: Slot, since: &str) -> String {
     )
 }
 
-/// The earliest timestamp a launch-block query is bounded by.
+/// How far back a launch-block query looks, in hours.
 ///
-/// A launch block is being asked about because the launch was recorded, so the
-/// answer is always inside the store's own window. This is deliberately far
-/// enough back to cover it and no further: widening it costs scan time on every
-/// call for data that cannot be relevant.
-pub const SINCE: &str = "2026-08-01 00:00:00";
+/// # Why this replaced a fixed date, and what that cost
+///
+/// This was `SINCE: &str = "2026-08-01 00:00:00"` — a **constant calendar
+/// date**. Every launch-block query scanned `token_transfers` from that date to
+/// the present, to find rows in a single slot.
+///
+/// On the day it was written that scanned nothing. A month later it scanned a
+/// month, and it grew by another day every day. `token_transfers` prunes on
+/// `block_timestamp` and nothing else (ADR 0002), so the width of that bound
+/// *is* the cost of the query, and the cost was rising without limit.
+///
+/// Measured on the live instance, the share of candidates whose launch block
+/// could not be read inside the server's timeout:
+///
+/// | period | unreadable |
+/// |---|---|
+/// | early runs | 2–25% |
+/// | a week later | 28–40% |
+/// | the day this was found | **56–68%** |
+///
+/// Read as a vendor problem that is a degrading dependency. It is not. It is
+/// this query getting monotonically more expensive, and it had no ceiling — the
+/// endpoint was being asked to scan an ever-larger haystack for a needle whose
+/// location was known all along.
+///
+/// # Why thirty-six hours
+///
+/// A launch block is only ever asked about for a *candidate*, and `radar
+/// consider`'s window is 216,000 slots — about twenty-four hours. So the block
+/// in question is always within a day, and a bound wider than that buys nothing
+/// and costs scan time on every call.
+///
+/// Thirty-six leaves a half-day of margin for slots that ran slower than 400ms
+/// and for a run that starts late. Narrower would be faster and would eventually
+/// miss a block; the failure of missing one is a launch silently unscreened,
+/// which is the direction that must not be traded for speed.
+pub const LOOKBACK_HOURS: i64 = 36;
+
+/// The lower bound for a launch-block query, given the present moment.
+///
+/// Relative to now rather than to a fixed date, so the scan is a constant width
+/// forever instead of one that grows every day.
+#[must_use]
+pub fn since(now: &str) -> String {
+    crate::prices::shift_hours(now, -LOOKBACK_HOURS).unwrap_or_else(|| now.to_owned())
+}
 
 impl LaunchBlockSource for CryptoHouseBlocks {
     type Error = QueryError;
 
     fn authorities_at(&self, mint: &Address, slot: Slot) -> Result<Vec<String>, Self::Error> {
-        let rows: Vec<AuthorityOnly> = self
-            .client
-            .query(&query_for_authorities(mint, slot, SINCE))?;
+        let rows: Vec<AuthorityOnly> =
+            self.client
+                .query(&query_for_authorities(mint, slot, &self.since))?;
         Ok(rows.into_iter().map(|r| r.authority).collect())
     }
 
@@ -169,7 +217,9 @@ impl LaunchBlockSource for CryptoHouseBlocks {
     }
 
     fn shape_at(&self, mint: &Address, slot: Slot) -> Result<LaunchBlockShape, Self::Error> {
-        let rows: Vec<ShapeRow> = self.client.query(&query_for_shape(mint, slot, SINCE))?;
+        let rows: Vec<ShapeRow> = self
+            .client
+            .query(&query_for_shape(mint, slot, &self.since))?;
 
         // No row means the query ran and found nothing, which is a real
         // observation: the token had no transfers in that slot. An error would
@@ -189,6 +239,8 @@ impl LaunchBlockSource for CryptoHouseBlocks {
 
 #[cfg(test)]
 mod tests {
+    use radar_store::to_epoch;
+
     use super::*;
 
     #[test]
@@ -233,11 +285,11 @@ mod tests {
         // slot filter alone reads naturally, prunes nothing, and fails at the
         // ten-billion-row ceiling even for a single mint (ADR 0002).
         let mint = Address::new([7u8; 32]);
-        let query = query_for_authorities(&mint, Slot(442_771_316), SINCE);
+        let query = query_for_authorities(&mint, Slot(442_771_316), A_BOUND);
 
         assert!(query.contains("block_slot = 442771316"), "{query}");
         assert!(
-            query.contains(&format!("block_timestamp >= '{SINCE}'")),
+            query.contains(&format!("block_timestamp >= '{A_BOUND}'")),
             "{query}"
         );
         assert!(query.contains(&format!("mint = '{mint}'")), "{query}");
@@ -247,6 +299,61 @@ mod tests {
         // And it is a single-block read: no window, no join.
         assert!(!query.contains("INTERVAL"), "{query}");
         assert!(!query.contains("JOIN"), "{query}");
+    }
+
+    /// A fixed lower bound, for the query-shape assertions below.
+    ///
+    /// A constant is right *here* and was wrong in production: these tests care
+    /// that the bound reaches the query, not what it is.
+    const A_BOUND: &str = "2026-08-30 00:00:00";
+
+    #[test]
+    fn the_scan_window_is_a_fixed_width_and_does_not_grow_with_the_calendar() {
+        // The bug this replaced, stated as a property.
+        //
+        // The bound was a constant date, so the window between it and the
+        // present widened every single day -- and `token_transfers` prunes on
+        // `block_timestamp` and nothing else, so that width IS the cost of the
+        // query. It went from scanning nothing to scanning a month, and the
+        // share of launch blocks that could not be read inside the server's
+        // timeout went 2% -> 30% -> 68% with it.
+        //
+        // Two moments a year apart must produce the same width.
+        for now in ["2026-08-01 12:00:00", "2027-08-01 12:00:00"] {
+            let start = since(now);
+            let hours =
+                (to_epoch(now).expect("parses") - to_epoch(&start).expect("parses")) / 3_600;
+            assert_eq!(
+                hours, LOOKBACK_HOURS,
+                "the window from {now} was {hours}h, not {LOOKBACK_HOURS}h"
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_covers_every_candidate_the_lane_can_ask_about_with_margin() {
+        // `radar consider`'s window is 216,000 slots. At Solana's nominal 400ms
+        // that is twenty-four hours, so a launch block is never older than a day
+        // when it is asked about.
+        //
+        // The margin is the whole point of the assertion. Slots run slower than
+        // nominal under load, and a bound that only just covers the nominal case
+        // starts dropping the oldest candidates the first time the chain is
+        // congested -- which presents as a launch silently unscreened, not as an
+        // error. So require real headroom rather than a bare cover.
+        const CANDIDATE_WINDOW_SLOTS: i64 = 216_000;
+        const NOMINAL_SLOT_MS: i64 = 400;
+        let nominal_hours = CANDIDATE_WINDOW_SLOTS * NOMINAL_SLOT_MS / 1000 / 3_600;
+        assert_eq!(nominal_hours, 24, "the candidate window is a day");
+
+        // Half again, so slots would have to run 50% slow before anything is
+        // missed. Narrower is cheaper to scan, and cheap is not what this
+        // constant is for -- being too narrow loses launches, being too wide only
+        // costs scan time, and those two failures are not worth trading evenly.
+        assert!(
+            LOOKBACK_HOURS >= nominal_hours * 3 / 2,
+            "a {LOOKBACK_HOURS}h window leaves too little margin over {nominal_hours}h"
+        );
     }
 
     fn mint() -> Address {
@@ -260,7 +367,7 @@ mod tests {
         // `token_transfers` prunes on block_timestamp only. A slot filter alone
         // reads naturally, prunes nothing, and dies at the row ceiling even for
         // one mint -- the trap ADR 0002 records.
-        let sql = query_for_shape(&mint(), Slot(441_251_921), SINCE);
+        let sql = query_for_shape(&mint(), Slot(441_251_921), A_BOUND);
         assert!(sql.contains("block_timestamp >="), "must prune");
         assert!(sql.contains("block_slot = 441251921"), "must be one slot");
         assert!(sql.contains(&mint().to_string()), "must name the mint");
@@ -270,7 +377,7 @@ mod tests {
     fn the_query_asks_about_exactly_one_slot() {
         // The whole signal is that a bundle is visible in the launch block
         // specifically. A range would dissolve it into ordinary early trading.
-        let sql = query_for_shape(&mint(), Slot(441_251_921), SINCE);
+        let sql = query_for_shape(&mint(), Slot(441_251_921), A_BOUND);
         assert!(!sql.contains(">= 441251921"), "no lower-bounded slot range");
         assert!(!sql.contains("BETWEEN"), "no slot range");
     }
@@ -279,7 +386,7 @@ mod tests {
     fn quote_assets_are_excluded() {
         // Counting recipients of wrapped SOL would measure the market rather
         // than the token.
-        let sql = query_for_shape(&mint(), Slot(1), SINCE);
+        let sql = query_for_shape(&mint(), Slot(1), A_BOUND);
         assert!(sql.contains("So11111111111111111111111111111111111111112"));
     }
 }

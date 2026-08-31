@@ -227,7 +227,13 @@ fn paid_tier<'a>(
     examined: &mut Vec<(radar_store::Decision, Address)>,
 ) -> Vec<Proposal> {
     let rpc = RpcClient::default();
-    let blocks = CryptoHouseBlocks::default();
+    // The clock stays at the edge. The launch-block window is a fixed width
+    // back from *now* rather than from a calendar date, so its cost does not
+    // grow every day -- see `launch_block::LOOKBACK_HOURS`.
+    let blocks = CryptoHouseBlocks::new(
+        radar_backfill::cryptohouse::Client::default(),
+        &radar_store::from_epoch(radar_store::now_epoch()),
+    );
     let mut proposals = Vec::new();
     let mut refused_on_shape = 0usize;
     // Counted apart from "looked and found clean". A fetch that fails leaves the

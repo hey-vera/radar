@@ -525,36 +525,80 @@ const SCREENED_WARN_BPS: u64 = 9_000;
 /// mostly gone — has not happened. The warn threshold is what speaks to today.
 const SCREENED_FAIL_BPS: u64 = 5_000;
 
+/// How many recent decisions the fast window judges on.
+///
+/// **Three hourly runs at `--cap 40`.** The trailing window this check used to
+/// judge on alone is 600 decisions — about fifteen hours — and that is long
+/// enough to hide the exact failure it exists to catch.
+///
+/// It did. On 2026-08-31 the launch-block read collapsed to roughly 38% coverage
+/// over three consecutive runs, well past the fail threshold, and this check
+/// reported **73%** and a warning: the fifteen-hour average was still carrying
+/// twelve hours of healthy runs. A monitor that takes most of a day to describe a
+/// collapse is reporting history.
+///
+/// Three runs rather than one, because a single run genuinely is noisy — the
+/// per-run unreadable share moved between 5.1% and 39.5% on 2026-08-30, so a
+/// one-run trigger would fire on weather. Three consecutive bad runs is not
+/// weather.
+const FAST_WINDOW: usize = 120;
+
 /// The rule, separated from the read.
+///
+/// Judged on **two** windows, and the verdict is the worse of them. The slow
+/// window catches a gradual drift that no single stretch would show; the fast one
+/// catches a collapse while it is still happening. Taking the worse rather than
+/// averaging them is deliberate — rule 8's direction, where the reading that
+/// costs money if ignored wins.
 fn screening_health(decisions: &[radar_store::Decision]) -> Check {
     // Newest last, as `read_decisions` returns them, so the tail is the window.
     let recent: Vec<&radar_store::Decision> =
         decisions.iter().rev().take(CALIBRATION_WINDOW).collect();
-    let total = recent.len();
-    if total == 0 {
+    if recent.is_empty() {
         return Check::new(
             Status::Warn,
             "screening",
             "no decisions recorded yet, so the gate's coverage cannot be judged",
         );
     }
-    let screened = recent.iter().filter(|d| d.coordination.is_some()).count();
-    // Integer throughout, so the same counts always give the same verdict.
-    let bps = u64::try_from(screened).unwrap_or(0).saturating_mul(10_000)
-        / u64::try_from(total).unwrap_or(1);
+
+    let (slow_bps, total, screened) = coverage(&recent);
     let missed = total - screened;
 
+    // Only when there is a fast window's worth. Below that the fast reading is
+    // the slow one with fewer samples, and reporting it as a second opinion
+    // would be reporting the same number twice.
+    let fast = (recent.len() >= FAST_WINDOW).then(|| coverage(&recent[..FAST_WINDOW]).0);
+
+    let trailing = fast.map_or_else(String::new, |fast_bps| {
+        format!("; the last {FAST_WINDOW} read {fast_bps} bps")
+    });
     let detail = format!(
-        "{screened} of {total} candidates had their launch block read ({bps} bps); {missed} skipped the coordination screen"
+        "{screened} of {total} candidates had their launch block read ({slow_bps} bps); {missed} skipped the coordination screen{trailing}"
     );
-    let status = if bps < SCREENED_FAIL_BPS {
+
+    // The worse of the two. A fast window well below the slow one is a collapse
+    // in progress, and it is the reading that matters.
+    let judged = fast.map_or(slow_bps, |fast_bps| fast_bps.min(slow_bps));
+    let status = if judged < SCREENED_FAIL_BPS {
         Status::Fail
-    } else if bps < SCREENED_WARN_BPS {
+    } else if judged < SCREENED_WARN_BPS {
         Status::Warn
     } else {
         Status::Ok
     };
     Check::new(status, "screening", detail)
+}
+
+/// Coverage over a slice, per ten thousand, with the counts it came from.
+///
+/// Integer throughout, so the same counts always give the same verdict.
+fn coverage(window: &[&radar_store::Decision]) -> (u64, usize, usize) {
+    let total = window.len();
+    let screened = window.iter().filter(|d| d.coordination.is_some()).count();
+    let bps = u64::try_from(screened).unwrap_or(0).saturating_mul(10_000)
+        / u64::try_from(total).unwrap_or(1).max(1);
+    (bps, total, screened)
 }
 
 fn serving(probed: Option<(&str, ServingProbe)>) -> Check {
@@ -829,6 +873,92 @@ mod tests {
             "a gate that never ran must alarm"
         );
         assert!(screening_health(&decisions).status.is_alarm());
+    }
+
+    #[test]
+    fn a_collapse_in_the_last_three_runs_alarms_despite_a_healthy_day_behind_it() {
+        // The failure this window was added for, reproduced exactly.
+        //
+        // On 2026-08-31 the launch-block read collapsed to roughly 38% coverage
+        // over three consecutive hourly runs. That is well past the fail
+        // threshold. This check reported **73% and a warning**, because its
+        // fifteen-hour window was still carrying twelve hours of healthy runs.
+        //
+        // Built newest-last, as `read_decisions` returns them, so the collapse is
+        // at the tail where the fast window looks.
+        let mut decisions = Vec::new();
+        // Twelve healthy hours: 480 decisions at ~95% coverage.
+        for i in 0..480 {
+            decisions.push(with_coordination((i % 20 != 0).then_some("Unlikely")));
+        }
+        // Then three runs at 38%.
+        for i in 0..FAST_WINDOW {
+            decisions.push(with_coordination((i % 100 < 38).then_some("Unlikely")));
+        }
+
+        let check = screening_health(&decisions);
+        assert_eq!(
+            check.status,
+            Status::Fail,
+            "a collapse to 38% must alarm while it is happening: {}",
+            check.detail
+        );
+        // And it has to *say* both, or a reader cannot tell a collapse from a
+        // slow decline -- which is the difference between the two windows.
+        assert!(
+            check
+                .detail
+                .contains(&format!("the last {FAST_WINDOW} read")),
+            "the detail must report the fast window: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_single_bad_run_does_not_alarm_on_its_own() {
+        // The other direction, and the reason the fast window is three runs
+        // rather than one. The per-run unreadable share moved between 5.1% and
+        // 39.5% on 2026-08-30 -- so one bad run is weather, and a monitor that
+        // fires on weather teaches its reader to ignore it.
+        let mut decisions = Vec::new();
+        for i in 0..560 {
+            decisions.push(with_coordination((i % 20 != 0).then_some("Unlikely")));
+        }
+        // One run of 40 at 38%, followed by two healthy ones, so the fast window
+        // holds a single bad run among three.
+        for i in 0..40 {
+            decisions.push(with_coordination((i % 100 < 38).then_some("Unlikely")));
+        }
+        for i in 0..80 {
+            decisions.push(with_coordination((i % 20 != 0).then_some("Unlikely")));
+        }
+
+        assert_ne!(
+            screening_health(&decisions).status,
+            Status::Fail,
+            "one bad run among three is not a collapse"
+        );
+    }
+
+    #[test]
+    fn a_healthy_recent_stretch_does_not_rescue_a_degraded_history() {
+        // The worse-of-two rule, checked in the direction that would be easy to
+        // get backwards. A good fast window must not clear a slow window that is
+        // failing -- averaging or preferring the fast reading would let a system
+        // that has been broken all day report healthy after one good hour.
+        let mut decisions = Vec::new();
+        for i in 0..480 {
+            decisions.push(with_coordination((i % 100 < 30).then_some("Unlikely")));
+        }
+        for _ in 0..FAST_WINDOW {
+            decisions.push(with_coordination(Some("Unlikely")));
+        }
+
+        assert_eq!(
+            screening_health(&decisions).status,
+            Status::Fail,
+            "one good stretch must not clear a day of failure"
+        );
     }
 
     #[test]

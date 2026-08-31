@@ -42,8 +42,17 @@ entirely of tokens Radar measured and found it could not sell.
 [`0017`](docs/research/0017-a-control-that-could-have-been-traded.md) builds the
 control that comparison lacked, against 121,810 tokens Radar never decided on,
 priced the same way on both sides and matched on token age and holding period.
-It finds **no edge** — a median edge of 0 bps across four matched strata, and the
-two that can discriminate point opposite ways.
+It finds **no edge** — a median edge of 0 bps across four matched strata. Both
+that note and [`0018`](docs/research/0018-the-deep-tail-points-the-wrong-way.md)
+were re-measured after LEARNINGS 19 corrected the pairing gate, and both
+conclusions survived it.
+
+0018 is the one to read next. Radar sizes every position as a share of measured
+exit capacity, and 80% of proposals sit in a ±13% band around $31 because every
+pre-graduation pump.fun token rides the same curve — so the median position is
+**$6.21**, needing a +8.5% move to clear the round trip. The one band where a
+real position fits, $60+, is **down 68% on 25 rows**. The binding constraint is
+capacity, not signal, and the deep tail does not look like an escape from it.
 
 Read that before adding a filter. The gross median says the selection is not
 finding an edge, and the 850 bps says the round trip is currently larger than

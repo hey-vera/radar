@@ -7,19 +7,20 @@ tokens priced
 **Status:** measured. **No edge found.** Two of four comparable strata are
 uninformative for a reason this note names and does not solve.
 
-> **Correction, 2026-08-30.** The limitation this note names below — that
-> 64–91% of short holds return exactly zero despite the pairing requiring a
-> trade — **has been explained, and it was a defect.** `Outcome::fills` is folded
-> with `saturating_add` across price windows overlapping by five of their six
-> hours, so it grows on every hourly pass whether or not anything trades. The
-> gate keyed on it establishes nothing. See
-> [`LEARNINGS`](../../LEARNINGS.md) entry 19.
+> **Corrected and re-measured, 2026-08-30.** The limitation this note named — that
+> 64–91% of short holds returned exactly zero despite the pairing requiring a
+> trade — **was a defect, and it has been fixed.** `Outcome::fills` is folded with
+> `saturating_add` across price windows overlapping by five of their six hours, so
+> it grew on every hourly pass whether or not anything traded and the gate keyed on
+> it established nothing ([`LEARNINGS`](../../LEARNINGS.md) entry 19). The gate now
+> uses `last_transfer_slot`, a maximum that cannot be inflated by re-reading.
 >
-> The gate now uses `last_transfer_slot`, a maximum that cannot be inflated by
-> re-reading. **Every figure below was produced with the broken gate and should
-> be re-measured** with `radar control` before being cited.
+> **Re-measured, the conclusion is unchanged.** Zero-shares fell from 64–91% to
+> 24–43%, and the edges are now +22, −337, 0 and 0 bps across the four strata —
+> a median edge of **0 bps**, and still no edge. The figures below are the
+> superseded run; the corrected table is in *The result, re-measured*.
 
-## What this replaces
+## What this replaces## What this replaces
 
 [`0014`](0014-the-control-was-entirely-tokens-nobody-could-sell.md) compared
 Radar's proposals against its own refusals and found the comparison unusable:
@@ -61,18 +62,47 @@ Tokens Radar **refused** are excluded from the control as well as from the
 selection. A token its rules touched is not an untouched token, and admitting
 refusals is precisely how 0014's comparison went wrong.
 
-## The result
+## The result, re-measured
+
+With the corrected gate, 990 proposals and 38,461 untouched tokens:
 
 ```
 age    hold      sel n    ctl n   sel p25   sel med  sel p75   ctl med      edge
-<90m   <6h         367    40930         0         0        0         0         0
-<90m   <24h         94     3156     -2260     -1272     -198      -475      -797
-90m+   <6h         341    72622         0         0        0         0         0
-90m+   <24h        289     4954     -2062      -466      764      -575       109
+<90m   <6h         136     7509      -311         0       87       -22        22
+<90m   <24h        207     8706     -1899      -337        0         0      -337
+90m+   <6h          84     7908      -325         0      128         0         0
+90m+   <24h        561    13888      -874         0        0         0         0
 ```
 
-**Median edge across the four comparable strata: 0 bps. One of four favours the
-selection.**
+**Median edge across the four comparable strata: 0 bps.** One favours the
+selection by 22 bps; one is against it by 337; two are exactly level.
+
+The zero-share is much improved but not gone — 24% to 43% per cohort, against
+64–91% before the fix:
+
+```
+  <90m   <6h    selected  3823 bps   control  3043 bps
+  <90m   <24h   selected  2367 bps   control  3743 bps
+  90m+   <6h    selected  2500 bps   control  3762 bps
+  90m+   <24h   selected  4046 bps   control  4278 bps
+```
+
+A quarter to two-fifths of both cohorts still ends exactly where it started,
+which is a real property of a venue where most tokens trade a handful of times
+and stop. It is now comparable between the two cohorts rather than dominating
+both.
+
+### The superseded run
+
+Kept because the correction is only legible beside what it replaced.
+
+```
+age    hold      sel n    ctl n   sel med   ctl med      edge
+<90m   <6h         367    40930         0         0         0
+<90m   <24h         94     3156     -1272      -475      -797
+90m+   <6h         341    72622         0         0         0
+90m+   <24h        289     4954      -466      -575       109
+```
 
 ## The two strata that can discriminate disagree
 

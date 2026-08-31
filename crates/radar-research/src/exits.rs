@@ -103,6 +103,23 @@ impl Outcomes {
         crate::percentile(&self.returns_bps, 0.50)
     }
 
+    /// The return at a percentile, or `None` when nothing was measured.
+    ///
+    /// **The median alone is not enough here, and reporting it alone was a
+    /// mistake this module made once.** The population's baseline median is
+    /// exactly zero — most tokens on this venue trade a few times and stop — so
+    /// *any* take-profit firing more than half the time shows a median at its
+    /// target and appears to beat holding. That is an artefact of a point mass,
+    /// not a finding, and it hides the losing tail that [`0009`] says is the
+    /// whole problem: "the 37–48% that miss the target do not miss it by a
+    /// little".
+    ///
+    /// [`0009`]: ../../docs/research/0009-what-a-token-actually-does-to-your-money.md
+    #[must_use]
+    pub fn percentile(&self, p: f64) -> Option<i64> {
+        crate::percentile(&self.returns_bps, p)
+    }
+
     /// The share clearing `cost_bps`, per ten thousand, or `None` when empty.
     ///
     /// `None` rather than zero: a cohort nobody could measure has no rate, and
@@ -211,7 +228,20 @@ impl Report {
             .iter()
             .filter(|r| r.target_bps.is_some() || r.stop_bps.is_some())
             .filter(|r| r.is_reportable())
+            // The median is not enough. A rule must also not make the losing
+            // tail worse -- otherwise a take-profit that fires on the majority
+            // wins on the median while the minority it abandons goes to -95%,
+            // which is exactly the trade 0009 rejected.
             .filter(|r| r.pessimistic.median().is_some_and(|m| m > base))
+            .filter(|r| {
+                match (
+                    r.pessimistic.percentile(0.25),
+                    self.baseline().and_then(|b| b.pessimistic.percentile(0.25)),
+                ) {
+                    (Some(rule_p25), Some(base_p25)) => rule_p25 >= base_p25,
+                    _ => false,
+                }
+            })
             .collect();
         out.sort_by_key(|r| std::cmp::Reverse(r.pessimistic.median().unwrap_or(i64::MIN)));
         out
@@ -299,11 +329,20 @@ fn simulate(
     let target = target_bps.map(|b| entry128 * (10_000 + i128::from(b)) / 10_000);
     let stop = stop_bps.map(|b| entry128 * (10_000 - i128::from(b)).max(0) / 10_000);
 
-    for step in path.iter().skip(1) {
-        let hit_target = target.is_some_and(|t| i128::from(step.peak) >= t);
-        let hit_stop = stop.is_some_and(|s| i128::from(step.trough) <= s);
+    // The extremes at the entry checkpoint. `peak_price` and `trough_price` are
+    // folded from **launch**, not from here, so a token that peaked before the
+    // entry carries that peak forward — and crediting it would be a target the
+    // position could never have taken. A threshold counts as crossed only when a
+    // NEW extreme is set after entry.
+    let entry_peak = path.first()?.peak;
+    let entry_trough = path.first()?.trough;
 
-        // Both crossed inside this interval and the order is unknown.
+    for step in path.iter().skip(1) {
+        let new_high = step.peak > entry_peak;
+        let new_low = step.trough < entry_trough;
+        let hit_target = new_high && target.is_some_and(|t| i128::from(step.peak) >= t);
+        let hit_stop = new_low && stop.is_some_and(|s| i128::from(step.trough) <= s);
+
         let (first, price) = match (hit_target, hit_stop) {
             // Both crossed inside this interval, and the caller's assumption
             // decides. This is the only arm where the data is silent.
@@ -485,6 +524,123 @@ mod tests {
         assert!(
             !r.beats_baseline().iter().any(|x| std::ptr::eq(*x, both)),
             "a rule winning only on the optimistic bound must not be reported as beating the baseline"
+        );
+    }
+
+    #[test]
+    fn a_peak_set_before_entry_is_not_a_target_the_position_could_take() {
+        // `peak_price` and `trough_price` are folded from LAUNCH, not from the
+        // entry checkpoint. A token that already peaked carries that peak
+        // forward, and crediting it would hand the position a gain that was over
+        // before it started -- look-ahead wearing the shape of a fill.
+        //
+        // Here the peak is 5x the entry price and was set BEFORE entry; nothing
+        // rises afterwards. No target may fire.
+        let path = [
+            step(1, 100, 5_000, 1_000, 1_000),
+            step(1, 200, 5_000, 900, 900),
+        ];
+        let r = evaluate(&path);
+        assert_eq!(
+            rule_of(&r, Some(2_500), None).pessimistic.target,
+            0,
+            "a peak set before entry is not available to the position"
+        );
+        assert_eq!(
+            rule_of(&r, Some(2_500), None).pessimistic.median(),
+            Some(-1_000),
+            "so it is held to the last price"
+        );
+
+        // A NEW high after entry is available, and does fire.
+        let rising = [
+            step(1, 100, 5_000, 1_000, 1_000),
+            step(1, 200, 6_000, 1_000, 6_000),
+        ];
+        assert_eq!(
+            rule_of(&evaluate(&rising), Some(2_500), None)
+                .pessimistic
+                .target,
+            1
+        );
+    }
+
+    #[test]
+    fn a_trough_set_before_entry_does_not_stop_the_position_out() {
+        // The same asymmetry on the other side. Without it every token that had
+        // already fallen would be stopped out at its first checkpoint, for a
+        // loss it never took.
+        let path = [
+            step(1, 100, 1_000, 100, 1_000),
+            step(1, 200, 1_000, 100, 1_100),
+        ];
+        let r = evaluate(&path);
+        assert_eq!(rule_of(&r, None, Some(2_500)).pessimistic.stopped, 0);
+        assert_eq!(
+            rule_of(&r, None, Some(2_500)).pessimistic.median(),
+            Some(1_000)
+        );
+    }
+
+    #[test]
+    fn a_take_profit_can_win_on_the_median_without_helping_the_losing_tail() {
+        // The mistake this module made on its first live run, pinned so the
+        // report cannot make it again.
+        //
+        // The population baseline median is exactly zero -- most tokens on this
+        // venue trade a few times and stop -- so a take-profit that fires on the
+        // majority shows a median at its target and looks like it beats holding.
+        // The minority it walks away from is untouched, and that minority is what
+        // 0009 says decides the question.
+        //
+        // Forty tokens rise past +25% and come back to flat; twenty collapse.
+        let mut outcomes = Vec::new();
+        for i in 0u8..40 {
+            outcomes.push(step(i, 100, 1_000, 1_000, 1_000));
+            outcomes.push(step(i, 200, 1_300, 1_000, 1_000));
+        }
+        for i in 100u8..120 {
+            outcomes.push(step(i, 100, 1_000, 1_000, 1_000));
+            outcomes.push(step(i, 200, 1_000, 50, 50));
+        }
+        let r = evaluate(&outcomes);
+        let tp = rule_of(&r, Some(2_500), None);
+        let base = r.baseline().expect("a baseline");
+
+        assert_eq!(base.pessimistic.median(), Some(0), "the point mass");
+        assert_eq!(
+            tp.pessimistic.median(),
+            Some(2_500),
+            "and the rule beats it"
+        );
+
+        // And does precisely nothing for the losing quarter.
+        assert_eq!(tp.pessimistic.percentile(0.25), Some(-9_500));
+        assert_eq!(
+            tp.pessimistic.percentile(0.25),
+            base.pessimistic.percentile(0.25),
+            "the tail is identical, which is what the median hides"
+        );
+    }
+
+    #[test]
+    fn a_rule_that_deepens_the_losing_tail_is_not_reported_as_a_winner() {
+        // A stop placed inside the typical drawdown takes a loss on tokens that
+        // would have recovered. If that makes p25 worse, the rule must not appear
+        // as beating the baseline however good its median looks.
+        let mut outcomes = Vec::new();
+        for i in 0u8..40 {
+            // Dips below a 10% stop, then recovers to flat.
+            outcomes.push(step(i, 100, 1_000, 1_000, 1_000));
+            outcomes.push(step(i, 200, 1_000, 800, 1_000));
+        }
+        let r = evaluate(&outcomes);
+        let stopped = rule_of(&r, None, Some(1_000));
+        assert_eq!(stopped.pessimistic.stopped, 40, "every one is stopped out");
+        assert_eq!(stopped.pessimistic.median(), Some(-1_000));
+        assert!(
+            !r.beats_baseline().iter().any(|x| std::ptr::eq(*x, stopped)),
+            "a rule that only ever loses must not be reported as beating holding"
         );
     }
 

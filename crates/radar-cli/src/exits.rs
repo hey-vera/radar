@@ -37,15 +37,16 @@ pub fn run(reader: &Reader, cost_bps: i64) -> Result<(), String> {
     println!("assumed cost : {cost_bps} bps round trip\n");
 
     println!(
-        "{:<14} {:>8} {:>11} {:>11} {:>8} {:>8} {:>8}",
-        "target/stop", "n", "pess med", "opt med", "target", "stop", "held"
+        "{:<14} {:>8} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}",
+        "target/stop", "n", "pess p25", "pess med", "opt med", "target", "stop", "held"
     );
     for rule in &report.rules {
         let thin = if rule.is_reportable() { "" } else { "  (thin)" };
         println!(
-            "{:<14} {:>8} {:>11} {:>11} {:>8} {:>8} {:>8}{thin}",
+            "{:<14} {:>8} {:>10} {:>10} {:>10} {:>8} {:>8} {:>8}{thin}",
             rule.label(),
             rule.pessimistic.n(),
+            render(rule.pessimistic.percentile(0.25)),
             render(rule.pessimistic.median()),
             render(rule.optimistic.median()),
             rule.pessimistic.target,

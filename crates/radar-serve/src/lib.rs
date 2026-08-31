@@ -14,6 +14,7 @@
 pub mod access;
 pub mod api;
 pub mod chat;
+pub mod customer;
 mod embed;
 pub mod evidence;
 pub mod facilitator;

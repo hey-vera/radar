@@ -303,6 +303,8 @@ fn store_with_one_bundler() -> (tempfile::TempDir, Reader) {
             last_price: None,
             peak_price: None,
             trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         })

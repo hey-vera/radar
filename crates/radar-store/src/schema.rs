@@ -112,6 +112,12 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             Field::new("last_price", DataType::UInt64, true),
             Field::new("peak_price", DataType::UInt64, true),
             Field::new("trough_price", DataType::UInt64, true),
+            // The same extremes without the fold, so a measurement can say what
+            // moved *recently* rather than only what moved ever. Added
+            // 2026-08-31 and absent from every row written before, which is why
+            // the reader takes them with the optional accessor.
+            Field::new("window_peak_price", DataType::UInt64, true),
+            Field::new("window_trough_price", DataType::UInt64, true),
             Field::new("vwap", DataType::UInt64, true),
             // Not nullable: zero fills is a real, informative measurement.
             Field::new("fills", DataType::UInt64, false),

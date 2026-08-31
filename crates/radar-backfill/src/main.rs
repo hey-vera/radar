@@ -802,6 +802,8 @@ mod tests {
             // transfer produces when the SOL beside it is unrelated.
             peak_price: Some(8_000_000_000),
             trough_price: Some(1),
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: Some(950),
             fills: 40,
         };

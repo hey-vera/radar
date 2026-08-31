@@ -426,6 +426,8 @@ fn outcome(mint_id: u8, measured: u64, launch: u64, last: Option<u64>, transfers
         last_price: None,
         peak_price: None,
         trough_price: None,
+        window_peak_price: None,
+        window_trough_price: None,
         vwap: None,
         fills: 0,
     }

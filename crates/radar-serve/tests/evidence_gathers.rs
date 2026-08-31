@@ -44,6 +44,8 @@ fn populated() -> tempfile::TempDir {
             last_price: Some(870),
             peak_price: Some(1_400),
             trough_price: Some(800),
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: Some(1_050),
             fills: 9,
         })

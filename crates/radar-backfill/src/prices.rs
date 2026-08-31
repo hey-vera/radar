@@ -98,6 +98,19 @@ pub struct Prices {
     pub trough: Option<u64>,
 }
 
+impl Prices {
+    /// The extremes of the window just read, before any fold.
+    ///
+    /// `peak` and `trough` become running totals the moment [`Prices::fold`]
+    /// touches them. These are the same two numbers as this window saw them, and
+    /// they are what makes recent movement visible at all — see
+    /// [`Outcome::window_peak_price`](radar_store::Outcome::window_peak_price).
+    #[must_use]
+    pub const fn window(&self) -> (Option<u64>, Option<u64>) {
+        (self.peak, self.trough)
+    }
+}
+
 /// How small a transaction may be and still count as a trade, as a divisor of
 /// the mint's own median.
 ///
@@ -452,6 +465,12 @@ pub fn apply(
                 (None, Some(now)) => Some(*now),
                 (None, None) => None,
             };
+            // Taken from *this window* rather than from the fold, and only when
+            // this window actually returned something. Carrying the prior
+            // window's extremes forward would make them a running total again by
+            // a slower route, which is the whole thing they exist to avoid.
+            let (window_peak, window_trough) =
+                priced.get(&key).map_or((None, None), Prices::window);
             if let Some(p) = folded {
                 o.first_price = p.first;
                 o.last_price = p.last;
@@ -459,6 +478,8 @@ pub fn apply(
                 o.trough_price = p.trough;
                 o.vwap = p.vwap;
                 o.fills = p.fills;
+                o.window_peak_price = window_peak;
+                o.window_trough_price = window_trough;
             }
             o
         })
@@ -514,6 +535,8 @@ mod tests {
             last_price: None,
             peak_price: None,
             trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: None,
             fills: 0,
         }
@@ -773,6 +796,8 @@ mod tests {
             last_price: Some(28_940_978_733_955),
             peak_price: Some(68_758_447_614_858),
             trough_price: Some(1_886_773_264_632),
+            window_peak_price: None,
+            window_trough_price: None,
             vwap: Some(21_002_820_020_797),
             fills: 45,
         };

@@ -62,10 +62,28 @@ The trading lane exists and is shut, and it is worth being exact about *where*
 it is shut, because an earlier version of this paragraph was not.
 
 `radar-strategy`, `radar-risk`, `radar-signer` and `radar-exec` are each built and
-tested. They are **not tested end to end**: no crate depends on `radar-exec`, no
-test composes it with anything upstream, and the longest chain any test runs is
-strategy → risk in
-[`crates/radar-strategy/tests/pipeline.rs`](crates/radar-strategy/tests/pipeline.rs).
+tested, and **as of 2026-08-31 the lane is composed end to end** by
+[`crates/radar-exec/tests/lane_composes.rs`](crates/radar-exec/tests/lane_composes.rs):
+one real candidate runs strategy → kernel → executor, and the executor's
+`Routing`, `Signing` and `Sending` traits are stubbed so the ordering can be
+exercised without a network or a key.
+
+Be exact about what that does and does not establish, because the previous
+version of this paragraph was exact and it is worth staying that way.
+
+**What it establishes.** The stages agree about what a fundable proposal looks
+like. The signer is handed the kernel's authorisation verbatim rather than a
+reconstruction. A signer refusal ends the attempt without sending. A trade that
+does not pay for itself never reaches the process holding the key. And
+`Policy::CLOSED` refuses the same candidate a permissive policy authorises —
+which is what makes the other tests statements about the lane rather than about
+the fixture.
+
+**What it does not.** No production crate depends on `radar-exec`; the
+composition reaches it through a dev-dependency, so the shipped dependency graph
+is unchanged. Nothing has been signed, sent, or filled. Every cost and failure
+rate in it is supplied by the test rather than measured, and the real signer —
+a separate process that re-decodes what this side built — is not in the loop.
 
 The shipped policy is `Policy::CLOSED`, which refuses every proposal. But the lane
 is shut a long way upstream of that too: on 2026-08-25 a live run over 41,254

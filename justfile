@@ -184,7 +184,7 @@ licence-headers:
 # a suite that quietly shrinks is a suite somebody deleted a test from, and the
 # number going down is the only thing that says so. Raise it when tests are
 # added; never lower it to make a run go green.
-export MIN_WEB_TESTS := "11"
+export MIN_WEB_TESTS := "25"
 
 # The interface: install exactly the locked dependencies, check them for known
 # advisories, type-check, test, and build.

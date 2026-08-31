@@ -161,3 +161,99 @@ currently negative
 is about custody architecture, which is a long-lead item where retrofitting is
 the expensive path — so it is settled now, deliberately, ahead of the thing it
 serves.
+
+---
+
+## Amendment, 2026-08-31 — the deposit wallet, and the cost axis this missed
+
+A second research round changed two things. The decision stands; the model is
+better and the cost basis is new.
+
+### The wallet is created at signup and the customer deposits into it
+
+The original text described a customer's existing wallet with Radar added as a
+delegated signer. **A wallet provisioned at account creation, which the customer
+deposits into and withdraws from, is better** — and not only for onboarding.
+
+**The blast radius becomes the deposit rather than the customer's whole wallet.**
+That is a risk boundary, not a convenience: a bug, a compromised policy or a
+runaway strategy can lose what was deposited and nothing else. The customer sets
+their own exposure by choosing how much to move in, which is a limit no
+`max_position` can express because it lives outside the system entirely.
+
+It is also the category's convention, and it is Privy's flagship pattern —
+embedded self-custody wallets generated for each user at signup.
+
+**The custody line is unchanged and is what makes this legitimate:** the wallet is
+provisioned *to the customer*. They can always revoke the signer and always
+withdraw. If they cannot do both, it is custody wherever the key shards live, and
+the legal fork in the Context above applies.
+
+### The cost axis: Radar is signature-heavy and user-light
+
+This ADR chose a provider on architectural fit and **did not price the
+workload**. It should have.
+
+Privy includes 50,000 signatures a month on every developer tier and charges
+**$0.01 per signature** beyond it, above a $2,000 base. That is priced for
+applications where a user signs occasionally. A trading system is the opposite: a
+round trip is two signatures, so at *N* round trips per customer per day the bill
+is 60·*N* signatures per customer per month.
+
+| trades/customer/day | customers before overage | signature cost at 1,000 customers |
+|---|---|---|
+| 1 | ~833 | ~$100/mo |
+| 10 | ~83 | ~$5,500/mo |
+| 50 | ~16 | ~$29,500/mo |
+
+**Radar's variable cost scales with how often it trades, not with how many
+customers it has.** Nothing else in the system has that shape, and it is the
+figure that should decide the provider.
+
+Worth noting where it points: a design that trades *less* is cheaper on this axis
+as well as on the 850 bps round trip
+([`0019`](../research/0019-the-round-trip-is-not-one-number.md)). Radar's
+exit-first thesis already argues for holding rather than churning. This is a
+second, independent reason for the same discipline.
+
+### What this does to the decision
+
+**Still Privy, and start now** — the free tier below 500 monthly active users
+covers an entire beta at no cost, so the cheapest way to settle the question is
+to run on it and **measure signatures per customer per month**, then choose on
+that number rather than on the estimate above.
+
+Instrumenting that count is a precondition, added to the list below. Committing to
+a provider on an unmeasured cost when the measurement is free is the mistake
+[`LEARNINGS`](../../LEARNINGS.md) entry 1 keeps recording in a different costume.
+
+### The alternatives moved
+
+- **Dynamic was acquired by Fireblocks.** The original text named it as the
+  comparable option; it has changed hands, as did Privy (Stripe, June 2025) and
+  BVNK (Mastercard). **Consolidation here is the norm rather than an event**, and
+  that argues for keeping Radar's side of the boundary thin — which it is: produce
+  an `Authorization` and ask a signer.
+- **Turnkey is the serious alternative on this cost axis**, and more so than the
+  original text allowed. Pure key infrastructure in TEEs, a policy engine at the
+  signing layer, a Solana Developer Platform partner, and per-signature pricing
+  that reportedly scales down at volume. It supplies less product — onboarding and
+  session handling are yours to build — which is the trade.
+- **Stripe owning Privy is a mild point in its favour**, since billing was going
+  to be Stripe regardless and that is one vendor relationship rather than two.
+
+### Honest framing of "non-custodial"
+
+Every hosted option here — Coinbase, Crossmint, Privy, Turnkey — is key material
+held in the provider's cloud inside trusted execution environments. **"Non-custodial"
+means Radar is not the custodian. It does not mean nobody is**, and the
+disclosure required above should say so in those words.
+
+### Added preconditions
+
+5. **Signature counting, from the first customer.** The provider decision is
+   deferred to a measurement that costs nothing to take, and it cannot be taken
+   retroactively.
+6. **Withdrawal must work before deposit is offered.** A deposit path without a
+   proven withdrawal path is custody with extra steps, whatever the architecture
+   diagram says.

@@ -1064,3 +1064,64 @@ that fires on weather teaches its reader to ignore it.
 this take to notice the thing it watches for? Compare that against how long the
 thing takes to do its damage. A monitor slower than its failure is reporting
 history.
+
+## 22. An exemption whose reasoning named the wrong quantity
+
+`verify::check` capped outgoing lamports on a `Buy` and exempted `Reduce` and
+`Exit`. The comment explaining the exemption was not lazy — it gave a reason, and
+the reason was a good one:
+
+> refusing to sign a sale because it is large is how a position gets trapped in
+> exactly the situation the limits exist to prevent
+
+That concern is real. The exemption did not address it, because the two
+quantities are unrelated. A large *sale* is tokens leaving through a DEX and
+lamports arriving. The capped quantity is **system-program transfers out**, of
+which a legitimate exit makes almost none — rent for an account, a fee. Bounding
+it traps nothing.
+
+What the exemption did allow: given any `Exit` authorisation, a transaction that
+listed the authorised mint as an inert account, used only allowlisted programs
+(the system program is necessarily one), and paid its fee from the right wallet
+could transfer **the entire balance to any address**. Every check passed.
+Demonstrated at a hundred SOL against a notional of one micro-dollar.
+
+There was a unit test asserting this, named
+`an_exit_is_not_capped_by_notional`. It passed. It was testing the hole.
+
+**Two checks, and the second is the one that would have caught it.**
+
+The first: when an exemption is justified by a concern, confirm the exempted
+quantity is the one the concern is about. Here "a large sale" and "lamports
+transferred out" were treated as the same thing across one sentence.
+
+The second: a security check's tests should include one written from the
+attacker's side — *what is the worst transaction that passes this?* — rather than
+only cases derived from what the code does. Every existing test in this file was
+of the second kind, which is why forty of them passed over a wallet-draining
+transaction.
+
+## 23. A guarantee that was about a bug, described as being about an attacker
+
+Found immediately after entry 22, in a document written the same day.
+
+ADR 0007 moved the Privy authorization key into the signer, and said an attacker
+holding `radar-serve` "cannot make a customer's wallet sign anything." The signer
+never verifies that the `Authorization` it receives came from the kernel — there
+is no MAC on it, and its `nonce` is never checked against anything. Its real
+guarantee is *the transaction matches the authorisation the caller supplied*.
+
+Against an executor **bug** that is a complete defence, and that is what the
+check was built for. Against a **compromised caller** — the threat the ADR
+invoked to justify the move — it is not, because such a caller writes its own
+authorisation.
+
+Isolating the key is still worth doing: it stops the key being exfiltrated and
+used later or elsewhere, which is most of the value. But the sentence claimed the
+other thing.
+
+**The check:** when writing down what a boundary protects against, name the
+adversary. "Protects against a mistake" and "protects against an attacker" are
+different claims, they are one word apart in English, and a design note that
+means the first while saying the second is how a system ends up trusting a
+component nobody decided to trust.

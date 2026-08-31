@@ -132,8 +132,19 @@ compiles and the tests pass — in which case the tests are also wrong.
    asserts. A connected wallet is **authentication, not authority**, and it may
    never soften a refusal.
 
-   The signer's guarantee is absolute and stated as such: *every account it
-   authorises is one it read in the bytes it signed.* This is why it refuses
+   The signer's guarantee is *every account it authorises is one it read in the
+   bytes it signed* — and it is worth stating precisely what that is a guarantee
+   **against**, because a previous version of this paragraph said "absolute" and
+   was read as more than it is.
+
+   The signer does not verify that the `Authorization` it receives came from the
+   kernel. There is no MAC on it and its `nonce` is never checked. So the
+   property is *the transaction matches the authorisation the caller supplied*:
+   a complete defence against an executor **bug**, which is what it was built
+   for, and not one against a **compromised caller**, which writes its own
+   authorisation. See [LEARNINGS](LEARNINGS.md) 23, and
+   [ADR 0007](docs/adr/0007-the-privy-authorization-key-lives-in-the-signer-process.md)'s
+   amendment for what that means for customer capital. This is why it refuses
    address lookup tables ([ADR 0003](docs/adr/0003-legacy-transactions-because-the-signer-must-be-able-to-read-them.md))
    and why it has no network, no listener and no method that signs arbitrary
    bytes. Anything that would let it sign something it has not fully read breaks

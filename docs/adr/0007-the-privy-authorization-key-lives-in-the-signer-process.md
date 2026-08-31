@@ -95,10 +95,53 @@ process that should never hold a key.
 
 **The shared credential is still in `radar-serve`.** The app secret and Basic
 auth stay there, because they authenticate the *application* rather than
-authorise a signature. This is a real limit on what this ADR buys: an attacker
-with `radar-serve` can read wallet addresses and call every unsigned endpoint.
-They cannot make a customer's wallet sign anything, which is the boundary that
-matters.
+authorise a signature.
+
+### Amendment, 2026-08-31: what this does not buy
+
+An earlier version of this section ended: *"They cannot make a customer's wallet
+sign anything, which is the boundary that matters."* **That was too strong, and
+it was written the same day, in this ADR, by the author of this amendment.**
+
+The signer never checks that the `Authorization` it is handed came from the
+kernel. There is no signature or MAC on it, and the `nonce` — a content hash of
+the proposal and the state it was judged against — is never verified against
+anything. So the signer's real guarantee is:
+
+> the transaction matches the authorisation **the caller supplied**
+
+which is not the same as *the kernel authorised this trade*. Against an
+executor **bug** — a transaction built for the wrong mint, or for more than was
+approved — the check holds completely, and that is what it was built for.
+Against a **compromised caller**, which is exactly the threat this ADR invokes
+to justify moving the key, it does not: such a caller supplies its own
+authorisation with its own bounds, and the signer checks the transaction against
+those.
+
+So the honest statement of what putting the key here buys:
+
+- **It prevents key exfiltration** from the largest attack surface in the
+  system. An attacker with `radar-serve` cannot take the key and use it later,
+  elsewhere, or after the process is restarted. That is real and it is most of
+  the value.
+- **It does not, on its own, prevent a compromised `radar-serve` from getting a
+  transaction signed** while it is compromised.
+
+The thing that actually bounds the second case is **Privy's policy engine**,
+which holds bounds Radar does not supply per-request. That makes ADR 0005's
+precondition 1 — *"a spike confirming the policy engine enforces what this ADR
+assumes … verified by making it refuse, not by reading that it can"* —
+load-bearing rather than a formality. It is the only remaining check on a
+compromised caller, and it has not been performed.
+
+**No customer capital should be exposed until it has been.**
+
+A stronger fix is available and is deliberately not taken here: the signer could
+hold the `Policy` and run the kernel itself, taking a proposal rather than an
+authorisation. `radar-risk` is already one of its dependencies. That moves the
+trust rather than removing it — the caller would then supply the portfolio state
+instead — so it is a real improvement and not a complete one, and it wants its
+own decision rather than being smuggled into this one.
 
 ## Consequences
 

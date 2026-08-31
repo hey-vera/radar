@@ -12,6 +12,7 @@ authors.workspace = true
 [dependencies]
 ed25519-dalek.workspace = true
 radar-risk.workspace = true
+ring = { version = "0.17", default-features = false }
 radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -19,6 +20,9 @@ thiserror.workspace = true
 
 [dev-dependencies]
 ed25519-dalek.workspace = true
+radar-risk.workspace = true
+radar-types.workspace = true
+ring = { version = "0.17", default-features = false }
 serde_json.workspace = true
 
 [[bin]]

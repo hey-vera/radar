@@ -13,7 +13,55 @@ use radar_risk::Authorization;
 use radar_types::Slot;
 use serde::{Deserialize, Serialize};
 
-/// A request to sign.
+/// One line from the caller.
+///
+/// # Why this is tagged, and what a version skew does
+///
+/// Two things can be asked of the signer now: sign a transaction with the local
+/// wallet key, or produce a Privy authorization signature for a customer's
+/// wallet ([ADR 0007](https://github.com/hey-vera/radar/blob/main/docs/adr/0007-the-privy-authorization-key-lives-in-the-signer-process.md)).
+/// They are different requests with different keys and different answers, and a
+/// single struct that meant either depending on which fields were populated
+/// would be one field away from meaning the wrong one.
+///
+/// The tag is required, with no default. An older caller sending an untagged
+/// request does not parse, and an unparseable request is **refused** — so a
+/// deployment that updates one side and not the other stops signing rather than
+/// guessing which kind of signature was wanted. That is the direction rule 8
+/// asks for, and it is why the tag has no fallback.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(tag = "sign", rename_all = "snake_case")]
+pub enum Envelope {
+    /// Sign a transaction with the local wallet key.
+    Local(Request),
+    /// Produce a `privy-authorization-signature` for a customer's wallet.
+    Privy(PrivyAuthorization),
+}
+
+/// A request for a Privy authorization signature.
+///
+/// The transaction is **not** carried here. It lives inside `request.body`,
+/// where the signer reads it from — see
+/// [`privy::authorise`](crate::privy::authorise). Carrying it alongside would
+/// create exactly the gap that check exists to close: one copy inspected, a
+/// different copy sent.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct PrivyAuthorization {
+    /// The authorization the kernel issued.
+    pub authorization: Authorization,
+    /// The Privy request, exactly as it will be sent.
+    pub request: crate::privy::PrivyRequest,
+    /// The customer's wallet, base58.
+    ///
+    /// The account the transaction must be signed by. Supplied by the caller and
+    /// then checked against the bytes, like everything else here — a caller that
+    /// names the wrong wallet gets a refusal, not somebody else's signature.
+    pub wallet: String,
+    /// The caller's view of the chain head.
+    pub now_slot: u64,
+}
+
+/// A request to sign locally.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Request {
     /// The authorization the kernel issued.
@@ -41,6 +89,17 @@ pub enum Response {
         wallet: String,
         /// The signed transaction, base64, ready to submit.
         transaction: String,
+    },
+    /// A Privy authorization signature, base64.
+    ///
+    /// A distinct variant from [`Self::Signed`] rather than a reuse of it. That
+    /// one carries a submittable transaction; this carries a header value for a
+    /// request the caller still has to send. Collapsing them would let a caller
+    /// treat one as the other, and the two mean very different things about what
+    /// has already happened.
+    Authorised {
+        /// The `privy-authorization-signature` header value.
+        signature: String,
     },
     /// Refused, for these reasons.
     ///

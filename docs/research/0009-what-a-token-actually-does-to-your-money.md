@@ -92,7 +92,15 @@ distribution rather than the rule: the 37–48% that miss the target do not miss
 by a little. Their `HELD` is the p10 of −94.9%, and no achievable take-profit on
 the winners pays for that.
 
-**So the exit rule is not where the edge is.** It cannot be — this is the
+**So the exit rule is not where the edge is.**
+
+> **Followed up, 2026-08-30.** This section tests take-profits only, and the
+> diagnosis above -- that the losers do not miss by a little -- is the case for a
+> **stop**, which is never tested here.
+> [`0020`](0020-the-exit-rule-question-cannot-be-answered-here.md) runs that test.
+> It agrees with the conclusion, and finds that the store can observe post-entry
+> movement on only about 4% of paths -- so the agreement is much weaker evidence
+> than this section reads as, and the question stays open. It cannot be — this is the
 unselected population, and Radar's entire thesis is that the edge is in *not
 buying traps*. This note is the control that thesis has to beat, and the number
 to beat is −13.4% before costs.

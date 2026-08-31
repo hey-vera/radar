@@ -122,9 +122,14 @@ pub fn app(state: Arc<AppState>) -> Router {
 ///
 /// Placed as a layer rather than per-route on purpose: a per-route check is one
 /// somebody forgets on the route they add next year, and the route they add next
-/// year is the one that matters. Everything is private unless
-/// [`access::is_public`] says otherwise, which is the direction a mistake should
-/// fall in.
+/// year is the one that matters.
+///
+/// The audience comes from [`access::audience_of`], which is total and falls
+/// back to [`access::Audience::Operator`] — so a route nobody classified is
+/// treated as the most sensitive thing it could be. [`access::Audience::Customer`]
+/// currently requires the same operator check, because no customer
+/// authenticator exists and an audience with nothing behind it must fall to the
+/// strictest available rather than the loosest (rule 8).
 async fn guard(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,
@@ -133,7 +138,7 @@ async fn guard(
     let access::Mode::Enforce(config) = &state.access else {
         return next.run(request).await;
     };
-    if access::is_public(request.uri().path()) {
+    if !access::audience_of(request.uri().path()).requires_operator() {
         return next.run(request).await;
     }
 

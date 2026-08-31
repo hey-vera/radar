@@ -419,6 +419,50 @@ mod tests {
     }
 
     #[test]
+    fn an_audience_array_without_this_app_in_it_is_refused() {
+        // The array branch needs a negative as well as a positive. With only the
+        // positive, `any(|a| a == expected)` can become `!=` and still pass --
+        // any array with one non-matching entry satisfies it, which is every
+        // array an attacker would send.
+        let (pair, keys) = keypair();
+        let claims = format!(
+            r#"{{"iss":"privy.io","aud":["other","another"],"sub":"did:privy:x","sid":"s","exp":{}}}"#,
+            NOW + 3600
+        );
+        let t = token(&pair, r#"{"alg":"ES256","kid":"test"}"#, &claims);
+        assert_eq!(
+            verify(&t, &keys, &config(), NOW),
+            Err(Denied::WrongAudience)
+        );
+    }
+
+    #[test]
+    fn the_skew_allowance_is_swept_at_its_exact_boundary() {
+        // A token expiring exactly one skew-window ago is still accepted; one
+        // second older is not. Testing either side without the boundary lets `<`
+        // become `<=`, which shortens every session by a second -- invisible
+        // until it is a customer reporting random logouts.
+        let (pair, keys) = keypair();
+        let at = |exp: u64| {
+            let claims = format!(
+                r#"{{"iss":"privy.io","aud":"{APP}","sub":"did:privy:x","sid":"s","exp":{exp}}}"#
+            );
+            token(&pair, r#"{"alg":"ES256","kid":"test"}"#, &claims)
+        };
+
+        // exp + SKEW == now: the last instant that is still inside.
+        assert!(
+            verify(&at(NOW - SKEW_SECONDS), &keys, &config(), NOW).is_ok(),
+            "the boundary itself is inside the allowance"
+        );
+        assert_eq!(
+            verify(&at(NOW - SKEW_SECONDS - 1), &keys, &config(), NOW),
+            Err(Denied::Expired),
+            "one second past it is not"
+        );
+    }
+
+    #[test]
     fn a_different_issuer_is_refused_and_the_issuer_is_a_bare_string() {
         // `privy.io`, not `https://privy.io`. Comparing against the URL form
         // would refuse every valid token, and it is the kind of mistake that

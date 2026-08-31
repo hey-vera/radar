@@ -343,6 +343,12 @@ pub fn verify(token: &str, keys: &Keys, config: &Config, now: u64) -> Result<Ide
     // Before the signature, and that ordering is the point. `alg: none` has no
     // signature to check and `HS256` invites checking one with the wrong
     // primitive; both are settled by refusing to proceed at all.
+    //
+    // Pinned to one algorithm rather than a set, and that stays true when a
+    // second authenticator arrives. Privy's access tokens are ES256, so the
+    // customer lane in ADR 0005 needs its own verification path pinned to
+    // ES256 — never this one widened to accept both, because a verifier that
+    // accepts a set is the confusion attack this refusal exists to prevent.
     if header.alg != "RS256" {
         return Err(Denied::UnsupportedAlgorithm(header.alg));
     }

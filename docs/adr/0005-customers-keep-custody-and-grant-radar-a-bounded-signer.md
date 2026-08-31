@@ -257,3 +257,24 @@ disclosure required above should say so in those words.
 6. **Withdrawal must work before deposit is offered.** A deposit path without a
    proven withdrawal path is custody with extra steps, whatever the architecture
    diagram says.
+7. **An ES256 verifier, which does not exist.** Found by checking rather than
+   assuming, and it would otherwise have been discovered after the integration
+   was wired up.
+
+   Privy's access tokens are JWTs signed with **ES256** (ECDSA P-256).
+   [`access::verify`](../../crates/radar-serve/src/access.rs) refuses anything
+   that is not **RS256**, and that refusal is correct and deliberate — the
+   comment above it says why: *"`alg: none` has no signature to check and `HS256`
+   invites checking one with the wrong primitive; both are settled by refusing to
+   proceed at all."*
+
+   So the customer authenticator needs a second verification path, and the shape
+   of the seam is set by the same reasoning that makes the current refusal right:
+   **each authenticator pins exactly one algorithm.** Cloudflare Access pins
+   RS256; a Privy authenticator pins ES256. Neither may accept a *set*, because
+   accepting a set is the algorithm-confusion attack the existing code already
+   refuses to be exposed to.
+
+   It is deliberately not built ahead of a real token to test it against. An
+   untested signature verifier that looks correct is worse than an absent one —
+   it is the only kind of bug in this system that fails open.

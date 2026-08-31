@@ -50,6 +50,17 @@ pub struct Thresholds {
     /// book is the first thing to leave.
     pub capacity_share_bps: u64,
     /// Notional below which a round trip is not worth its costs.
+    ///
+    /// **$1.00 sits in the most expensive cost band there is, and nothing knew
+    /// that.** Research 0019 measures a leg under $2 at **1,521 bps** against
+    /// about 225 above $20 -- so a position at this floor faces a round trip near
+    /// 30%, while Radar's median proposal of $6.21 faces a tenth of that. The
+    /// floor and the median live in bands an order of magnitude apart.
+    ///
+    /// Raising it above the cliff -- roughly 10,000,000 lamports -- is a change
+    /// with a measurement behind it, in the direction that refuses more trades.
+    /// It is left as a plan item rather than made here, because a threshold that
+    /// decides which trades exist is a decision about money.
     pub min_notional: MicroUsd,
     /// Slots beyond which a token's own reading is too old to act on.
     ///
@@ -113,6 +124,19 @@ pub struct Thresholds {
     /// Refining it is [`radar_exec`]'s job once the execution lane records what
     /// a fill actually cost, rather than what a cohort of other people's fills
     /// cost.
+    ///
+    /// **The query behind the table above was lost, and has been rebuilt.** See
+    /// research 0019 and `radar cost`. That measurement does **not** move this
+    /// constant -- it covers all pump.fun trades where the original covered
+    /// trades on 200 fresh launches, which is a broader and cheaper population,
+    /// and lowering a cost estimate is the direction that launders a trade past
+    /// the kernel.
+    ///
+    /// What it does establish is that **this number should not be one number**.
+    /// Measured by notional, a leg under $2 costs 1,521 bps and a leg above $20
+    /// costs about 225 -- a fixed component, exactly as the "rent and any second
+    /// hop" in the method above implies. Applying a single rate to a $1 position
+    /// and a $600 one is arithmetic rather than a cost model.
     ///
     /// [`radar_exec`]: https://github.com/hey-vera/radar
     pub assumed_round_trip_bps: u64,

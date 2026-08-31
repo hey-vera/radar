@@ -23,7 +23,8 @@ use radar_backfill::{cost, cryptohouse};
 /// Returns a message if the endpoint refuses the query.
 pub fn run(from: &str, to: &str) -> Result<(), String> {
     let program = radar_decode::pumpfun::PROGRAM_ID.to_string();
-    let sql = cost::query_for_window(from, to, &program);
+    let discs = radar_backfill::extract::Scope::Trades.discriminators();
+    let sql = cost::query_for_window(from, to, &program, &discs);
 
     let rows: Vec<cost::CostRow> = cryptohouse::Client::default()
         .query(&sql)

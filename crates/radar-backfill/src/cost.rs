@@ -86,38 +86,37 @@ pub const BUCKET_EDGES: [u64; 5] = [
 
 /// The query.
 ///
-/// Bounded to one hour, and to transactions touching the pump.fun program, for
-/// the reason [ADR 0002](https://github.com/hey-vera/radar) gives: Radar is a
-/// guest on a shared free endpoint, and a six-hour window over
-/// `balance_changes` reads 57 GB.
+/// Bounded to a window and to **trade** instructions on the pump.fun program,
+/// for the reason [ADR 0002] gives: Radar is a guest on a shared free endpoint,
+/// and a wide scan over `balance_changes` reads tens of gigabytes.
 ///
-/// `arrayMin` over the deltas is the largest outflow as a negative number, and
-/// `arrayMax` is the largest inflow. The gap between them is the cost. Fills
-/// where the outflow is not positive are dropped: a transaction nobody paid for
-/// is not a trade, and dividing by it would produce a basis-point figure with no
-/// content.
+/// Selecting transactions through `solana.instructions.program_id` is the same
+/// route [`extract`](crate::extract) takes, and it is the one that works —
+/// `solana.transactions` carries `accounts` as an array of tuples, not a flat
+/// `account_keys`, so a `has()` against it is neither cheap nor correct. Success
+/// is `err = ''` for the same reason: there is no `succeeded` column.
+///
+/// `arrayMin` over the deltas is the largest outflow as a negative number and
+/// `arrayMax` is the largest inflow; the gap between them is the cost.
+/// Transactions where the outflow is not positive, or where more came back than
+/// went out, are dropped — neither is a round-trip leg, and dividing by the first
+/// would produce a basis-point figure with no content.
+///
+/// [ADR 0002]: https://github.com/hey-vera/radar
 #[must_use]
-pub fn query_for_window(from: &str, to: &str, program: &str) -> String {
+pub fn query_for_window(from: &str, to: &str, program: &str, discriminators: &[String]) -> String {
     let edges = BUCKET_EDGES
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(",");
+    let discs = discriminators
+        .iter()
+        .map(|d| format!("'{d}'"))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "SELECT toString(bucket) AS bucket_lamports, \
-                toString(count()) AS fills, \
-                toString(toUInt64(quantileExact(0.5)(cost * 10000 / out))) AS median_bps, \
-                toString(toUInt64(quantileExact(0.5)(cost))) AS median_lamports \
-         FROM ( \
-           SELECT -arrayMin(arrayMap(x -> toInt128(x.3 - x.2), balance_changes)) AS out, \
-                  arrayMax(arrayMap(x -> toInt128(x.3 - x.2), balance_changes)) AS inn, \
-                  out - inn AS cost, \
-                  roundDown(out, [{edges}]) AS bucket \
-           FROM solana.transactions \
-           WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}' \
-             AND has(account_keys, '{program}') AND succeeded \
-             AND out > 0 AND cost >= 0 \
-         ) GROUP BY bucket ORDER BY bucket"
+        "WITH ix AS (           SELECT DISTINCT tx_signature            FROM solana.instructions            WHERE program_id='{program}'              AND block_timestamp >= '{from}' AND block_timestamp < '{to}'              AND lower(hex(substring(base58Decode(data),1,8))) IN ({discs})         ), legs AS (           SELECT -arrayMin(arrayMap(x -> toInt128(x.3 - x.2), balance_changes)) AS outflow,                   arrayMax(arrayMap(x -> toInt128(x.3 - x.2), balance_changes)) AS inflow            FROM solana.transactions            WHERE block_timestamp >= '{from}' AND block_timestamp < '{to}'              AND err = ''              AND signature IN (SELECT tx_signature FROM ix)         )          SELECT toString(roundDown(toUInt64(outflow), [{edges}])) AS bucket_lamports,                 toString(count()) AS fills,                 toString(toUInt64(quantileExact(0.5)((outflow - inflow) * 10000 / outflow)))                   AS median_bps,                 toString(toUInt64(quantileExact(0.5)(outflow - inflow))) AS median_lamports          FROM legs          WHERE outflow > 0 AND outflow >= inflow          GROUP BY roundDown(toUInt64(outflow), [{edges}])          ORDER BY roundDown(toUInt64(outflow), [{edges}])"
     )
 }
 
@@ -127,6 +126,10 @@ mod tests {
 
     const PUMP: &str = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P";
 
+    fn q(from: &str, to: &str) -> String {
+        query_for_window(from, to, PUMP, &["aabbccdd11223344".to_owned()])
+    }
+
     #[test]
     fn the_query_bounds_both_ends_of_the_window() {
         // An unbounded upper end reads to the head of the chain, which on
@@ -134,7 +137,7 @@ mod tests {
         // timeout. `prices.rs` leaves its upper end open deliberately and says
         // why; this one must not, because it is a measurement of a fixed past
         // window rather than of what has happened so far.
-        let q = query_for_window("2026-08-25 04:00:00", "2026-08-25 05:00:00", PUMP);
+        let q = q("2026-08-25 04:00:00", "2026-08-25 05:00:00");
         assert!(q.contains("block_timestamp >= '2026-08-25 04:00:00'"));
         assert!(q.contains("block_timestamp < '2026-08-25 05:00:00'"));
     }
@@ -145,21 +148,53 @@ mod tests {
         // notional is nothing -- which would drag every bucket's median toward
         // infinity. LEARNINGS 7 recorded 35 of 97 migrations in a sampled hour
         // being failures; this filter is that lesson applied here.
-        assert!(query_for_window("a", "b", PUMP).contains("succeeded"));
+        // `err = ''` rather than a `succeeded` column, which this table does not
+        // have -- the first version of this query assumed one and was rejected.
+        assert!(q("a", "b").contains("err = ''"));
     }
 
     #[test]
     fn the_query_refuses_a_trade_nobody_paid_for() {
-        // `out > 0` is the denominator guard. Without it a transaction with no
-        // outflow divides by zero and returns a figure with the shape of a cost.
-        assert!(query_for_window("a", "b", PUMP).contains("out > 0"));
+        // `outflow > 0` is the denominator guard. Without it a transaction with
+        // no outflow divides by zero and returns a figure shaped like a cost.
+        assert!(q("a", "b").contains("outflow > 0"));
+        // And a leg that received more than it sent is not a cost at all.
+        assert!(q("a", "b").contains("outflow >= inflow"));
+    }
+
+    #[test]
+    fn the_query_selects_trades_through_the_instruction_table() {
+        // `solana.transactions` has `accounts` as an array of tuples, not a flat
+        // `account_keys`, so filtering there is neither cheap nor correct -- the
+        // first version of this query did exactly that and the endpoint rejected
+        // it. `solana.instructions.program_id` is the route `extract` already
+        // uses.
+        let sql = q("a", "b");
+        assert!(sql.contains("solana.instructions"));
+        assert!(sql.contains("program_id="));
+        assert!(
+            !sql.contains("account_keys"),
+            "the column that does not exist"
+        );
+    }
+
+    #[test]
+    fn every_discriminator_reaches_the_filter() {
+        // Dropping one silently narrows the population to a subset of trade
+        // shapes, and LEARNINGS 3 is what happens when a filter quietly stops
+        // matching an instruction variant.
+        let discs = vec!["aa11".to_owned(), "bb22".to_owned()];
+        let sql = query_for_window("a", "b", PUMP, &discs);
+        for d in &discs {
+            assert!(sql.contains(d), "discriminator {d} missing");
+        }
     }
 
     #[test]
     fn every_bucket_edge_reaches_the_query() {
         // A dropped edge silently merges two buckets, and merging is exactly
         // what destroys the fixed-versus-proportional split this exists to make.
-        let q = query_for_window("a", "b", PUMP);
+        let q = q("a", "b");
         for edge in BUCKET_EDGES {
             assert!(q.contains(&edge.to_string()), "edge {edge} missing");
         }
@@ -182,6 +217,6 @@ mod tests {
     fn the_program_is_a_parameter_and_reaches_the_filter() {
         // Hardcoding it here would make this unusable for the venue question the
         // measurement exists to inform.
-        assert!(query_for_window("a", "b", PUMP).contains(PUMP));
+        assert!(q("a", "b").contains(PUMP));
     }
 }

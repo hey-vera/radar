@@ -645,6 +645,137 @@ mod tests {
     }
 
     #[test]
+    fn an_outcomes_reports_how_many_positions_it_holds() {
+        // The count is what says whether a median is worth reading. A constant
+        // here silently changes how much weight the whole table carries.
+        let mut o = Outcomes::default();
+        assert_eq!(o.n(), 0);
+        o.returns_bps = vec![-100, 0, 250];
+        assert_eq!(o.n(), 3);
+        assert_eq!(o.median(), Some(0));
+        assert_eq!(o.percentile(0.0), Some(-100));
+    }
+
+    #[test]
+    fn clearing_costs_is_strictly_above_them_and_scaled_by_ten_thousand() {
+        // Strictly above, not at: a position returning exactly the round trip
+        // broke even and paid for the privilege. And the share is a proportion,
+        // so the division cannot become a remainder or a product.
+        let o = Outcomes {
+            returns_bps: vec![-1_000, 850, 851, 5_000],
+            ..Outcomes::default()
+        };
+        assert_eq!(o.beat_cost_bps(850), Some(5_000), "two of four clear 850");
+        assert_eq!(o.beat_cost_bps(0), Some(7_500), "three of four clear zero");
+        assert_eq!(o.beat_cost_bps(10_000), Some(0), "none clear ten thousand");
+        // Absent, never zero: nobody measured is not nobody made money (rule 9).
+        assert_eq!(Outcomes::default().beat_cost_bps(850), None);
+    }
+
+    #[test]
+    fn a_rule_labels_itself_with_both_of_its_thresholds() {
+        // The label is how a reader tells one row from another. An empty or
+        // constant one makes every row of the report indistinguishable.
+        let rule = |t, s| Rule {
+            target_bps: t,
+            stop_bps: s,
+            pessimistic: Outcomes::default(),
+            optimistic: Outcomes::default(),
+        };
+        assert_eq!(rule(Some(2_500), Some(1_000)).label(), "+2500/-1000");
+        assert_eq!(rule(Some(2_500), None).label(), "+2500/—");
+        assert_eq!(rule(None, Some(1_000)).label(), "—/-1000");
+        assert_eq!(rule(None, None).label(), "—/—", "the baseline");
+    }
+
+    #[test]
+    fn reportable_requires_the_cohort_floor_and_is_true_above_it() {
+        // Both directions, so it cannot be replaced by either constant.
+        let with = |n: usize| Rule {
+            target_bps: None,
+            stop_bps: None,
+            pessimistic: Outcomes {
+                returns_bps: vec![0; n],
+                ..Outcomes::default()
+            },
+            optimistic: Outcomes::default(),
+        };
+        assert!(!with(MIN_COHORT - 1).is_reportable());
+        assert!(with(MIN_COHORT).is_reportable(), "the floor is inclusive");
+        assert!(with(MIN_COHORT + 1).is_reportable());
+    }
+
+    #[test]
+    fn the_baseline_is_the_rule_with_neither_threshold_not_either() {
+        // `&&` widened to `||` would return the first rule carrying *no target*,
+        // which is a stop-only rule -- and every comparison in the report would
+        // then be against a rule rather than against holding.
+        let r = evaluate(&[
+            step(1, 100, 1_000, 1_000, 1_000),
+            step(1, 200, 1_000, 1_000, 900),
+        ]);
+        let base = r.baseline().expect("a baseline");
+        assert!(base.target_bps.is_none() && base.stop_bps.is_none());
+        assert_eq!(base.label(), "—/—");
+    }
+
+    #[test]
+    fn beating_the_baseline_needs_a_strictly_better_median_and_a_real_rule() {
+        // Three properties at once, because they interact.
+        //
+        // A rule must beat the baseline STRICTLY -- equal is not better, and `>`
+        // widened to `>=` would report every rule that changes nothing.
+        //
+        // The baseline must never appear in its own winners list, which is what
+        // the `target.is_some() || stop.is_some()` filter is for: narrowed to
+        // `&&`, single-sided rules would silently stop being eligible.
+        let mut outcomes = Vec::new();
+        for i in 0u8..40 {
+            // Rises past +10% after entry and stays there: a target-only rule
+            // captures it, and holding captures more.
+            outcomes.push(step(i, 100, 1_000, 1_000, 1_000));
+            outcomes.push(step(i, 200, 1_150, 1_000, 1_150));
+        }
+        let r = evaluate(&outcomes);
+        let base_median = r.baseline().and_then(|b| b.pessimistic.median());
+        assert_eq!(base_median, Some(1_500), "holding takes the whole move");
+
+        let winners = r.beats_baseline();
+        assert!(
+            !winners
+                .iter()
+                .any(|w| w.target_bps.is_none() && w.stop_bps.is_none()),
+            "the baseline must never beat itself"
+        );
+        // A +1000 target caps at 999, below the baseline's 1500, so nothing wins.
+        assert!(
+            winners.is_empty(),
+            "no rule improves on holding here: {:?}",
+            winners.iter().map(|w| w.label()).collect::<Vec<_>>()
+        );
+
+        // And a single-sided rule IS eligible when it does win -- proved by
+        // giving one a path holding cannot capture.
+        let mut better = Vec::new();
+        for i in 0u8..40 {
+            better.push(step(i, 100, 1_000, 1_000, 1_000));
+            better.push(step(i, 200, 1_150, 1_000, 500));
+        }
+        let r = evaluate(&better);
+        assert_eq!(
+            r.baseline().and_then(|b| b.pessimistic.median()),
+            Some(-5_000)
+        );
+        let winners = r.beats_baseline();
+        assert!(
+            winners
+                .iter()
+                .any(|w| w.target_bps == Some(1_000) && w.stop_bps.is_none()),
+            "a target-only rule that beats holding must be reported"
+        );
+    }
+
+    #[test]
     fn a_path_of_one_observation_is_not_a_path() {
         // An entry with nothing after it cannot be exited, and scoring it as
         // held-flat would put a zero into every rule's distribution.

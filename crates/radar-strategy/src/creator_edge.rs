@@ -51,16 +51,42 @@ pub struct Thresholds {
     pub capacity_share_bps: u64,
     /// Notional below which a round trip is not worth its costs.
     ///
-    /// **$1.00 sits in the most expensive cost band there is, and nothing knew
-    /// that.** Research 0019 measures a leg under $2 at **1,521 bps** against
-    /// about 225 above $20 -- so a position at this floor faces a round trip near
-    /// 30%, while Radar's median proposal of $6.21 faces a tenth of that. The
-    /// floor and the median live in bands an order of magnitude apart.
+    /// **This was $1.00, which sits inside the most expensive cost band there
+    /// is.** Research 0019 measures a leg under $2 at **1,521 bps** against about
+    /// 225 above $20, so a position at the old floor faced a round trip near
+    /// 30% while Radar's median proposal of $6.21 faced a tenth of that. The
+    /// floor and the median lived in bands an order of magnitude apart, and
+    /// nothing in the system knew it.
     ///
-    /// Raising it above the cliff -- roughly 10,000,000 lamports -- is a change
-    /// with a measurement behind it, in the direction that refuses more trades.
-    /// It is left as a plan item rather than made here, because a threshold that
-    /// decides which trades exist is a decision about money.
+    /// # Why three dollars, and why that is a compromise
+    ///
+    /// The cliff is at [`COST_CLIFF_LAMPORTS`] — ten million lamports — because
+    /// the costs that dominate below it are **fixed in lamports**: account rent,
+    /// the base fee, the priority fee. None of them shrink because a position is
+    /// small.
+    ///
+    /// This threshold is in **dollars**. So the two are denominated differently,
+    /// and the floor's real height moves with the SOL price:
+    ///
+    /// | SOL | $3.00 in lamports | clears the cliff |
+    /// |---|---|---|
+    /// | $100 | 30,000,000 | yes |
+    /// | $200 | 15,000,000 | yes |
+    /// | $330 | ~9,100,000 | **no** |
+    ///
+    /// Three dollars clears it comfortably to about $330 a SOL and stops clearing
+    /// it above that. That is the honest description of a compromise rather than
+    /// a solution, and `the_floor_clears_the_measured_cost_cliff` pins the
+    /// arithmetic so the compromise cannot silently stop holding.
+    ///
+    /// **The real fix is to denominate the floor in lamports**, which is what the
+    /// cost it defends against is denominated in. That is a type change reaching
+    /// through the kernel and is not made here.
+    ///
+    /// Raising it was chosen over lowering the cost estimate, which is the
+    /// direction that launders a trade past the kernel. It refuses more trades
+    /// than it did, which is the safe direction, and it removes only proposals
+    /// that arithmetically cannot pay for themselves.
     pub min_notional: MicroUsd,
     /// Slots beyond which a token's own reading is too old to act on.
     ///
@@ -163,7 +189,10 @@ impl Thresholds {
         capacity_share_bps: 2_000,
         // Measured, not assumed. See the field's documentation.
         max_launches_per_day: 10,
-        min_notional: MicroUsd::DOLLAR,
+        // Three dollars, not one. See the field's documentation: one dollar
+        // sits inside the fixed-cost cliff 0019 measured, where a round trip
+        // costs about 30%.
+        min_notional: MicroUsd(3_000_000),
         // ~40 minutes at 2.5 slots a second.
         max_token_age: 6_000,
         // ~24 hours. Deliberately wider than the outcome pass's largest
@@ -324,6 +353,28 @@ fn size(candidate: &Candidate, t: &Thresholds) -> Option<MicroUsd> {
 /// measurement rather than as a magic number.
 #[cfg(test)]
 const MEASURED_MEDIAN_ROUND_TRIP_BPS: u64 = 846;
+
+/// The notional below which a round trip is dominated by costs that do not
+/// shrink with it, in lamports.
+///
+/// Research 0019 measured cost by notional over 183,647 pump.fun trade legs:
+///
+/// | notional | median cost a leg |
+/// |---|---|
+/// | $0.20 – $2 | **1,521 bps** |
+/// | $2 – $20 | 125 bps |
+/// | $20 – $200 | 228 bps |
+///
+/// The lamport column is nearly flat across the two smallest buckets — 115,000
+/// against 231,971 for a *tenfold* rise in notional — which is a fixed cost
+/// wearing a percentage. The cliff is at ten million lamports.
+pub const COST_CLIFF_LAMPORTS: u64 = 10_000_000;
+
+/// The SOL price the notional floor below was chosen against, in micro-USD.
+///
+/// Named because the floor is a compromise and this is the term that makes it
+/// one. See [`Thresholds::min_notional`].
+pub const FLOOR_REFERENCE_SOL_PRICE: MicroUsd = MicroUsd(200_000_000);
 
 /// The assumption may not sit below what a round trip was measured to cost.
 ///
@@ -811,6 +862,35 @@ mod tests {
         };
         assert!(p.estimated_round_trip_cost > MicroUsd::ZERO);
         assert_eq!(p.estimated_round_trip_cost, MicroUsd::from_dollars(8.16));
+    }
+
+    #[test]
+    fn the_floor_clears_the_measured_cost_cliff() {
+        // The compromise, pinned. `min_notional` is in dollars and the cost it
+        // defends against is in lamports, so the floor's real height moves with
+        // the SOL price -- and this is what stops that drifting unnoticed.
+        //
+        // At the reference price the floor must sit clear of the cliff with
+        // margin. If somebody lowers it, or the cliff is re-measured higher,
+        // this fails rather than the system quietly proposing trades that cannot
+        // pay for themselves again.
+        let floor = Thresholds::DEFAULT.min_notional;
+        let lamports =
+            u128::from(floor.get()) * 1_000_000_000 / u128::from(FLOOR_REFERENCE_SOL_PRICE.get());
+
+        assert!(
+            lamports >= u128::from(COST_CLIFF_LAMPORTS),
+            "the floor is {lamports} lamports at the reference SOL price, inside \
+             the {COST_CLIFF_LAMPORTS} lamport cliff research 0019 measured"
+        );
+
+        // And it is not so high that it refuses the population it exists to
+        // trade. Radar's median proposal is $6.21; a floor above that refuses
+        // more than half of everything, which is a different mistake.
+        assert!(
+            floor.get() < MicroUsd::from_dollars(6.21).get(),
+            "a floor above the median proposal refuses most of the population"
+        );
     }
 
     #[test]

@@ -1446,6 +1446,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-customer"
+version = "0.0.1"
+dependencies = [
+ "blake3",
+ "radar-risk",
+ "radar-types",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "radar-decode"
 version = "0.0.1"
 dependencies = [

@@ -45,17 +45,14 @@ pub fn run(from: &str, to: &str) -> Result<(), String> {
         "notional >=", "fills", "median bps", "median lamports"
     );
 
-    let mut total = 0u64;
     for row in &rows {
-        let fills: u64 = row.fills.parse().unwrap_or(0);
-        total += fills;
         println!(
             "{:>16} {:>10} {:>12} {:>16}",
             row.bucket_lamports, row.fills, row.median_bps, row.median_lamports
         );
     }
 
-    println!("\n{total} fill(s) measured, one leg each.");
+    println!("\n{} fill(s) measured, one leg each.", total_fills(&rows));
     println!(
         "\nCost is the gap between the largest outflow and the largest inflow of the\n\
          transaction -- protocol fee, priority fee, rent and slippage together.\n\
@@ -71,4 +68,57 @@ pub fn run(from: &str, to: &str) -> Result<(), String> {
     );
 
     Ok(())
+}
+
+/// Fills across every bucket.
+///
+/// Extracted from the printer so it can be tested without a network round trip.
+/// It is the only number in the output that is not straight from the server, and
+/// it is the one a reader uses to judge whether any bucket's median is worth
+/// reading — 90 legs and 79,061 legs are different evidence.
+///
+/// A row whose count does not parse contributes nothing rather than aborting the
+/// report: the per-bucket figures beside it are still the measurement, and
+/// refusing to print them because a total cannot be formed would lose more than
+/// it protects.
+fn total_fills(rows: &[cost::CostRow]) -> u64 {
+    rows.iter()
+        .filter_map(|r| r.fills.parse::<u64>().ok())
+        .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(fills: &str) -> cost::CostRow {
+        cost::CostRow {
+            bucket_lamports: "1000000".to_owned(),
+            fills: fills.to_owned(),
+            median_bps: "0".to_owned(),
+            median_lamports: "0".to_owned(),
+        }
+    }
+
+    #[test]
+    fn the_total_sums_every_bucket() {
+        // Summed, not differenced or multiplied. The distinction is not academic:
+        // this number is what tells a reader whether a bucket's median rests on
+        // ninety legs or seventy-nine thousand.
+        assert_eq!(
+            total_fills(&[row("29996"), row("79061"), row("90")]),
+            109_147
+        );
+        assert_eq!(total_fills(&[]), 0);
+        assert_eq!(total_fills(&[row("1")]), 1);
+    }
+
+    #[test]
+    fn an_unparseable_count_contributes_nothing_rather_than_aborting() {
+        // The per-bucket figures beside it are still the measurement.
+        assert_eq!(
+            total_fills(&[row("12"), row("not a number"), row("30")]),
+            42
+        );
+    }
 }

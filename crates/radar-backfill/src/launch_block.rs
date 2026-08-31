@@ -114,12 +114,6 @@ impl CryptoHouseBlocks {
             since: since(now),
         }
     }
-
-    /// The lower bound in force, for a caller that wants to report it.
-    #[must_use]
-    pub fn window_starts(&self) -> &str {
-        &self.since
-    }
 }
 
 /// Builds the query for one mint in one slot.

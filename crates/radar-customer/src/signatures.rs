@@ -104,12 +104,6 @@ impl Subject {
                 .to_string(),
         ))
     }
-
-    /// The hex digest, for writing.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
 }
 
 /// What the meter would need to be rebuilt.

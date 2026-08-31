@@ -8,18 +8,15 @@ exit capacity
 n=16**. Directional, not settled. Recorded because the direction is the opposite
 of the one the plan was hoping for.
 
-> **Correction, 2026-08-30.** The returns below were produced with a pairing
-> gate keyed on `Outcome::fills`, which grows on every hourly pass whether or not
-> anything trades — the price windows overlap by five of their six hours and the
-> fold adds their counts ([`LEARNINGS`](../../LEARNINGS.md) entry 19). **The
-> band medians should be re-measured** with `radar control` before being cited.
->
-> The capacity distribution itself is unaffected: it is read from
-> `Decision::exit_capacity_micro_usd`, which is recorded once and never folded.
-> So the $6.21 median notional, the ±13% band and the shape of the argument all
-> stand; the per-band return figures are what needs re-running.
+> **Corrected and re-measured, 2026-08-30.** The returns below were produced with
+> a pairing gate keyed on `Outcome::fills`, which grows on every hourly pass
+> whether or not anything trades ([`LEARNINGS`](../../LEARNINGS.md) entry 19).
+> Re-measured with the corrected gate, **the finding holds and is no longer thin**:
+> the `$60+` band now carries **25 rows — above the twenty-row floor — and still
+> reads −6,813 bps.** The status line's caveat is withdrawn. See *The result,
+> re-measured*.
 
-## Why this question comes before any filter work
+## Why this question comes before any filter work## Why this question comes before any filter work
 
 Radar sizes every position as a share of measured exit capacity, so capacity
 decides how much money can move. Measured across 2,365 recorded proposals:
@@ -42,11 +39,32 @@ there is any depth here at all — and Radar has **never selected for capacity**
 It selects on creator history and sizes off whatever depth happens to be
 present.
 
-## The result
+## The result, re-measured
 
-Priced realised-to-realised, the same way 0017 prices both its cohorts, because
-[`0016`](0016-the-entry-was-a-bid-and-the-exit-was-a-mid.md) showed a
+Priced realised-to-realised, the same way
+[`0017`](0017-a-control-that-could-have-been-traded.md) prices both its cohorts,
+because [`0016`](0016-the-entry-was-a-bid-and-the-exit-was-a-mid.md) showed a
 quote-to-fill comparison carries an artefact larger than anything it measures.
+
+```
+capacity        n     median   zero share
+<$25          123       -278         1544
+$25-30        461          0         4663
+$30-35        265          0         2943
+$35-60        116       -311         2844
+$60+           25      -6813         2000
+```
+
+**The deep band — the only one where a position of any size is possible — is
+down 68%, on 25 rows, above the floor.**
+
+The median is unchanged from the pre-correction run at −6,813 bps, while the
+band grew from 16 rows to 25. Two runs with a different pairing rule and nine
+more tokens landing on the same order statistic is worth noting rather than
+celebrating: it is consistent with a deep band whose middle is genuinely there,
+and it is one number.
+
+### The superseded run
 
 ```
 capacity        n     median   zero share
@@ -57,17 +75,10 @@ $35-60        100       -541         1900
 $60+           16      -6813            0
 ```
 
-**The deep band is the only one where a position of any size is possible, and its
-median is −6,813 bps — down 68%.**
+## Why this is still directional rather than settled
 
-It is also the only band with **no** flat returns at all. The middle bands, where
-876 of 1,100 proposals sit, are 41% and 63% exactly zero — the point mass 0017
-identified, tokens that barely traded. The deep tokens traded, and they fell.
-
-## Why this is directional and not a finding
-
-**Sixteen rows.** Below the twenty-row floor this repository uses, and far below
-anything that should move a decision.
+**Twenty-five rows.** It clears the floor this repository uses, which the first
+run did not — but twenty-five is the floor, not a comfortable margin.
 [`LEARNINGS`](../../LEARNINGS.md) entries 7, 10 and 11 are all cases of a
 confident conclusion drawn from a small selected sample, and the $60+ band is
 selected by exactly the mechanism under study.

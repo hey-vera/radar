@@ -152,6 +152,21 @@ pub struct KeyCache {
 /// outage and is a stale cache.
 const KEY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(3_600);
 
+/// Whether a key set fetched this long ago may still be used.
+///
+/// A pure function so the boundary can be swept, which it cannot be inside
+/// `get` — the same shape [`access::is_fresh`](crate::access::is_fresh) uses and
+/// for the same reason.
+///
+/// Strict, so a set exactly at its lifetime is refetched. The boundary arrives
+/// once an hour on a busy instance and should fall towards freshness: a stale set
+/// held one request too long refuses every token signed with a rotated key, which
+/// looks like an outage.
+#[must_use]
+pub const fn is_fresh(age: std::time::Duration) -> bool {
+    age.as_nanos() < KEY_LIFETIME.as_nanos()
+}
+
 impl KeyCache {
     /// An empty cache.
     #[must_use]
@@ -188,7 +203,7 @@ impl KeyCache {
     pub fn get(&self, config: &Config) -> Result<Keys, Denied> {
         if let Ok(guard) = self.inner.read()
             && let Some((fetched, keys)) = guard.as_ref()
-            && fetched.elapsed() < KEY_LIFETIME
+            && is_fresh(fetched.elapsed())
         {
             return Ok(keys.clone());
         }
@@ -788,6 +803,22 @@ mod tests {
             headers.insert(BEARER_HEADER, value.parse().unwrap());
             assert_eq!(token_from(&headers), None, "{value}");
         }
+    }
+
+    #[test]
+    fn a_key_set_is_used_until_its_lifetime_and_not_past_it() {
+        use std::time::Duration;
+
+        assert!(is_fresh(Duration::ZERO));
+        assert!(is_fresh(
+            KEY_LIFETIME.saturating_sub(Duration::from_nanos(1))
+        ));
+        // Strict at the boundary: exactly at its lifetime, a set is refetched.
+        // Falling the other way holds a stale set one request too long, which
+        // refuses every token signed with a rotated key and looks like an outage.
+        assert!(!is_fresh(KEY_LIFETIME));
+        assert!(!is_fresh(KEY_LIFETIME + Duration::from_nanos(1)));
+        assert!(!is_fresh(Duration::from_secs(86_400)));
     }
 
     #[test]

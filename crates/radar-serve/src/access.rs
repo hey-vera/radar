@@ -527,11 +527,17 @@ impl Audience {
         matches!(self, Self::Public)
     }
 
-    /// Whether an operator's identity is enough to reach this audience.
+    /// Whether an operator's identity is what this audience is checked against.
     ///
-    /// True for both `Customer` and `Operator`, and the asymmetry is the point:
-    /// an operator may read a customer page — that is what debugging a customer's
-    /// problem requires — while [`Self::accepts_customer`] refuses the reverse.
+    /// True for `Customer` and `Operator`; **false for `Public`**, which is
+    /// checked against nothing at all and is answered by [`Self::is_open`] before
+    /// this is ever consulted. Saying `false` there keeps the three predicates
+    /// answering the same question — *what does reaching this require* — rather
+    /// than two of them answering that and one answering "who could get in".
+    ///
+    /// The asymmetry with [`Self::accepts_customer`] is the point: an operator
+    /// may read a customer page, because debugging a customer's problem requires
+    /// it, and the reverse is refused.
     #[must_use]
     pub const fn accepts_operator(self) -> bool {
         matches!(self, Self::Customer | Self::Operator)
@@ -1091,6 +1097,17 @@ mod tests {
                 "{path} must stay readable by the operator, for debugging"
             );
         }
+
+        // All three answers pinned, so neither predicate can become a constant.
+        // `Public` is false for both because it is checked against nothing --
+        // `is_open` answers it first, and these three describe what reaching an
+        // audience *requires* rather than who could get in.
+        assert!(!Audience::Public.accepts_operator());
+        assert!(!Audience::Public.accepts_customer());
+        assert!(Audience::Customer.accepts_operator());
+        assert!(Audience::Customer.accepts_customer());
+        assert!(Audience::Operator.accepts_operator());
+        assert!(!Audience::Operator.accepts_customer());
     }
 
     #[test]

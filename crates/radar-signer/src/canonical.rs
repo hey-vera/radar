@@ -229,6 +229,26 @@ mod tests {
     }
 
     #[test]
+    fn a_space_is_a_literal_and_not_an_escape() {
+        // The boundary of the control-character range, one character wide and
+        // easy to get wrong in the direction that breaks everything.
+        //
+        // Space is 0x20 and must stay literal. Escaping it produces valid JSON
+        // that no longer matches what Privy reconstructs, so every signature
+        // fails authentication -- and the failure reads as a credential problem
+        // rather than an encoding one.
+        assert_eq!(
+            canonicalise(&json!({"s": "a b"})).expect("canonicalises"),
+            "{\"s\":\"a b\"}"
+        );
+        // And the character below it does not stay literal.
+        assert_eq!(
+            canonicalise(&json!({"s": "a\u{1f}b"})).expect("canonicalises"),
+            "{\"s\":\"a\\u001fb\"}"
+        );
+    }
+
+    #[test]
     fn arrays_keep_their_order() {
         // Sorting is for object keys only. An array is ordered data and sorting
         // one would change the meaning, not merely the encoding.

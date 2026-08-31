@@ -421,6 +421,39 @@ fn a_privy_request_with_no_authorization_key_configured_is_refused_by_name() {
 }
 
 #[test]
+fn a_blank_authorization_key_is_absent_rather_than_a_key() {
+    // `RADAR_PRIVY_AUTHORIZATION_KEY=` left in an env file, which is what a
+    // half-finished deployment looks like.
+    //
+    // Treating an empty value as key material means trying to parse it, which
+    // fails, which makes `Config::from_env` return an error -- and an error
+    // there refuses *everything*, taking the local signing lane down with it.
+    // A blank value must mean the same as an absent one.
+    let scratch = Scratch::new("blank-privy-key");
+    let mut signer = Signer::start_with(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        Some("   "),
+    );
+
+    // The local lane still works, which is the half that would break.
+    let local = signer.ask(&request(&honest(), &MINT, 1_000));
+    assert_eq!(
+        local["outcome"], "signed",
+        "a blank customer key must not disable local signing: {local}"
+    );
+
+    let customer = signer.ask(&privy_request(&honest()));
+    assert!(
+        customer["reasons"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no Privy authorization key"),
+        "a blank value must read as absent, by name: {customer}"
+    );
+}
+
+#[test]
 fn the_running_process_checks_a_privy_request_before_it_authorises_one() {
     // ADR 0007's claim is that the Privy key lives in *this process* behind
     // *this check*. A library test does not establish that the binary wired the

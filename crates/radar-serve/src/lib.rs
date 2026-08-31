@@ -64,6 +64,18 @@ pub struct AppState {
     pub access: access::Mode,
     /// Cloudflare's published signing keys, fetched on demand.
     pub keys: access::KeyCache,
+    /// Whether this instance has a customer lane, and for which Privy app.
+    ///
+    /// `Off` is the shipped state and is not a degradation: with no customer
+    /// authenticator a customer route requires operator identity, which is
+    /// strictly more restrictive than it will be.
+    pub customer: customer::Mode,
+    /// Privy's published signing keys, fetched on demand.
+    ///
+    /// Separate from the operator's cache: different issuers on different
+    /// rotation schedules, and one cache holding both would let a fetch failure
+    /// for one refuse tokens for the other.
+    pub customer_keys: customer::KeyCache,
     /// The one credential-linking flow that may be in progress.
     pub linker: link::Linker,
 }
@@ -136,12 +148,34 @@ async fn guard(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
+    let audience = access::audience_of(request.uri().path());
+    if audience.is_open() {
+        return next.run(request).await;
+    }
+
+    // A customer token is tried first, and only where the route is product.
+    // `accepts_customer` is false for every operator route, so a valid customer
+    // token cannot reach `/v1/store` or `/mcp` however well formed it is.
+    if audience.accepts_customer()
+        && let Some(config) = state.customer.config()
+        && let Some(token) = customer::token_from(request.headers())
+    {
+        let verified = tokio::task::block_in_place(|| {
+            let keys = state.customer_keys.get(config)?;
+            customer::verify(&token, &keys, config, now_unix())
+        });
+        if verified.is_ok() {
+            return next.run(request).await;
+        }
+        // A customer token that does not verify falls through to the operator
+        // check rather than refusing here. That is deliberate: an operator
+        // debugging with their own session should not be locked out by a stale
+        // bearer token their browser happened to send.
+    }
+
     let access::Mode::Enforce(config) = &state.access else {
         return next.run(request).await;
     };
-    if !access::audience_of(request.uri().path()).requires_operator() {
-        return next.run(request).await;
-    }
 
     let Some(token) = access::token_from(request.headers()) else {
         return denied(&access::Denied::Missing);

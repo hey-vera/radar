@@ -61,6 +61,173 @@ impl Config {
     }
 }
 
+/// Whether this instance has a customer lane at all.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// Verify customer tokens against this Privy application.
+    Enforce(Config),
+    /// No customer lane. Customer routes fall back to the operator check.
+    ///
+    /// This is the shipped state, and it is **not** a degradation: with no
+    /// customer authenticator, a customer route requires operator identity —
+    /// strictly more restrictive than it will be, never less. Rule 8's direction.
+    Off,
+}
+
+impl Mode {
+    /// Reads the mode from the environment.
+    ///
+    /// Unlike [`access::Mode::from_vars`](crate::access::Mode::from_vars), an
+    /// absent configuration is **not** an error. Cloudflare Access has two wrong
+    /// defaults and so must be chosen explicitly; here the absent case has one
+    /// meaning and it is the safe one — no customer lane, operator only.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the app id is set to something that is plainly an
+    /// unsubstituted placeholder. That check exists because it already happened
+    /// once with `RADAR_ACCESS_AUD`: the server started, enforced, and refused
+    /// every real token, presenting as "nobody can log in" and sending an
+    /// operator to the vendor's dashboard rather than to their own env file.
+    pub fn from_vars(get: &impl Fn(&str) -> Option<String>) -> Result<Self, String> {
+        let Some(app_id) = get("RADAR_PRIVY_APP_ID").filter(|v| !v.trim().is_empty()) else {
+            return Ok(Self::Off);
+        };
+        if let Some(why) = crate::access::looks_unsubstituted(&app_id) {
+            return Err(format!(
+                "RADAR_PRIVY_APP_ID looks like an unsubstituted placeholder ({why}); \
+                 the application id is on the Privy dashboard"
+            ));
+        }
+        Ok(Self::Enforce(Config { app_id }))
+    }
+
+    /// The configuration, when there is a customer lane.
+    #[must_use]
+    pub const fn config(&self) -> Option<&Config> {
+        match self {
+            Self::Enforce(c) => Some(c),
+            Self::Off => None,
+        }
+    }
+}
+
+/// The header a customer's token arrives in.
+///
+/// `Authorization: Bearer <token>`, which is what Privy's client sends and what
+/// every HTTP client already knows how to set. Deliberately not the cookie the
+/// operator lane also accepts: a cookie is sent by the browser automatically,
+/// and a customer token that travels automatically is one that travels to places
+/// nobody intended.
+pub const BEARER_HEADER: &str = "authorization";
+
+/// The customer's token from a request, if it carries one.
+///
+/// Neither trusted nor inspected here — it is handed to [`verify`], which is the
+/// only thing that decides whether it means anything.
+#[must_use]
+pub fn token_from(headers: &axum::http::HeaderMap) -> Option<String> {
+    let value = headers.get(BEARER_HEADER)?.to_str().ok()?;
+    let token = value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))?;
+    let token = token.trim();
+    (!token.is_empty()).then(|| token.to_owned())
+}
+
+/// Privy's published keys, fetched on demand and cached.
+///
+/// Separate from the operator's cache rather than shared. They are different key
+/// sets from different issuers on different rotation schedules, and one cache
+/// holding both would let a fetch failure for one refuse tokens for the other.
+#[derive(Debug, Default)]
+pub struct KeyCache {
+    inner: std::sync::RwLock<Option<(std::time::Instant, Keys)>>,
+}
+
+/// How long a fetched key set is reused.
+///
+/// The same hour the operator cache uses. Privy rotates, and a set held past a
+/// rotation refuses every token signed with the new key — which looks like an
+/// outage and is a stale cache.
+const KEY_LIFETIME: std::time::Duration = std::time::Duration::from_secs(3_600);
+
+/// Whether a key set fetched this long ago may still be used.
+///
+/// A pure function so the boundary can be swept, which it cannot be inside
+/// `get` — the same shape [`access::is_fresh`](crate::access::is_fresh) uses and
+/// for the same reason.
+///
+/// Strict, so a set exactly at its lifetime is refetched. The boundary arrives
+/// once an hour on a busy instance and should fall towards freshness: a stale set
+/// held one request too long refuses every token signed with a rotated key, which
+/// looks like an outage.
+#[must_use]
+pub const fn is_fresh(age: std::time::Duration) -> bool {
+    age.as_nanos() < KEY_LIFETIME.as_nanos()
+}
+
+impl KeyCache {
+    /// An empty cache.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            inner: std::sync::RwLock::new(None),
+        }
+    }
+
+    /// A cache already holding a key set, so nothing is fetched.
+    ///
+    /// **This exists so the guard can be tested, and the test it exists for is
+    /// worth the API.** The property that matters — that a valid customer token
+    /// cannot reach an operator route — can only be observed by presenting a
+    /// token that really verifies, and a verifier needs keys. Without this, the
+    /// only reachable assertion is that an unauthenticated request is refused,
+    /// which is the half that was never in doubt.
+    ///
+    /// Production uses [`Self::new`] and fetches.
+    #[must_use]
+    pub fn preloaded(keys: Keys) -> Self {
+        Self {
+            inner: std::sync::RwLock::new(Some((std::time::Instant::now(), keys))),
+        }
+    }
+
+    /// The published keys, from cache or freshly fetched.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Denied::NoKeys`] when the set cannot be fetched or parsed. A
+    /// refusal rather than a pass: a verifier that admits everyone when it cannot
+    /// check is worse than no verifier, because it looks like one.
+    pub fn get(&self, config: &Config) -> Result<Keys, Denied> {
+        if let Ok(guard) = self.inner.read()
+            && let Some((fetched, keys)) = guard.as_ref()
+            && is_fresh(fetched.elapsed())
+        {
+            return Ok(keys.clone());
+        }
+
+        let agent: ureq::Agent = ureq::Agent::config_builder()
+            .timeout_global(Some(std::time::Duration::from_secs(10)))
+            .build()
+            .into();
+        let body = agent
+            .get(&config.jwks_url())
+            .call()
+            .map_err(|e| Denied::NoKeys(e.to_string()))?
+            .body_mut()
+            .read_to_string()
+            .map_err(|e| Denied::NoKeys(e.to_string()))?;
+
+        let keys = Keys::parse(&body)?;
+        if let Ok(mut guard) = self.inner.write() {
+            *guard = Some((std::time::Instant::now(), keys.clone()));
+        }
+        Ok(keys)
+    }
+}
+
 /// One published EC signing key.
 #[derive(Clone, PartialEq, Eq, Debug, Deserialize)]
 pub struct Jwk {
@@ -559,6 +726,99 @@ mod tests {
             y: b64(&[2u8; 32]),
         };
         assert!(short.point().is_none());
+    }
+
+    #[test]
+    fn an_absent_application_id_means_no_customer_lane_rather_than_an_error() {
+        // Unlike Cloudflare Access, the absent case here has one meaning and it
+        // is the safe one: no customer lane, so customer routes require operator
+        // identity. Strictly more restrictive than it will be, never less.
+        let none = |_: &str| None;
+        assert_eq!(Mode::from_vars(&none), Ok(Mode::Off));
+
+        let blank = |k: &str| (k == "RADAR_PRIVY_APP_ID").then(|| "   ".to_owned());
+        assert_eq!(Mode::from_vars(&blank), Ok(Mode::Off));
+    }
+
+    #[test]
+    fn an_application_id_switches_the_lane_on() {
+        let set = |k: &str| (k == "RADAR_PRIVY_APP_ID").then(|| APP.to_owned());
+        assert_eq!(
+            Mode::from_vars(&set),
+            Ok(Mode::Enforce(Config {
+                app_id: APP.to_owned()
+            }))
+        );
+    }
+
+    #[test]
+    fn a_pasted_placeholder_is_refused_rather_than_enforced() {
+        // This exact failure already happened once, with `RADAR_ACCESS_AUD` on
+        // 2026-08-30: the server started, enforced, and refused every real token,
+        // presenting as "nobody can log in" and sending an operator to the
+        // vendor's dashboard rather than to their own env file.
+        for placeholder in [
+            "<your privy app id>",
+            "<app id from the dashboard>",
+            "your app id here",
+        ] {
+            let get = |k: &str| (k == "RADAR_PRIVY_APP_ID").then(|| placeholder.to_owned());
+            assert!(
+                Mode::from_vars(&get).is_err(),
+                "{placeholder} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_bearer_token_is_read_from_the_authorization_header_and_nowhere_else() {
+        use axum::http::HeaderMap;
+
+        let mut headers = HeaderMap::new();
+        headers.insert(BEARER_HEADER, "Bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(token_from(&headers), Some("abc.def.ghi".to_owned()));
+
+        // Lower case, because HTTP is case-insensitive about the scheme and a
+        // client that sends it that way is not wrong.
+        let mut headers = HeaderMap::new();
+        headers.insert(BEARER_HEADER, "bearer abc.def.ghi".parse().unwrap());
+        assert_eq!(token_from(&headers), Some("abc.def.ghi".to_owned()));
+
+        // Not a cookie. A cookie travels automatically, and a customer token
+        // that travels automatically travels somewhere nobody intended.
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::COOKIE,
+            "privy-token=abc.def.ghi".parse().unwrap(),
+        );
+        assert_eq!(token_from(&headers), None);
+    }
+
+    #[test]
+    fn a_header_without_the_bearer_scheme_carries_no_token() {
+        use axum::http::HeaderMap;
+
+        for value in ["abc.def.ghi", "Basic abc", "Bearer", "Bearer    "] {
+            let mut headers = HeaderMap::new();
+            headers.insert(BEARER_HEADER, value.parse().unwrap());
+            assert_eq!(token_from(&headers), None, "{value}");
+        }
+    }
+
+    #[test]
+    fn a_key_set_is_used_until_its_lifetime_and_not_past_it() {
+        use std::time::Duration;
+
+        assert!(is_fresh(Duration::ZERO));
+        assert!(is_fresh(
+            KEY_LIFETIME.saturating_sub(Duration::from_nanos(1))
+        ));
+        // Strict at the boundary: exactly at its lifetime, a set is refetched.
+        // Falling the other way holds a stale set one request too long, which
+        // refuses every token signed with a rotated key and looks like an outage.
+        assert!(!is_fresh(KEY_LIFETIME));
+        assert!(!is_fresh(KEY_LIFETIME + Duration::from_nanos(1)));
+        assert!(!is_fresh(Duration::from_secs(86_400)));
     }
 
     #[test]

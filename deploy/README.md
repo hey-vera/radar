@@ -185,6 +185,33 @@ With Access enforced those are `200` and `403`. Through the browser, signed in,
 the interface loads as before. If `/health` is not `200`, the unit did not start
 — read `journalctl -u radar-serve -n 20`, which will name the missing variable.
 
+### The customer lane, when there are customers
+
+Off unless a Privy application id is configured, and **off is not a degradation**:
+with no customer authenticator a customer route requires operator identity, which
+is stricter than it will be rather than looser. Rule 8's direction.
+
+```
+echo 'RADAR_PRIVY_APP_ID=<the application id from the Privy dashboard>' | sudo tee -a /etc/radar/radar.env
+```
+
+The application id is **not a secret** — it ships in the browser bundle — and
+token verification needs nothing else. Privy's *app secret* is a different thing,
+used for server API calls rather than verification, and it does not belong in
+this file until something needs it.
+
+A value that is plainly an unsubstituted placeholder stops the server rather than
+being enforced, because that failure presents as "nobody can log in" and sends an
+operator to the vendor's dashboard instead of to their own env file. That
+happened once already with `RADAR_ACCESS_AUD`.
+
+The startup log says which state it is in, every start:
+
+```
+  customers  : verifying Privy tokens for app cmthhkznr0a3u0cl86prxlb7x
+  customers  : off — customer routes require operator identity
+```
+
 ### The reading assistant, when you want it
 
 Off unless a provider *and* a budget are configured, and it holds no credential

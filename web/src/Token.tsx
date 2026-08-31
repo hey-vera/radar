@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ApiError, research, type DecisionRecord, type TokenEvidence } from "./api";
 import { POLICY_ARTIFACTS } from "./honesty";
+import { PricePath } from "./PricePath";
 
 export function Token({ mint }: { mint: string }) {
   const [evidence, setEvidence] = useState<TokenEvidence | null>(null);
@@ -58,7 +59,10 @@ export function Token({ mint }: { mint: string }) {
       ))}
 
       {evidence.measurements.length > 0 && (
-        <Measurements evidence={evidence} />
+        <>
+          <PricePath measurements={evidence.measurements} />
+          <Measurements evidence={evidence} />
+        </>
       )}
     </div>
   );

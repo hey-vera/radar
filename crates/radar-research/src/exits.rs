@@ -162,6 +162,17 @@ impl Rule {
         format!("{t}/{s}")
     }
 
+    /// Whether this is the baseline — no target and no stop.
+    ///
+    /// A named predicate rather than a condition inside `find`, because there the
+    /// `&&` is unreachable from any test: [`GRID`]'s first entry is the baseline
+    /// and satisfies `||` equally, so `find` returns it either way and a mutant
+    /// widening the condition survives. Here both halves are testable.
+    #[must_use]
+    pub const fn is_baseline(&self) -> bool {
+        self.target_bps.is_none() && self.stop_bps.is_none()
+    }
+
     /// Whether both bounds cleared the cohort floor.
     #[must_use]
     pub fn is_reportable(&self) -> bool {
@@ -209,9 +220,7 @@ impl Report {
     /// The baseline — no target, no stop — which is entry [`GRID`] holds first.
     #[must_use]
     pub fn baseline(&self) -> Option<&Rule> {
-        self.rules
-            .iter()
-            .find(|r| r.target_bps.is_none() && r.stop_bps.is_none())
+        self.rules.iter().find(|r| r.is_baseline())
     }
 
     /// Rules whose pessimistic median beats the baseline's, best first.
@@ -226,7 +235,7 @@ impl Report {
         let mut out: Vec<&Rule> = self
             .rules
             .iter()
-            .filter(|r| r.target_bps.is_some() || r.stop_bps.is_some())
+            .filter(|r| !r.is_baseline())
             .filter(|r| r.is_reportable())
             // The median is not enough. A rule must also not make the losing
             // tail worse -- otherwise a take-profit that fires on the majority
@@ -772,6 +781,51 @@ mod tests {
                 .iter()
                 .any(|w| w.target_bps == Some(1_000) && w.stop_bps.is_none()),
             "a target-only rule that beats holding must be reported"
+        );
+    }
+
+    #[test]
+    fn only_a_rule_with_neither_threshold_is_the_baseline() {
+        // Both halves of the condition, in both directions. Inside `find` this
+        // was untestable -- GRID's first entry satisfies `&&` and `||` alike, so
+        // a widened condition returned the same rule and no test could see it.
+        let rule = |t, s| Rule {
+            target_bps: t,
+            stop_bps: s,
+            pessimistic: Outcomes::default(),
+            optimistic: Outcomes::default(),
+        };
+        assert!(rule(None, None).is_baseline());
+        assert!(!rule(Some(1), None).is_baseline(), "a target is a rule");
+        assert!(!rule(None, Some(1)).is_baseline(), "so is a stop");
+        assert!(!rule(Some(1), Some(1)).is_baseline());
+    }
+
+    #[test]
+    fn every_ending_is_tallied_including_the_positions_that_were_just_held() {
+        // `held` is the count nothing else asserted, so its tally could become a
+        // no-op unnoticed -- and it is the largest of the three on this venue,
+        // where 96% of paths never move again. A report claiming zero held
+        // positions would be claiming every position was closed by a rule.
+        // One that reaches a target, one that is stopped, one that just sits.
+        let outcomes = [
+            step(1, 100, 1_000, 1_000, 1_000),
+            step(1, 200, 2_000, 1_000, 2_000),
+            step(2, 100, 1_000, 1_000, 1_000),
+            step(2, 200, 1_000, 500, 500),
+            step(3, 100, 1_000, 1_000, 1_000),
+            step(3, 200, 1_000, 1_000, 1_000),
+        ];
+
+        let r = evaluate(&outcomes);
+        let both = rule_of(&r, Some(2_500), Some(2_500));
+        assert_eq!(both.pessimistic.target, 1);
+        assert_eq!(both.pessimistic.stopped, 1);
+        assert_eq!(both.pessimistic.held, 1);
+        assert_eq!(
+            both.pessimistic.target + both.pessimistic.stopped + both.pessimistic.held,
+            both.pessimistic.n(),
+            "every position has exactly one ending"
         );
     }
 

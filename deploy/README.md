@@ -279,6 +279,11 @@ Finally, in `/etc/radar/radar.env`:
 
 ```
 RADAR_MODEL_DAILY_USD=2.00
+# Where meter state is written so a restart does not reset the day's spend.
+# Required for the agent to run at all: a meter that cannot record what it spent
+# cannot enforce a ceiling across a restart. Must be writable by the service
+# user, and it is checked at startup rather than at the first write.
+RADAR_STATE_DIR=/home/guardian/radar/data/state
 RADAR_MODEL_CODEX=/usr/local/bin/radar-codex
 ```
 

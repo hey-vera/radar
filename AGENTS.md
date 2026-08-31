@@ -196,8 +196,21 @@ compiles and the tests pass — in which case the tests are also wrong.
    **The spend-meter half is wired for one component and not for the rest, and
    saying exactly which is the point.** `radar-provider` implements the budget,
    the commitment, the refusal and a [`Ledger`](crates/radar-provider/src/cost.rs)
-   that survives a restart, because a budget that forgets is not a budget and
-   `radar-serve` runs under `Restart=always`.
+   that can survive a restart.
+
+   Until 2026-08-31 this paragraph said it *did* survive one, and it did not.
+   `Agent::restore` had exactly one caller and it was a unit test; the startup
+   path called `Agent::new`, so every restart began the day again at zero and a
+   crash loop under `Restart=always` would have handed out a fresh allowance per
+   crash. It had cost nothing when it was found — the service had no unplanned
+   restarts — which is why it was worth finding then. Third occurrence of the
+   pattern [LEARNINGS](LEARNINGS.md) entries 1 and 9 record.
+
+   It is wired now, through [`ledger`](crates/radar-serve/src/ledger.rs), and
+   [`the_budget_survives_a_restart.rs`](crates/radar-serve/tests/the_budget_survives_a_restart.rs)
+   holds it up — checked by putting `Agent::new` back and confirming the test
+   fails. `RADAR_STATE_DIR` is now required for the agent to run at all: a meter
+   that cannot record what it spent cannot enforce a ceiling across a restart.
 
    As of 2026-08-27 the reading assistant goes through it: `radar-model`'s
    `budget_from_vars` has no default, so an instance with no

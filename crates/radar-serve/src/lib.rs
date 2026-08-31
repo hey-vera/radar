@@ -18,6 +18,7 @@ pub mod customer;
 mod embed;
 pub mod evidence;
 pub mod facilitator;
+pub mod ledger;
 pub mod link;
 pub mod mcp;
 mod ops;

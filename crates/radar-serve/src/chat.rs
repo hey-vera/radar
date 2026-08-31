@@ -98,6 +98,29 @@ pub fn overlong(question: &str) -> bool {
     question.len() > MAX_QUESTION_BYTES
 }
 
+/// Writes the agent's ledger, so the day's spend survives a restart.
+///
+/// **A failure here is logged and not propagated**, and that is the one
+/// judgement call in this module worth arguing. The alternative is refusing the
+/// question because a counter could not be written, which turns a full disk into
+/// an outage of the reading assistant.
+///
+/// It is safe only because the failure is bounded and visible in the other
+/// direction: the directory's writability is proven at startup, so reaching this
+/// path means the disk filled or the mount changed *while running*, and the
+/// worst case is that a restart forgets part of one day's spend against a
+/// ceiling that is measured in dollars.
+fn record(chat: &Chat, agent: &Agent) {
+    if let Err(why) = chat.ledger.write(LEDGER_RECORD, &agent.ledger()) {
+        eprintln!(
+            "radar-serve: the model ledger could not be written ({why}); a restart              will forget today's spend"
+        );
+    }
+}
+
+/// The name the model meter's state is stored under.
+pub const LEDGER_RECORD: &str = "model-ledger";
+
 /// Everything the route needs beyond the store.
 ///
 /// Absent entirely when no provider is configured, which is what makes rule 8
@@ -117,6 +140,13 @@ pub struct Chat {
     /// re-derived at the route. `None` on the API-key path, which has nothing to
     /// link: a key is set in a file, not authorised in a browser.
     pub linkable: Option<radar_model::Codex>,
+    /// Where the meter's state is written so it survives a restart.
+    ///
+    /// Not optional. Rule 8 claimed this property and nothing implemented it:
+    /// `Agent::restore` had one caller and it was a unit test, so every restart
+    /// reset the day's spend to zero and a crash loop under `Restart=always`
+    /// would have handed out a fresh allowance per crash.
+    pub ledger: crate::ledger::Store,
     /// How the last call went.
     ///
     /// Recorded because a health check that only says "a provider is
@@ -183,10 +213,17 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
         let Ok(mut agent) = chat.agent.lock() else {
             return refuse(StatusCode::SERVICE_UNAVAILABLE, "the meter is poisoned");
         };
-        match agent.begin(estimate, day) {
+        let commitment = match agent.begin(estimate, day) {
             Ok(c) => c,
             Err(why) => return unavailable(&why),
-        }
+        };
+        // Written while the reservation is held, before the call goes out. A
+        // ledger saved only on settlement loses exactly the calls that crashed
+        // mid-flight -- and `Meter::ledger` records in-flight commitments for
+        // the same reason: a process that dies mid-call cannot know whether the
+        // call happened, and assuming it did not risks paying twice.
+        record(chat, &agent);
+        commitment
     };
 
     // Gathered before the model sees anything, and by Radar rather than by the
@@ -211,6 +248,7 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
             // Charging the estimate is what stops a subscription -- which never
             // reports one -- from being free forever.
             agent.settle(commitment, answer.cost.unwrap_or(estimate));
+            record(chat, &agent);
             if let Ok(mut last) = chat.last.lock() {
                 *last = LastCall::Ok;
             }
@@ -229,6 +267,7 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
             // would let a flapping provider exhaust a budget it never spent,
             // which is a self-inflicted outage rather than a safety measure.
             agent.abandon(commitment);
+            record(chat, &agent);
             if let Ok(mut last) = chat.last.lock() {
                 *last = LastCall::Failed {
                     why: why.to_string(),
@@ -346,6 +385,8 @@ mod tests {
             provider: Box::new(Stub(outcome)),
             linkable: None,
             last: std::sync::Mutex::new(LastCall::Never),
+            ledger: crate::ledger::Store::at(&std::env::temp_dir().join("radar-chat-test-ledger"))
+                .expect("a writable scratch directory"),
         }
     }
 

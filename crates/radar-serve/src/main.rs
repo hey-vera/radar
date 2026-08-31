@@ -35,6 +35,16 @@ fn configure_agent() -> (Option<Chat>, String) {
         );
     };
 
+    // Rule 8, and this one is not decoration. A meter that cannot record what it
+    // spent cannot enforce a ceiling across a restart, so an agent with no
+    // durable ledger is an unmetered spender wearing a meter's clothes -- which
+    // is the state this ran in until the ledger was wired, because
+    // `Agent::restore` had one caller and it was a unit test.
+    let ledger = match radar_serve::ledger::Store::open(&|k| std::env::var(k).ok()) {
+        Ok(ledger) => ledger,
+        Err(why) => return (None, format!("off ({why})")),
+    };
+
     // Built separately from the boxed provider so the route knows whether there
     // is a credential to link *before* somebody presses the button, rather than
     // discovering it from a failure.
@@ -50,13 +60,22 @@ fn configure_agent() -> (Option<Chat>, String) {
                 allowlist.allow(instrument.spec().name);
             }
             let tools = allowlist.len();
-            let agent = radar_agent::Agent::new(
-                radar_agent::Config { budget, allowlist },
-                chat::today_utc(),
-            );
+            let today = chat::today_utc();
+            let config = radar_agent::Config { budget, allowlist };
+            // Restored rather than reset. A ledger from an earlier day is not
+            // carried forward by `Meter::restore` -- the budget is daily -- so
+            // this is safe to do unconditionally and does the right thing on the
+            // first start of a new day.
+            let agent = ledger
+                .read::<radar_agent::Ledger>(chat::LEDGER_RECORD)
+                .map_or_else(
+                    || radar_agent::Agent::new(config.clone(), today),
+                    |saved| radar_agent::Agent::restore(config.clone(), &saved, today),
+                );
             (
                 Some(Chat {
                     agent: std::sync::Mutex::new(agent),
+                    ledger,
                     provider,
                     linkable,
                     last: std::sync::Mutex::new(radar_serve::chat::LastCall::Never),

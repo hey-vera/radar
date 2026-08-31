@@ -7,6 +7,18 @@ tokens priced
 **Status:** measured. **No edge found.** Two of four comparable strata are
 uninformative for a reason this note names and does not solve.
 
+> **Correction, 2026-08-30.** The limitation this note names below — that
+> 64–91% of short holds return exactly zero despite the pairing requiring a
+> trade — **has been explained, and it was a defect.** `Outcome::fills` is folded
+> with `saturating_add` across price windows overlapping by five of their six
+> hours, so it grows on every hourly pass whether or not anything trades. The
+> gate keyed on it establishes nothing. See
+> [`LEARNINGS`](../../LEARNINGS.md) entry 19.
+>
+> The gate now uses `last_transfer_slot`, a maximum that cannot be inflated by
+> re-reading. **Every figure below was produced with the broken gate and should
+> be re-measured** with `radar control` before being cited.
+
 ## What this replaces
 
 [`0014`](0014-the-control-was-entirely-tokens-nobody-could-sell.md) compared

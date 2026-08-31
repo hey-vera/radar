@@ -8,6 +8,17 @@ exit capacity
 n=16**. Directional, not settled. Recorded because the direction is the opposite
 of the one the plan was hoping for.
 
+> **Correction, 2026-08-30.** The returns below were produced with a pairing
+> gate keyed on `Outcome::fills`, which grows on every hourly pass whether or not
+> anything trades — the price windows overlap by five of their six hours and the
+> fold adds their counts ([`LEARNINGS`](../../LEARNINGS.md) entry 19). **The
+> band medians should be re-measured** with `radar control` before being cited.
+>
+> The capacity distribution itself is unaffected: it is read from
+> `Decision::exit_capacity_micro_usd`, which is recorded once and never folded.
+> So the $6.21 median notional, the ±13% band and the shape of the argument all
+> stand; the per-band return figures are what needs re-running.
+
 ## Why this question comes before any filter work
 
 Radar sizes every position as a share of measured exit capacity, so capacity

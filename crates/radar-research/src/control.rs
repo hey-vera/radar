@@ -470,7 +470,7 @@ pub fn stratum_of(table: &[(&str, u64)], value: u64) -> usize {
 /// The entry is the observation nearest the anchor and the exit is the last
 /// observation strictly after it **that recorded a trade in between**.
 ///
-/// # Why the fill count is load-bearing
+/// # Why a transfer must have landed in between
 ///
 /// An [`Outcome`] reports what has happened *so far*, so once a token stops
 /// trading every later observation repeats the same `last_price`. On this venue
@@ -482,12 +482,18 @@ pub fn stratum_of(table: &[(&str, u64)], value: u64) -> usize {
 ///
 /// A price that has not moved because nobody traded is not a flat return; it is
 /// no return at all, and averaging it in drags every statistic toward zero
-/// regardless of what the live tokens did. So the exit must have strictly more
-/// fills than the entry: something actually changed hands during the hold.
+/// regardless of what the live tokens did.
 ///
-/// Returns `None` when either end is missing, when nothing traded between them,
-/// or when the entry price is zero — absent is not zero, and a zero entry would
-/// divide.
+/// **The first gate for this used `Outcome::fills`, and it did not work.** That
+/// field is folded with `saturating_add` across price windows overlapping by
+/// five of their six hours, so it grows on every pass whether or not anything
+/// traded — see [`LEARNINGS`](https://github.com/hey-vera/radar/blob/main/LEARNINGS.md)
+/// entry 19. `last_transfer_slot` is a `max` over the transfer aggregate and
+/// cannot be inflated by re-reading, so an advance in it is a real transfer.
+///
+/// Returns `None` when either end is missing, when nothing transferred between
+/// them, or when the entry price is zero — absent is not zero, and a zero entry
+/// would divide.
 fn realised_from(series: &[Observation], anchor: u64) -> Option<Realised> {
     let entry = series.iter().min_by_key(|o| o.at.abs_diff(anchor))?;
     // The earliest observation reaching the highest fill count after entry --
@@ -497,8 +503,8 @@ fn realised_from(series: &[Observation], anchor: u64) -> Option<Realised> {
     // unchanged, and so biasing every holding-period stratum.
     let exit = series
         .iter()
-        .filter(|o| o.at > entry.at && o.fills > entry.fills)
-        .min_by_key(|o| (std::cmp::Reverse(o.fills), o.at))?;
+        .filter(|o| o.at > entry.at && traded_since(entry, o))
+        .min_by_key(|o| (std::cmp::Reverse(o.last_transfer), o.at))?;
 
     let (entry_at, entry_price, launch) = (entry.at, entry.price, entry.launch);
     if entry_price == 0 {
@@ -523,11 +529,31 @@ struct Observation {
     price: u64,
     /// Slot the token launched in.
     launch: u64,
-    /// Fills the price was computed from, cumulative.
+    /// The last slot a transfer was observed in.
     ///
-    /// Carried so a pair can be required to straddle an actual trade. See
-    /// [`realised_from`].
-    fills: u64,
+    /// **Not `fills`, and the difference cost a research note.** `Outcome::fills`
+    /// is folded with `saturating_add` across price windows that overlap by five
+    /// of their six hours, so a token whose single fill sits inside the window
+    /// gains a fill on every hourly pass while its price never changes. It grows
+    /// without anything trading, which makes it useless as evidence that
+    /// something did.
+    ///
+    /// `last_transfer_slot` comes from `max(block_slot)` over the transfer
+    /// aggregate. A maximum cannot be inflated by re-reading the same rows, so an
+    /// advance in it is a transfer that actually happened.
+    last_transfer: Option<u64>,
+}
+
+/// Whether a transfer landed between two observations of the same mint.
+///
+/// `None` on either side is "not measured", never "nothing happened" (rule 9) —
+/// so an unmeasured end cannot be read as a quiet market, which is the direction
+/// that would invent returns.
+fn traded_since(entry: &Observation, exit: &Observation) -> bool {
+    match (entry.last_transfer, exit.last_transfer) {
+        (Some(before), Some(after)) => after > before,
+        _ => false,
+    }
 }
 
 /// Groups priced observations by mint, ascending by slot.
@@ -545,7 +571,7 @@ fn group_by_mint(outcomes: &[Outcome]) -> BTreeMap<Address, Vec<Observation>> {
             at: o.measured_at.get(),
             price,
             launch: o.launch_slot.get(),
-            fills: o.fills,
+            last_transfer: o.last_transfer_slot.map(radar_types::Slot::get),
         });
     }
     for series in by_mint.values_mut() {
@@ -582,18 +608,18 @@ mod tests {
     }
 
     fn outcome(mint: u8, measured_at: u64, price: u64) -> Outcome {
-        outcome_with_fills(mint, measured_at, price, measured_at)
+        outcome_traded_at(mint, measured_at, price, measured_at)
     }
 
-    /// `fills` defaults to the slot above, so every fixture pair straddles a
-    /// trade unless a test deliberately says otherwise.
-    fn outcome_with_fills(mint: u8, measured_at: u64, price: u64, fills: u64) -> Outcome {
+    /// `last_transfer_slot` defaults to the measurement slot, so every fixture
+    /// pair straddles a transfer unless a test deliberately says otherwise.
+    fn outcome_traded_at(mint: u8, measured_at: u64, price: u64, last_transfer: u64) -> Outcome {
         Outcome {
             mint: Address::new([mint; 32]),
             measured_at: Slot(measured_at),
             launch_slot: Slot(0),
             first_transfer_slot: None,
-            last_transfer_slot: None,
+            last_transfer_slot: Some(Slot(last_transfer)),
             transfers: 0,
             unique_senders: 0,
             unique_receivers: 0,
@@ -603,7 +629,7 @@ mod tests {
             peak_price: None,
             trough_price: None,
             vwap: None,
-            fills,
+            fills: 0,
         }
     }
 
@@ -734,17 +760,17 @@ mod tests {
         // A price that has not moved because nobody traded is the absence of a
         // return, not a flat one.
         let dead = [
-            outcome_with_fills(1, 4_000, 1_000, 7),
-            outcome_with_fills(1, 10_000, 1_000, 7),
-            outcome_with_fills(1, 90_000, 1_000, 7),
+            outcome_traded_at(1, 4_000, 1_000, 7),
+            outcome_traded_at(1, 10_000, 1_000, 7),
+            outcome_traded_at(1, 90_000, 1_000, 7),
         ];
         let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &dead);
         assert_eq!(r.selected, 0, "no trade means no return to measure");
 
         // The same series with one further fill is a real, measurable move.
         let alive = [
-            outcome_with_fills(1, 4_000, 1_000, 7),
-            outcome_with_fills(1, 10_000, 1_100, 8),
+            outcome_traded_at(1, 4_000, 1_000, 7),
+            outcome_traded_at(1, 10_000, 1_100, 8),
         ];
         let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &alive);
         assert_eq!(r.selected, 1);
@@ -758,9 +784,9 @@ mod tests {
         // merely repeated it -- otherwise the hold is overstated while the price
         // is not, which biases the holding-period strata.
         let series = [
-            outcome_with_fills(1, 4_000, 1_000, 5),
-            outcome_with_fills(1, 10_000, 1_200, 9),
-            outcome_with_fills(1, 400_000, 1_200, 9),
+            outcome_traded_at(1, 4_000, 1_000, 5),
+            outcome_traded_at(1, 10_000, 1_200, 9),
+            outcome_traded_at(1, 400_000, 1_200, 9),
         ];
         let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &series);
         assert_eq!(r.selected, 1);
@@ -768,6 +794,45 @@ mod tests {
             r.strata[0].hold, "<1h",
             "the hold ends at the last trade, not the last checkpoint"
         );
+    }
+
+    #[test]
+    fn a_growing_fill_count_is_not_evidence_that_anything_traded() {
+        // The defect this gate was rewritten for, pinned as a property.
+        //
+        // `Outcome::fills` is folded with `saturating_add` across price windows
+        // that overlap by five of their six hours, so a token whose single fill
+        // sits inside the window gains a fill on every hourly pass while nothing
+        // trades and its price never moves. A gate keyed on `fills` therefore
+        // admits pairs that straddle no trade at all, which is how research 0017
+        // came to report 64-91% of its short holds as exactly zero.
+        //
+        // Here `fills` climbs 3 -> 9 -> 27 while `last_transfer_slot` never
+        // advances. Nothing traded. A gate reading `fills` would pair these.
+        let mut a = outcome_traded_at(1, 4_000, 1_000, 3_900);
+        a.fills = 3;
+        let mut b = outcome_traded_at(1, 10_000, 1_000, 3_900);
+        b.fills = 9;
+        let mut c = outcome_traded_at(1, 16_000, 1_000, 3_900);
+        c.fills = 27;
+
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &[a, b, c]);
+        assert_eq!(
+            r.selected, 0,
+            "a fill count inflated by window overlap is not a trade"
+        );
+    }
+
+    #[test]
+    fn an_unmeasured_transfer_slot_is_not_read_as_a_quiet_market() {
+        // Rule 9 on the gate itself. `None` means nobody measured, and treating
+        // it as "no transfer" would silently drop live tokens, while treating it
+        // as "a transfer" would invent returns. Neither end may pair.
+        let mut a = outcome_traded_at(1, 4_000, 1_000, 3_900);
+        a.last_transfer_slot = None;
+        let b = outcome_traded_at(1, 10_000, 1_100, 9_000);
+        let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &[a, b]);
+        assert_eq!(r.selected, 0);
     }
 
     #[test]
@@ -858,8 +923,8 @@ mod tests {
         // with a second observation taken at the same slot -- a hold of zero,
         // which is not a holding period and would land in the tightest stratum.
         let same_slot = [
-            outcome_with_fills(1, 4_000, 1_000, 5),
-            outcome_with_fills(1, 4_000, 2_000, 9),
+            outcome_traded_at(1, 4_000, 1_000, 5),
+            outcome_traded_at(1, 4_000, 2_000, 9),
         ];
         let r = evaluate(&[decision(1, 4_000, Conclusion::Proposed)], &same_slot);
         assert_eq!(r.selected, 0, "a hold of zero slots is not a hold");

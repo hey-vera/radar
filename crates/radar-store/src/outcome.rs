@@ -82,6 +82,20 @@ pub struct Outcome {
     /// Carried because a peak drawn from three fills and one drawn from three
     /// hundred are different evidence, and an MFE from a single trade is a
     /// quote rather than a market.
+    ///
+    /// **This over-counts, and it is not a fill count.** The price windows it is
+    /// folded across overlap by five of their six hours, and the fold is
+    /// `saturating_add` — so a fill inside the window is counted again on every
+    /// hourly pass. The number grows while nothing trades, and two measurements
+    /// of the same token are not comparable.
+    ///
+    /// Do not read it as evidence that something changed hands; use
+    /// [`last_transfer_slot`](Self::last_transfer_slot), which is a `max` and
+    /// cannot be inflated by re-reading. Recorded as
+    /// [`LEARNINGS`](https://github.com/hey-vera/radar/blob/main/LEARNINGS.md)
+    /// entry 19, which is also where the case for changing the fold is made —
+    /// changing it would make new rows incomparable with every row already
+    /// written, so it is a decision rather than a patch.
     pub fills: u64,
 }
 

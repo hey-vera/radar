@@ -4,9 +4,10 @@
 **Date:** 2026-08-30
 **Store:** the live guardian VPS recorder, 1,100 proposals banded by measured
 exit capacity
-**Status:** measured, and **the band that matters is below the cohort floor at
-n=16**. Directional, not settled. Recorded because the direction is the opposite
-of the one the plan was hoping for.
+**Status:** measured and re-measured. The band that matters carries **25 rows**,
+which clears the cohort floor — but only just. Directional, not settled, and
+recorded because the direction is the opposite of the one the plan was hoping
+for.
 
 > **Corrected and re-measured, 2026-08-30.** The returns below were produced with
 > a pairing gate keyed on `Outcome::fills`, which grows on every hourly pass
@@ -16,7 +17,7 @@ of the one the plan was hoping for.
 > reads −6,813 bps.** The status line's caveat is withdrawn. See *The result,
 > re-measured*.
 
-## Why this question comes before any filter work## Why this question comes before any filter work
+## Why this question comes before any filter work
 
 Radar sizes every position as a share of measured exit capacity, so capacity
 decides how much money can move. Measured across 2,365 recorded proposals:
@@ -105,8 +106,8 @@ selecting for capacity would be selecting for the trap, and the whole idea of
 "find deeper tokens so a real position fits" is buying the wrong end of 0008's
 finding.
 
-**That is a hypothesis, not a result.** It is consistent with the sixteen rows
-and with two prior measurements, and it has not been tested.
+**That is a hypothesis, not a result.** It is consistent with the twenty-five
+rows and with two prior measurements, and it has not been tested.
 
 ## What this means for the venue question
 
@@ -115,7 +116,7 @@ $10k–$100k. On this evidence it looks unlikely from both directions at once:
 
 - **Capacity is a venue constant.** 80% of tokens offer ~$31, so a $10k position
   is three hundred times what the median token supports.
-- **The tokens that offer more appear to be worse**, at n=16.
+- **The tokens that offer more appear to be worse**, at n=25.
 
 Neither settles it. Together they say the burden of proof has moved: the case for
 staying on this venue now needs evidence, where before it only needed no evidence
@@ -123,7 +124,7 @@ against.
 
 ## What this does not establish
 
-- **n=16 in the band that carries the argument.** Everything above turns on it.
+- **n=25 in the band that carries the argument**, which is the floor rather than a margin. Everything above turns on it.
 - **Capacity is a Radar measurement**, not a fact about the token — 0014's caveat
   applies unchanged. A different probe or budget moves which band a token lands
   in.
@@ -134,9 +135,9 @@ against.
 ## What would settle it
 
 1. **Wait for the band to fill.** At ~1.2% of proposals above $60 and roughly 960
-   decisions a day, twenty rows is about two days and a hundred is under a
-   fortnight. This is the cheapest decisive measurement available and it needs no
-   new code.
+   decisions a day, a hundred rows is under a fortnight. This is the cheapest
+   decisive measurement available and it needs no new code — `radar control`
+   re-reads the store every time it runs.
 2. **Record depth over time** (plan Phase 1.2). Capacity is measured once, at
    decision time, and never again — so "the deep tokens fell" cannot currently be
    separated from "the deep tokens stopped being deep".

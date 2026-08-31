@@ -124,6 +124,14 @@ compiles and the tests pass — in which case the tests are also wrong.
    it against the authorization's bounds. If you find yourself adding a path from
    a reasoning layer to a signer, stop.
 
+   **This holds for a customer's capital too, and a connected wallet does not
+   change it.** [ADR 0005](docs/adr/0005-customers-keep-custody-and-grant-radar-a-bounded-signer.md)
+   settles the custody model: the customer keeps custody and grants Radar a
+   bounded signer, whose policy is derived from the same `Policy` the kernel
+   judged against — never from a model, a strategy, or anything the customer
+   asserts. A connected wallet is **authentication, not authority**, and it may
+   never soften a refusal.
+
    The signer's guarantee is absolute and stated as such: *every account it
    authorises is one it read in the bytes it signed.* This is why it refuses
    address lookup tables ([ADR 0003](docs/adr/0003-legacy-transactions-because-the-signer-must-be-able-to-read-them.md))

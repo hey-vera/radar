@@ -64,6 +64,12 @@ impl<S: Read + Write> Signing for StreamSigner<S> {
         transaction: &str,
     ) -> Result<String, Vec<String>> {
         let request = serde_json::json!({
+            // The signer serves two kinds of request now -- a local signature
+            // and a Privy authorization signature -- and the tag is required
+            // with no default. An untagged request is refused rather than
+            // assumed to be this one, so a half-updated deployment stops
+            // signing instead of guessing.
+            "sign": "local",
             "authorization": authorization,
             "transaction": transaction,
             // The signer needs a slot to check expiry against and has no RPC of

@@ -185,6 +185,23 @@ With Access enforced those are `200` and `403`. Through the browser, signed in,
 the interface loads as before. If `/health` is not `200`, the unit did not start
 — read `journalctl -u radar-serve -n 20`, which will name the missing variable.
 
+### The signer's customer key
+
+`RADAR_PRIVY_AUTHORIZATION_KEY` belongs to the **signer's** environment and
+never to `radar-serve`'s.
+
+That is [ADR 0007](../docs/adr/0007-the-privy-authorization-key-lives-in-the-signer-process.md),
+not a preference. A signature made with this key causes a customer's wallet to
+move funds, which makes it the same category of object as the local wallet key —
+and `radar-serve` is the process with a listener, a model provider, an HTTP
+client, an embedded frontend and a paywall. **A deployment that puts this
+variable in `radar-serve`'s environment silently discards that decision**, and
+nothing will complain, because `radar-serve` simply never reads it.
+
+Absent is a refusal, not a failure to start: an instance with no customers needs
+no customer key, and refusing to boot without one would take down the local lane
+too. A Privy request with no key configured is refused by name.
+
 ### The customer lane, when there are customers
 
 Off unless a Privy application id is configured, and **off is not a degradation**:

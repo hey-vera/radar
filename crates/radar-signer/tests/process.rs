@@ -28,11 +28,24 @@ struct Signer {
 }
 
 impl Signer {
-    /// Starts the binary with a key file and an allowlist.
+    /// Starts the binary with a key file and an allowlist, and no customer key.
     fn start(key_file: &std::path::Path, programs: &str) -> Self {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_radar-signer"))
+        Self::start_with(key_file, programs, None)
+    }
+
+    /// Starts the binary, optionally with a Privy authorization key.
+    fn start_with(key_file: &std::path::Path, programs: &str, privy: Option<&str>) -> Self {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_radar-signer"));
+        command
             .env("RADAR_SIGNER_KEY", key_file)
-            .env("RADAR_SIGNER_PROGRAMS", programs)
+            .env("RADAR_SIGNER_PROGRAMS", programs);
+        // Removed rather than left unset, so a variable in the developer's own
+        // environment cannot make the no-key test pass.
+        match privy {
+            Some(material) => command.env("RADAR_PRIVY_AUTHORIZATION_KEY", material),
+            None => command.env_remove("RADAR_PRIVY_AUTHORIZATION_KEY"),
+        };
+        let mut child = command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -125,6 +138,7 @@ fn honest() -> String {
 
 fn request(transaction: &str, mint: &[u8; 32], now_slot: u64) -> serde_json::Value {
     serde_json::json!({
+        "sign": "local",
         "authorization": {
             "nonce": "test-nonce",
             "mint": b58(mint),
@@ -300,8 +314,8 @@ fn garbage_does_not_stop_the_process_serving() {
 
     for junk in [
         serde_json::json!("not an object"),
-        serde_json::json!({"authorization": 5}),
-        serde_json::json!({"authorization": {}, "transaction": "!!!", "now_slot": 1}),
+        serde_json::json!({"sign": "local", "authorization": 5}),
+        serde_json::json!({"sign": "local", "authorization": {}, "transaction": "!!!", "now_slot": 1}),
     ] {
         assert_eq!(signer.ask(&junk)["outcome"], "refused");
     }
@@ -310,4 +324,150 @@ fn garbage_does_not_stop_the_process_serving() {
         signer.ask(&request(&honest(), &MINT, 1_000))["outcome"],
         "signed"
     );
+}
+
+/// A transaction in a token the authorisation does not cover.
+fn substituted_mint() -> String {
+    transaction(
+        &[wallet(), [0x99; 32], DEX, SYSTEM],
+        &[(2, vec![0, 1], vec![0xAB, 0xCD])],
+    )
+}
+
+/// A base64 PKCS#8 P-256 key, as Privy's dashboard would hand one over.
+fn privy_key() -> String {
+    let pkcs8 = ring::signature::EcdsaKeyPair::generate_pkcs8(
+        &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+        &ring::rand::SystemRandom::new(),
+    )
+    .expect("a key pair");
+    radar_types::b64::encode(pkcs8.as_ref())
+}
+
+/// A request for a Privy authorization signature.
+fn privy_request(transaction: &str) -> serde_json::Value {
+    serde_json::json!({
+        "sign": "privy",
+        "authorization": {
+            "nonce": "test-nonce",
+            "mint": b58(&MINT),
+            "action": "buy",
+            "max_notional": 50_000_000u64,
+            "expires_after": 1_150u64,
+            "needs_operator_signature": false,
+        },
+        "request": {
+            "method": "POST",
+            "url": "https://api.privy.io/v1/wallets/abc/rpc",
+            "body": {
+                "method": "signTransaction",
+                "params": {"transaction": transaction, "encoding": "base64"},
+            },
+            "headers": {"privy-app-id": "cmthhkznr0a3u0cl86prxlb7x"},
+        },
+        "wallet": b58(&wallet()),
+        "now_slot": 1_000u64,
+    })
+}
+
+#[test]
+fn an_untagged_request_is_refused_rather_than_assumed_to_be_a_local_one() {
+    // The version-skew property, at the process boundary where it would happen.
+    //
+    // The signer answers two kinds of request now, and the tag has no default
+    // on purpose: a deployment that updates the executor and not the signer, or
+    // the other way round, must stop signing rather than guess which kind of
+    // signature was wanted. Refusing is recoverable; guessing is not.
+    let scratch = Scratch::new("untagged");
+    let mut signer = Signer::start(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+    );
+
+    let mut untagged = request(&honest(), &MINT, 1_000);
+    untagged
+        .as_object_mut()
+        .expect("an object")
+        .remove("sign")
+        .expect("the tag was there to remove");
+
+    let answer = signer.ask(&untagged);
+    assert_eq!(
+        answer["outcome"], "refused",
+        "an untagged request must be refused, not assumed: {answer}"
+    );
+}
+
+#[test]
+fn a_privy_request_with_no_authorization_key_configured_is_refused_by_name() {
+    // Rule 8, and the wording matters as much as the refusal. An instance with
+    // no customer key must say which thing is missing, or an operator goes to
+    // Privy's dashboard looking for a fault in their account.
+    let scratch = Scratch::new("no-privy-key");
+    let mut signer = Signer::start(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+    );
+
+    let answer = signer.ask(&privy_request(&honest()));
+    assert_eq!(answer["outcome"], "refused", "{answer}");
+    assert!(
+        answer["reasons"][0]
+            .as_str()
+            .unwrap_or_default()
+            .contains("no Privy authorization key"),
+        "the refusal must name what is missing: {answer}"
+    );
+}
+
+#[test]
+fn the_running_process_checks_a_privy_request_before_it_authorises_one() {
+    // ADR 0007's claim is that the Privy key lives in *this process* behind
+    // *this check*. A library test does not establish that the binary wired the
+    // two together, and the wiring is the part that could be missing.
+    //
+    // Both directions in one test, deliberately: a gate that refuses everything
+    // is not a gate, so the honest request must be authorised for the refusal
+    // below to mean anything.
+    let scratch = Scratch::new("privy-gate");
+    let mut signer = Signer::start_with(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        Some(&privy_key()),
+    );
+
+    let honest = signer.ask(&privy_request(&honest()));
+    assert_eq!(
+        honest["outcome"], "authorised",
+        "the honest request must be authorised, or this test proves nothing: {honest}"
+    );
+    assert!(
+        !honest["signature"].as_str().unwrap_or_default().is_empty(),
+        "an authorised answer carries a header value: {honest}"
+    );
+
+    let substituted = signer.ask(&privy_request(&substituted_mint()));
+    assert_eq!(
+        substituted["outcome"], "refused",
+        "a request for a token the authorisation does not cover must be refused: {substituted}"
+    );
+}
+
+#[test]
+fn a_privy_request_whose_body_carries_no_transaction_is_refused() {
+    // The most tempting place in the whole lane to write "nothing to check,
+    // carry on". A request whose contents cannot be read is one nothing
+    // inspected, and signing it would authorise bytes nobody looked at.
+    let scratch = Scratch::new("privy-no-transaction");
+    let mut signer = Signer::start_with(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        Some(&privy_key()),
+    );
+
+    let mut request = privy_request(&honest());
+    request["request"]["body"]["params"] = serde_json::json!({});
+
+    let answer = signer.ask(&request);
+    assert_eq!(answer["outcome"], "refused", "{answer}");
 }

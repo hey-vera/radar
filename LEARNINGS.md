@@ -938,3 +938,72 @@ self-contradicting in a single sentence that had been read and reviewed and
 merged. **Two numbers with the same units and the same scale are not therefore
 the same measurement**, and the only thing that distinguishes them is where each
 one came from.
+
+---
+
+## 19. A counter that counts the same thing again every hour
+
+**2026-08-30.** Found by refusing to accept an unexplained number in a research
+note that had already been written, reviewed and merged.
+
+[`0017`](docs/research/0017-a-control-that-could-have-been-traded.md) reported
+that **64–91% of its short-hold pairs returned exactly zero**, and said plainly
+that it did not know why — the pairing already required the exit observation to
+have *more fills* than the entry, so something was supposed to have traded. Two
+readings were offered, wanting opposite responses, and the note declined to pick
+one.
+
+The answer was in `prices.rs`, twelve lines apart:
+
+```rust
+fills: self.fills.saturating_add(later.fills),
+last:  later.last.or(self.last),
+```
+
+`WINDOW_HOURS` is **6**. The pass runs **hourly**. So every run re-reads five
+hours it has already read, and the fold **adds** the fill counts.
+
+A token whose single fill sits inside the window gains `fills += 1` on every
+pass, for six passes, while `last_price` correctly never changes. **The counter
+grows while nothing trades.**
+
+**Cost:** the gate in two research notes. `control.rs` required
+`exit.fills > entry.fills` to establish that a trade had happened between two
+observations. It establishes nothing of the kind — the condition is satisfied by
+the passage of time. 0017's headline and 0018's bands both rest on it.
+
+**What made it survive:** every test of `fold` used hand-written windows and
+asserted the arithmetic it was given. `folding_keeps_the_earliest_first_and_the
+_latest_last` pins the asymmetry between `first` and `last` precisely, and is
+right to. Nothing asserted anything about `fills`, because summing counts is the
+obvious thing to do with counts — and it is correct for *disjoint* windows. The
+bug is not in the fold. It is in the fold meeting a cadence chosen elsewhere, in
+a cron line, in another repository's deploy notes.
+
+**The general shape:** an aggregate is only correct with respect to how its
+inputs were sampled, and neither half knows about the other. `fold` cannot see
+`WINDOW_HOURS`; `WINDOW_HOURS` cannot see the crontab. Each is defensible alone.
+The composition double-counts by up to six, and nothing in the type system,
+the tests or the review had both facts in view at once.
+
+**What catches a recurrence:** the consumer no longer asks `fills`. It asks
+`last_transfer_slot`, which is `max(block_slot)` over the transfer aggregate — a
+maximum cannot be inflated by re-reading the same rows, so an advance in it is a
+transfer that actually happened. `a_growing_fill_count_is_not_evidence_that
+_anything_traded` pins the property with a fixture whose `fills` climbs 3 → 9 →
+27 while nothing trades.
+
+**What is deliberately NOT fixed, and why that is a decision rather than
+laziness.** The fold still sums. Changing it would make every row written
+afterwards incomparable with every row already written, on an append-only store
+that cannot be rewritten — which is entry 17's constraint arriving from the other
+direction. The field's documentation now says it over-counts and says what to use
+instead; the change to the fold, and whether the historical rows are worth
+repairing, is a decision for whoever owns the data rather than a side effect of
+finding the bug.
+
+**The part worth keeping.** 0017 was merged with an unexplained number in it,
+named as unexplained, with both candidate mechanisms written down. That is what
+made this findable an hour later: the note did not round the anomaly away, and it
+did not guess. **Publishing "I do not know why" beside a result is what let the
+result be corrected instead of quietly believed.**

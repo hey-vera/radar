@@ -16,6 +16,7 @@ mod brief;
 mod consider;
 mod control;
 mod cost;
+mod exits;
 mod graduations;
 mod replay;
 mod selection;
@@ -66,6 +67,9 @@ commands:
   cost --from <ts> --to <ts>     what a round trip costs, bucketed by notional;
                                  re-derives the 850 bps constant and says
                                  whether it is fixed or proportional
+  exits --store <dir> [--cost-bps N]
+                                 would a stop or a take-profit have beaten
+                                 holding; reports both tie-break bounds
 "
 }
 
@@ -540,6 +544,18 @@ fn cost_report(args: &[String]) -> Result<(), String> {
     cost::run(&from, &to)
 }
 
+/// Reports whether any exit rule beats holding.
+fn exits_report(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let cost_bps = flag(args, "--cost-bps")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or_else(|| {
+            i64::try_from(radar_strategy::creator_edge::Thresholds::DEFAULT.assumed_round_trip_bps)
+                .unwrap_or(i64::MAX)
+        });
+    exits::run(&reader, cost_bps)
+}
+
 /// Records or re-checks decisions, proving they reproduce.
 fn replay_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -621,6 +637,7 @@ fn main() -> ExitCode {
         "basis" => basis_report(&args),
         "control" => control_report(&args),
         "cost" => cost_report(&args),
+        "exits" => exits_report(&args),
         "tools" => {
             tools();
             Ok(())

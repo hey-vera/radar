@@ -17,6 +17,7 @@ path = "src/main.rs"
 radar-asof.workspace = true
 radar-graph.workspace = true
 radar-backfill.workspace = true
+radar-decode.workspace = true
 radar-instruments.workspace = true
 radar-risk.workspace = true
 radar-sim.workspace = true

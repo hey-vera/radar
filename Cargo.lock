@@ -1431,6 +1431,7 @@ version = "0.0.1"
 dependencies = [
  "radar-asof",
  "radar-backfill",
+ "radar-decode",
  "radar-graph",
  "radar-instruments",
  "radar-research",

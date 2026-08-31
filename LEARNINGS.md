@@ -1007,3 +1007,60 @@ named as unexplained, with both candidate mechanisms written down. That is what
 made this findable an hour later: the note did not round the anomaly away, and it
 did not guess. **Publishing "I do not know why" beside a result is what let the
 result be corrected instead of quietly believed.**
+
+## 20. A bound that was a date, not a width
+
+`launch_block.rs` bounded every query with `SINCE: &str = "2026-08-01 00:00:00"`
+— a constant calendar date. `token_transfers` prunes on `block_timestamp` and
+nothing else (ADR 0002), so that bound *is* the cost of the query.
+
+On the day it was written it scanned nothing. A month later it scanned a month,
+and it grew by another day every day. The share of candidates whose launch block
+could not be read inside the endpoint's timeout tracked it exactly:
+
+| period | unreadable |
+|---|---|
+| early runs | 2–25% |
+| a week later | 28–40% |
+| the day it was found | **56–68%** |
+
+That is 0008's coordination signal — the strongest measured result in this
+repository — going quietly absent for two thirds of the cohort.
+
+**The part worth keeping is the misdiagnosis.** This presented as a vendor
+problem: a free shared endpoint timing out more and more often, which is exactly
+what a free shared endpoint would do, and the first response was to ask whether
+CryptoHouse should be replaced. It was Radar's query getting monotonically more
+expensive, and a new vendor would have bought a few weeks before the same curve
+caught up with it.
+
+A launch block is only ever asked about for a candidate, and the candidate window
+is 216,000 slots — about a day. The bound had been thirty times wider than
+anything it could be asked about, and widening.
+
+**The check:** a bound relative to a fixed point in time is a bound that grows.
+If the window is meant to be a width, write it as a width, and test that two
+moments a year apart produce the same one.
+
+## 21. A monitor whose window was longer than the outage
+
+The check added for entry 20's failure mode — `screening` in `radar brief` —
+was live and running while that collapse happened. It did not miss it. It
+reported **73% coverage and a warning** while the last three runs were at 38%,
+which is well past its own fail threshold.
+
+The window was the cause. It judged on the trailing 600 decisions, about fifteen
+hours at the hourly cap, so twelve hours of healthy runs were still averaging out
+three bad ones. Nothing was broken; the smoothing that stops it firing on a
+single noisy run also stops it describing a collapse until most of a day has
+passed.
+
+The fix is two windows and the worse of them: a slow one for drift, and a fast
+one of three runs for a collapse in progress. Three rather than one because the
+per-run unreadable share genuinely does move between 5% and 40%, and a monitor
+that fires on weather teaches its reader to ignore it.
+
+**The check, and it is a question to ask of every monitor here:** how long does
+this take to notice the thing it watches for? Compare that against how long the
+thing takes to do its damage. A monitor slower than its failure is reporting
+history.

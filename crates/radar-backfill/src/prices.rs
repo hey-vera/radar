@@ -384,7 +384,7 @@ pub fn window_start(to: &str, since: &str) -> String {
 /// Hand-rolled because the alternative is a date-time dependency in a process
 /// that will eventually sit beside a signing key, and the arithmetic needed is
 /// days-and-hours rather than calendars.
-fn shift_hours(at: &str, hours: i64) -> Option<String> {
+pub(crate) fn shift_hours(at: &str, hours: i64) -> Option<String> {
     let (date, time) = at.split_once(' ')?;
     let mut d = date.splitn(3, '-');
     let (y, m, day): (i64, i64, i64) = (

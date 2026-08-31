@@ -12,9 +12,12 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let mint: Address = args.next().expect("mint").parse().expect("base58");
     let slot = Slot(args.next().expect("slot").parse().expect("number"));
-    let shape = CryptoHouseBlocks::default()
-        .shape_at(&mint, slot)
-        .expect("query");
+    let shape = CryptoHouseBlocks::new(
+        radar_backfill::cryptohouse::Client::default(),
+        &radar_store::from_epoch(radar_store::now_epoch()),
+    )
+    .shape_at(&mint, slot)
+    .expect("query");
     let a = assess(shape);
     println!(
         "{mint} slot {slot}: recipients={} txs={} -> {:?} (lift {})",

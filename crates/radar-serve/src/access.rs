@@ -465,18 +465,102 @@ pub const fn is_fresh(age: Duration) -> bool {
     age.as_nanos() < KEY_LIFETIME.as_nanos()
 }
 
+/// Who a route is for.
+///
+/// # Why this is an enum and not a boolean
+///
+/// It was a boolean — `is_public` — and a boolean has exactly two audiences
+/// where the product has three. That was correct while the only reader was one
+/// operator behind Cloudflare Access, and it stops being correct the day a
+/// customer exists:
+/// [ADR 0005](../../../docs/adr/0005-customers-keep-custody-and-grant-radar-a-bounded-signer.md)
+/// names this seam as a precondition, because Access protects the **ops**
+/// surface and customer auth protects the **customer** surface, and they are
+/// different route sets.
+///
+/// Classifying the routes now, while there are eleven of them, is much cheaper
+/// than classifying forty later — and the failure mode being avoided is a route
+/// added next year quietly becoming visible to the wrong audience.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Audience {
+    /// Anyone, with no identity at all.
+    ///
+    /// Two routes, and both are deliberate. `/health` is what an uptime monitor
+    /// reads, and putting it behind a login turns every check into a false
+    /// alarm. `/x402/` is the paid surface, which has its own paywall and is
+    /// *meant* to be reachable by strangers.
+    Public,
+    /// A customer of the product.
+    ///
+    /// **Nothing authenticates this yet.** The customer session arrives with the
+    /// wallet work in ADR 0005, and until it does
+    /// [`Audience::requires_operator`] answers `true` here — an audience with no
+    /// authenticator behind it falls back to the *strictest* check available,
+    /// never the loosest. That is rule 8 applied to routing: deny by default
+    /// when the configuration is missing.
+    Customer,
+    /// The operator, behind Cloudflare Access.
+    ///
+    /// The default for anything unrecognised, which is the direction a mistake
+    /// should fall in.
+    Operator,
+}
+
+impl Audience {
+    /// Whether a request for this audience must currently prove operator
+    /// identity.
+    ///
+    /// `Customer` answers `true` today because no customer authenticator exists.
+    /// When one does, this stops being the right answer — and
+    /// `the_customer_audience_is_not_yet_reachable_by_customers` is the tripwire
+    /// that fails when it changes, so the change is deliberate rather than
+    /// discovered.
+    #[must_use]
+    pub const fn requires_operator(self) -> bool {
+        match self {
+            Self::Public => false,
+            Self::Customer | Self::Operator => true,
+        }
+    }
+}
+
+/// Which audience a path belongs to.
+///
+/// Total, and the fallback is [`Audience::Operator`]: a path nobody classified
+/// is treated as the most sensitive thing it could be. Prefix matching, and the
+/// trailing slashes are load-bearing — without the one on `/x402/`, a path like
+/// `/x402-internal` would match it.
+#[must_use]
+pub fn audience_of(path: &str) -> Audience {
+    if path == "/health" || path.starts_with("/x402/") {
+        return Audience::Public;
+    }
+
+    // The customer-facing product: the interface, its assets, and the reads it
+    // makes. Listed rather than inferred, because a rule like "anything under
+    // /v1 is a customer route" is exactly how `/v1/store` ends up in front of
+    // somebody who should not see the operator's store counts.
+    let customer = path == "/"
+        || path.starts_with("/assets/")
+        || path == "/v1/funnel"
+        || path == "/v1/scoreboard"
+        || path.starts_with("/v1/tokens/")
+        || path == "/v1/chat";
+    if customer {
+        return Audience::Customer;
+    }
+
+    Audience::Operator
+}
+
 /// Paths served without an identity check even when Access is enforced.
 ///
-/// Two, and both are deliberate. `/health` is what an uptime monitor reads, and
-/// putting it behind a login turns every check into a false alarm. `/x402/` is
-/// the paid public surface, which has its own paywall and is *meant* to be
-/// reachable by strangers.
-///
-/// Prefix matching, and the trailing slash on `/x402/` is load-bearing: without
-/// it a path like `/x402-internal` would match.
+/// Retained as the boolean the guard actually needs, expressed through
+/// [`audience_of`] so there is one classification rather than two that can
+/// disagree.
 #[must_use]
 pub fn is_public(path: &str) -> bool {
-    path == "/health" || path.starts_with("/x402/")
+    matches!(audience_of(path), Audience::Public)
 }
 
 /// The token on a request, from the header or the cookie Cloudflare sets.
@@ -877,6 +961,98 @@ mod tests {
         ] {
             assert!(!is_public(private), "{private} must not be public");
         }
+    }
+
+    #[test]
+    fn every_route_the_server_mounts_is_classified_deliberately() {
+        // The whole route table, audience by audience. This is the decision the
+        // enum exists to record, and writing it out is the point: a route nobody
+        // thought about shows up here as an omission rather than inheriting
+        // whatever a prefix rule happened to give it.
+        for (path, expected) in [
+            // Anyone.
+            ("/health", Audience::Public),
+            ("/x402/v1/instruments", Audience::Public),
+            (
+                "/x402/v1/instruments/creator_track_record",
+                Audience::Public,
+            ),
+            // The product.
+            ("/", Audience::Customer),
+            ("/assets/index-abc123.js", Audience::Customer),
+            ("/v1/funnel", Audience::Customer),
+            ("/v1/scoreboard", Audience::Customer),
+            (
+                "/v1/tokens/So11111111111111111111111111111111111111112",
+                Audience::Customer,
+            ),
+            ("/v1/chat", Audience::Customer),
+            // The operator's surface. `/v1/store` and `/v1/events` are here on
+            // purpose: store counts and a raw event stream are debugging tools,
+            // not product.
+            ("/ops", Audience::Operator),
+            ("/v1/store", Audience::Operator),
+            ("/v1/events", Audience::Operator),
+            ("/v1/instruments", Audience::Operator),
+            ("/v1/instruments/creator_track_record", Audience::Operator),
+            ("/v1/link", Audience::Operator),
+            ("/mcp", Audience::Operator),
+        ] {
+            assert_eq!(audience_of(path), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn anything_unrecognised_belongs_to_the_operator() {
+        // The direction a mistake must fall in. A route added next year and not
+        // classified here is the most sensitive thing it could be, not the
+        // least.
+        for unknown in [
+            "/v2/anything",
+            "/admin",
+            "/v1/positions",
+            "/x402",
+            "/x402-internal/secrets",
+            "/health/../v1/funnel",
+            "",
+        ] {
+            assert_eq!(
+                audience_of(unknown),
+                Audience::Operator,
+                "{unknown} must default to the strictest audience"
+            );
+        }
+    }
+
+    #[test]
+    fn a_customer_route_is_not_reachable_without_an_identity_check() {
+        // The property that matters while the customer authenticator does not
+        // exist: `Customer` must not mean `Public`. If those ever coincide, the
+        // product's own pages become world-readable.
+        assert!(Audience::Customer.requires_operator());
+        assert!(Audience::Operator.requires_operator());
+        assert!(!Audience::Public.requires_operator());
+
+        for customer in ["/", "/v1/funnel", "/v1/tokens/abc", "/assets/app.js"] {
+            assert!(
+                !is_public(customer),
+                "{customer} must not be served without a check"
+            );
+        }
+    }
+
+    #[test]
+    fn the_customer_audience_is_not_yet_reachable_by_customers() {
+        // A deliberate tripwire rather than an assertion about what is right.
+        //
+        // No customer authenticator exists, so `Customer` falls back to the
+        // operator check -- the strictest available, per rule 8. When ADR 0005's
+        // wallet session lands this stops being correct, and this test failing
+        // is how that change gets made deliberately instead of discovered.
+        assert!(
+            Audience::Customer.requires_operator(),
+            "if a customer authenticator now exists, change this test and the fallback together, and check that no operator route moved with it"
+        );
     }
 
     #[test]

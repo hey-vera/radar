@@ -1461,8 +1461,11 @@ dependencies = [
 name = "radar-exec"
 version = "0.0.1"
 dependencies = [
+ "radar-asof",
  "radar-risk",
  "radar-signer",
+ "radar-sim",
+ "radar-strategy",
  "radar-types",
  "serde",
  "serde_json",

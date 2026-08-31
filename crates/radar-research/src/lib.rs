@@ -73,6 +73,7 @@ pub fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
 
 pub mod basis;
 pub mod control;
+pub mod exits;
 pub mod selection;
 pub mod study;
 

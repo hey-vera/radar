@@ -1593,6 +1593,7 @@ dependencies = [
  "ed25519-dalek",
  "radar-risk",
  "radar-types",
+ "ring",
  "serde",
  "serde_json",
  "thiserror",

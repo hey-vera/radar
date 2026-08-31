@@ -139,6 +139,24 @@ compiles and the tests pass — in which case the tests are also wrong.
    bytes. Anything that would let it sign something it has not fully read breaks
    the guarantee, however convenient.
 
+   **The customer path holds the same line, and it took an ADR to keep it.**
+   Privy's API requires a `privy-authorization-signature` — an ECDSA P-256
+   signature Radar makes with a key whose public half is registered as a signer
+   on the customer's wallet. That key causes customer funds to move, which makes
+   it the same category of object as the wallet key, so
+   [ADR 0007](docs/adr/0007-the-privy-authorization-key-lives-in-the-signer-process.md)
+   puts it in the signer and keeps it out of `radar-serve` — the process with a
+   listener, a model provider, an HTTP client, an embedded frontend and a
+   paywall.
+
+   [`privy::authorise`](crates/radar-signer/src/privy.rs) takes a typed request
+   and an `Authorization`, never bytes. It reads the transaction out of the body
+   that will be sent and runs it through the same `verify::check` the local path
+   uses, so the bytes checked are provably the bytes the signature causes to be
+   signed. A caller able to hand over one transaction for checking and another
+   for signing would make the check decorative, which is what a byte-signing
+   method would allow.
+
 2. **The risk kernel is pure.** No clock, no network, no ambient state, and no
    dependence on the order of its inputs. Purity is what makes a verdict
    replayable and a refusal reproducible from a recording.

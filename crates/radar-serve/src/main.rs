@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use radar_instruments::{CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
 use radar_serve::chat::Chat;
-use radar_serve::{AppState, access, app, chat, x402};
+use radar_serve::{AppState, access, app, chat, customer, x402};
 use radar_store::Reader;
 
 /// Every instrument Radar exposes. The CLI builds the same list.
@@ -95,6 +95,19 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Same reasoning, one step weaker. An absent Privy app id is not a
+    // contradiction the way an absent Access configuration is -- it means there
+    // is no customer lane, and customer routes then require operator identity.
+    // A *malformed* one still stops the server, because the failure it produces
+    // is indistinguishable from a vendor outage.
+    let customer = match customer::Mode::from_vars(&|k| std::env::var(k).ok()) {
+        Ok(mode) => mode,
+        Err(why) => {
+            eprintln!("radar-serve: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
     let state = Arc::new(AppState {
@@ -104,6 +117,8 @@ async fn main() -> ExitCode {
         chat: agent,
         access: access.clone(),
         keys: access::KeyCache::new(),
+        customer: customer.clone(),
+        customer_keys: customer::KeyCache::new(),
         linker: radar_serve::link::Linker::new(),
     });
 
@@ -125,6 +140,17 @@ async fn main() -> ExitCode {
             // Said plainly, every start. An instance serving operational detail
             // to anyone who can reach it should say so in its own logs.
             access::Mode::Off => "OFF — anyone who can reach this can read it".to_owned(),
+        }
+    );
+    println!(
+        "  customers  : {}",
+        match &customer {
+            customer::Mode::Enforce(config) =>
+                format!("verifying Privy tokens for app {}", config.app_id),
+            // Not a warning. No customer lane means customer routes require
+            // operator identity, which is stricter than they will be -- but it
+            // is said every start so nobody has to guess which state this is.
+            customer::Mode::Off => "off — customer routes require operator identity".to_owned(),
         }
     );
     println!("  agent      : {agent_note}");

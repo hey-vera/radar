@@ -181,7 +181,7 @@ impl Mode {
 /// The failure it is for is a heredoc pasted with its own placeholder still in
 /// it, which is a mistake a careful person makes at three in the morning and
 /// which no amount of care in the runbook prevents.
-fn looks_unsubstituted(value: &str) -> Option<&'static str> {
+pub(crate) fn looks_unsubstituted(value: &str) -> Option<&'static str> {
     let trimmed = value.trim();
     if trimmed.contains(char::is_whitespace) {
         return Some("it contains spaces");
@@ -513,20 +513,39 @@ pub enum Audience {
 }
 
 impl Audience {
-    /// Whether a request for this audience must currently prove operator
-    /// identity.
+    /// Whether this audience is served with no identity check at all.
     ///
-    /// `Customer` answers `true` today because no customer authenticator exists.
-    /// When one does, this stops being the right answer — and
-    /// `the_customer_audience_is_not_yet_reachable_by_customers` is the tripwire
-    /// that fails when it changes, so the change is deliberate rather than
-    /// discovered.
+    /// **Only `Public`, and that is the whole of it.** The other two both
+    /// require a proven identity; which one they accept is
+    /// [`guard`](crate::guard)'s decision, because it depends on what this
+    /// instance has been configured with and that is not a property of the path.
+    ///
+    /// Deliberately phrased so the caller needs no negation: a `!` at a call site
+    /// is a branch this type's own tests cannot reach.
     #[must_use]
-    pub const fn requires_operator(self) -> bool {
-        match self {
-            Self::Public => false,
-            Self::Customer | Self::Operator => true,
-        }
+    pub const fn is_open(self) -> bool {
+        matches!(self, Self::Public)
+    }
+
+    /// Whether an operator's identity is enough to reach this audience.
+    ///
+    /// True for both `Customer` and `Operator`, and the asymmetry is the point:
+    /// an operator may read a customer page — that is what debugging a customer's
+    /// problem requires — while [`Self::accepts_customer`] refuses the reverse.
+    #[must_use]
+    pub const fn accepts_operator(self) -> bool {
+        matches!(self, Self::Customer | Self::Operator)
+    }
+
+    /// Whether a customer's identity is enough to reach this audience.
+    ///
+    /// **`Customer` only.** An operator route must never open to a customer
+    /// token, however valid that token is — a paying customer is not an
+    /// operator, and `/v1/store`, `/v1/events` and `/mcp` are the operator's
+    /// debugging surface rather than product.
+    #[must_use]
+    pub const fn accepts_customer(self) -> bool {
+        matches!(self, Self::Customer)
     }
 }
 
@@ -1032,33 +1051,57 @@ mod tests {
 
     #[test]
     fn a_customer_route_is_not_reachable_without_an_identity_check() {
-        // The property that matters while the customer authenticator does not
-        // exist: `Customer` must not mean `Public`. If those ever coincide, the
-        // product's own pages become world-readable.
-        assert!(Audience::Customer.requires_operator());
-        assert!(Audience::Operator.requires_operator());
-        assert!(!Audience::Public.requires_operator());
+        // The property that matters most: `Customer` must never mean `Public`.
+        // If those coincide, the product's own pages become world-readable.
+        assert!(!Audience::Customer.is_open());
+        assert!(!Audience::Operator.is_open());
+        assert!(Audience::Public.is_open());
 
         for customer in ["/", "/v1/funnel", "/v1/tokens/abc", "/assets/app.js"] {
             assert!(
-                !is_public(customer),
+                !audience_of(customer).is_open(),
                 "{customer} must not be served without a check"
             );
         }
     }
 
     #[test]
-    fn the_customer_audience_is_not_yet_reachable_by_customers() {
-        // A deliberate tripwire rather than an assertion about what is right.
-        //
-        // No customer authenticator exists, so `Customer` falls back to the
-        // operator check -- the strictest available, per rule 8. When ADR 0005's
-        // wallet session lands this stops being correct, and this test failing
-        // is how that change gets made deliberately instead of discovered.
-        assert!(
-            Audience::Customer.requires_operator(),
-            "if a customer authenticator now exists, change this test and the fallback together, and check that no operator route moved with it"
-        );
+    fn an_operator_route_never_opens_to_a_customer_token() {
+        // The asymmetry, and the one worth being certain about. An operator may
+        // read a customer page -- debugging a customer's problem requires it --
+        // and a customer may never read an operator one, however valid their
+        // token. `/v1/store`, `/v1/events` and `/mcp` are the debugging surface.
+        for path in ["/ops", "/v1/store", "/v1/events", "/mcp", "/v1/instruments"] {
+            let audience = audience_of(path);
+            assert!(
+                audience.accepts_operator(),
+                "{path} must be reachable by the operator"
+            );
+            assert!(
+                !audience.accepts_customer(),
+                "{path} must NOT be reachable by a customer token"
+            );
+        }
+
+        for path in ["/", "/v1/funnel", "/v1/tokens/abc"] {
+            let audience = audience_of(path);
+            assert!(audience.accepts_customer(), "{path} is product");
+            assert!(
+                audience.accepts_operator(),
+                "{path} must stay readable by the operator, for debugging"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unclassified_route_accepts_neither_a_customer_nor_the_public() {
+        // A route added next year and not classified is `Operator`, so it is
+        // closed to the world and closed to customers. Both halves asserted,
+        // because either one silently flipping is an exposure.
+        let unknown = audience_of("/v2/whatever");
+        assert!(!unknown.is_open());
+        assert!(!unknown.accepts_customer());
+        assert!(unknown.accepts_operator());
     }
 
     #[test]

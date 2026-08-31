@@ -15,6 +15,7 @@ mod basis;
 mod brief;
 mod consider;
 mod control;
+mod cost;
 mod graduations;
 mod replay;
 mod selection;
@@ -62,6 +63,9 @@ commands:
   control --store <dir>          the selection against tokens Radar never
                                  decided on, priced the same way on both sides
                                  and matched on token age and holding period
+  cost --from <ts> --to <ts>     what a round trip costs, bucketed by notional;
+                                 re-derives the 850 bps constant and says
+                                 whether it is fixed or proportional
 "
 }
 
@@ -529,6 +533,13 @@ fn control_report(args: &[String]) -> Result<(), String> {
     control::run(&reader)
 }
 
+/// Re-derives the round-trip cost, bucketed by notional.
+fn cost_report(args: &[String]) -> Result<(), String> {
+    let from = flag(args, "--from").ok_or("cost needs --from <YYYY-MM-DD HH:MM:SS>")?;
+    let to = flag(args, "--to").ok_or("cost needs --to <YYYY-MM-DD HH:MM:SS>")?;
+    cost::run(&from, &to)
+}
+
 /// Records or re-checks decisions, proving they reproduce.
 fn replay_lane(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -609,6 +620,7 @@ fn main() -> ExitCode {
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
         "control" => control_report(&args),
+        "cost" => cost_report(&args),
         "tools" => {
             tools();
             Ok(())

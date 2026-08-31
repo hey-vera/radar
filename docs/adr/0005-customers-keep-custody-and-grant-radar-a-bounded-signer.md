@@ -152,6 +152,61 @@ the half that matters most.
 4. **The kernel still in the path.** No customer transaction may be built from
    anything but an `Authorization` the kernel issued.
 
+## Where this is going, and what keeps the move cheap
+
+Written down now because the beta will otherwise shape the code toward one
+vendor's API and nobody will have recorded where it was supposed to end up.
+
+### The two are layers, not alternatives
+
+An earlier reading of this treated the on-chain program as a *replacement* for
+the hosted wallet. It is not, and the layering is the point:
+
+| | who signs | how often | who pays |
+|---|---|---|---|
+| **identity and user actions** — sign up, deposit, delegate, withdraw | the customer, from their embedded wallet | about three times, ever | the provider's meter |
+| **trading** — every buy and sell | **Radar, with one key it already owns** | thousands | nobody |
+
+So the endgame is not "replace the provider". It is **keep the provider for
+identity and move the trading authority on-chain**, which takes the signature
+bill from thousands per customer to roughly three. The embedded wallet is
+unavoidable regardless if customers are to be onboarded without already owning
+one, which the deposit model above assumes.
+
+### Why not now
+
+**An audit, before a customer exists.** A program holding delegated authority
+over customer funds is exactly the thing that gets drained, so it cannot ship
+unaudited — and that is a large sum spent on a product whose edge is currently
+measured as *negative*
+([`0017`](../research/0017-a-control-that-could-have-been-traded.md)).
+
+**Upgrade authority is itself a custody question, and it has no clean answer.**
+Hold it, and Radar can change what the program does — which is arguably custody,
+having paid for an audit to arrive back at the fork this ADR exists to avoid.
+Burn it, and a bug in code holding customer money can never be fixed. This is a
+hard design problem rather than a detail, and it is the single thing to solve
+first when the time comes.
+
+**The program cannot be designed yet.** It has to encode which instructions and
+venues Radar trades through, and
+[`0018`](../research/0018-the-deep-tail-points-the-wrong-way.md) has moved the
+burden of proof onto *staying* on pump.fun pre-graduation. On-chain bounds
+written around a venue Radar may leave is building the wrong thing carefully.
+
+### The constraint that keeps the move cheap
+
+**Radar's side of the boundary stays "produce an `Authorization` and ask a
+signer".** All three answers — the local signer, a hosted policy engine, an
+on-chain program — consume exactly that object. The boundary is already this
+thin, and the only way to lose the option is to let a vendor's API shape appear
+anywhere above it.
+
+Concretely, and this is the thing to refuse in review: **no provider type may
+appear in `radar-risk`, `radar-strategy` or `radar-exec`.** The provider is an
+implementation of `Signing` at the edge, which is where it already sits — the
+lane composition test proves the executor talks to a trait rather than a client.
+
 ## What this does not decide
 
 Whether Radar has an edge worth trading. That is measured separately and is

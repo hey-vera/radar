@@ -442,6 +442,14 @@ impl LastPriced {
             index
                 .entry(outcome.mint)
                 .and_modify(|held| {
+                    // Strictly greater, so the **first** observation at a given
+                    // slot wins and a later one at the same slot does not
+                    // displace it. Two priced rows for one mint at one
+                    // `measured_at` should not exist -- the outcome pass writes
+                    // one per mint per measurement -- but "should not" is not
+                    // "cannot", and the kernel is replayable only if this is
+                    // deterministic. `>=` would make the answer depend on the
+                    // order the store happened to return files in.
                     if outcome.measured_at > held.0 {
                         *held = (outcome.measured_at, price);
                     }
@@ -1096,6 +1104,42 @@ mod tests {
         // Strictly after: the same slot is not after it.
         assert_eq!(index.after(&mint, Slot(10_000)), None);
         assert_eq!(index.after(&mint, Slot(10_001)), None);
+    }
+
+    #[test]
+    fn a_tie_on_measured_at_resolves_the_same_way_every_time() {
+        // Replay depends on it. Two priced rows for one mint at one slot should
+        // not exist, but "should not" is not "cannot" -- and with `>=` the answer
+        // would depend on the order the store returned files in, which is not a
+        // property anything guarantees.
+        let first_wins = LastPriced::of(&[
+            priced_at(1, 10_000, Some(100)),
+            priced_at(1, 10_000, Some(999)),
+        ]);
+        assert_eq!(
+            first_wins.after(&Address::new([1u8; 32]), Slot(0)),
+            Some(100),
+            "the first observation at a slot is kept"
+        );
+
+        // And the reverse order gives the reverse answer, which is what makes
+        // the assertion above about the *rule* rather than about these numbers.
+        let reversed = LastPriced::of(&[
+            priced_at(1, 10_000, Some(999)),
+            priced_at(1, 10_000, Some(100)),
+        ]);
+        assert_eq!(reversed.after(&Address::new([1u8; 32]), Slot(0)), Some(999));
+    }
+
+    #[test]
+    fn an_index_with_something_in_it_does_not_claim_to_be_empty() {
+        // `a_mint_nobody_priced_has_no_answer_rather_than_a_zero` asserts
+        // `is_empty()` is true, and that assertion passes just as well if the
+        // method always returns true. This is the other side, without which the
+        // first one says nothing.
+        let index = LastPriced::of(&[priced_at(1, 10_000, Some(100))]);
+        assert!(!index.is_empty());
+        assert_eq!(index.len(), 1);
     }
 
     #[test]

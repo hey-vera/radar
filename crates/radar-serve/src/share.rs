@@ -379,3 +379,36 @@ mod tests {
         assert_eq!(Allowance::per_day(25).get(), 25);
     }
 }
+
+#[cfg(test)]
+mod describe_tests {
+    use super::*;
+
+    #[test]
+    fn the_description_distinguishes_closed_from_a_ceiling() {
+        // `radar-serve`'s start-up banner is how an operator confirms this
+        // setting took, and a line that reads the same either way is the failure
+        // LEARNINGS records repeatedly. `Admission::describe` has this test and
+        // this one did not, so mutation testing replaced the whole method with
+        // "xyzzy" and nothing complained.
+        let closed = Shares::new(Allowance::CLOSED);
+        assert!(
+            closed.describe().contains("closed"),
+            "{}",
+            closed.describe()
+        );
+        assert!(
+            closed.describe().contains(VAR),
+            "and names what to set: {}",
+            closed.describe()
+        );
+
+        let open = Shares::new(Allowance::per_day(25));
+        assert!(open.describe().contains("25"), "{}", open.describe());
+        assert!(
+            !open.describe().contains("closed"),
+            "a configured ceiling must not read as closed: {}",
+            open.describe()
+        );
+    }
+}

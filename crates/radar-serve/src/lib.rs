@@ -682,10 +682,7 @@ async fn decisions(
         // Trimmed and dropped when empty. `?prefix=` is a stray parameter, not a
         // request for decisions whose mint starts with nothing -- which every
         // decision does, so it would look like the filter had silently failed.
-        prefix: params
-            .prefix
-            .map(|p| p.trim().to_owned())
-            .filter(|p| !p.is_empty()),
+        prefix: api::normalise_prefix(params.prefix),
         limit: params.limit.unwrap_or(api::DEFAULT_LIMIT),
     };
 

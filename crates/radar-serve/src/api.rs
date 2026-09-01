@@ -316,6 +316,22 @@ pub struct Query {
     pub limit: usize,
 }
 
+/// A query-string prefix reduced to what should actually be filtered on.
+///
+/// `None` for absent, empty, or whitespace. `?prefix=` is a stray parameter, not
+/// a request for decisions whose mint starts with nothing — and **every** mint
+/// starts with nothing, so honouring it would silently return the whole record
+/// while the control said a filter was applied.
+///
+/// A function rather than an inline `.filter()` in the handler because that is
+/// where it was, and a mutation that deleted the `!` went uncaught: only *empty*
+/// prefixes would have been kept, so every real search would have matched
+/// everything.
+#[must_use]
+pub fn normalise_prefix(raw: Option<String>) -> Option<String> {
+    raw.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty())
+}
+
 /// The largest page anyone may ask for.
 ///
 /// A cap rather than a suggestion. The store is read whole to answer this, so an
@@ -1696,5 +1712,73 @@ mod tests {
             1,
         );
         assert_eq!(got.matched, 0, "both filters apply, not the last one");
+    }
+
+    #[test]
+    fn a_median_of_one_value_is_that_value() {
+        // `values.len() / 2` on a single element is index 0. Mutated to `%`, it
+        // becomes index 1 and the median of one measurement is reported as
+        // absent -- which reads as "nothing was measured" for a store that has
+        // exactly one decision in it.
+        let one = vec![with_capacity(1, Some(31_000_000), None)];
+        let got = capacity(&one, 1, 850);
+        assert_eq!(got.median_capacity, Some(31_000_000));
+
+        // And two, where `/` and `%` also disagree.
+        let two = vec![
+            with_capacity(1, Some(10_000_000), None),
+            with_capacity(2, Some(30_000_000), None),
+        ];
+        assert_eq!(capacity(&two, 1, 850).median_capacity, Some(30_000_000));
+    }
+
+    #[test]
+    fn the_return_buckets_fall_where_they_are_written() {
+        // Swept individually, for the reason the capacity test gives and this
+        // one did not: "every value is binned exactly once" holds just as well
+        // when they are all binned into the *wrong* bucket. Mutation testing
+        // deleted the minus signs from three boundaries and nothing noticed.
+        //
+        // Entry 100, so a last price of `p` gives (p - 100) * 100 bps.
+        let at = |bps: i64| {
+            // Solve for the price that produces this return from an entry of
+            // 10,000: bps = (price - 10_000) * 10_000 / 10_000.
+            let price = u64::try_from(10_000 + bps).expect("in range");
+            let got = returns(&[priced(1, 10_000)], &[outcome(1, Some(price))], 1, 850);
+            got.buckets.iter().position(|b| b.scored == 1)
+        };
+
+        assert_eq!(at(-9_000), Some(0), "below -50%");
+        assert_eq!(at(-5_001), Some(0));
+        assert_eq!(at(-5_000), Some(1), "the floor belongs to the band above");
+        assert_eq!(at(-2_001), Some(1));
+        assert_eq!(at(-2_000), Some(2));
+        assert_eq!(at(-851), Some(2));
+        assert_eq!(at(-850), Some(3));
+        assert_eq!(at(-1), Some(3));
+        // Zero is not a bucket at all -- it is the point mass, reported apart.
+        assert_eq!(at(0), None, "exactly zero is never binned");
+        assert_eq!(at(1), Some(4));
+        assert_eq!(at(849), Some(4));
+        assert_eq!(at(850), Some(5), "the round trip is the boundary");
+        assert_eq!(at(1_999), Some(5));
+        assert_eq!(at(2_000), Some(6));
+        assert_eq!(at(50_000), Some(6), "and the top is open-ended");
+    }
+
+    #[test]
+    fn a_prefix_is_normalised_before_it_filters_anything() {
+        // Every mint starts with the empty string, so honouring `?prefix=` would
+        // return the whole record while the control said a filter was applied.
+        // The mutation that deleted the `!` kept only *empty* prefixes, which is
+        // the same failure with every search instead of one.
+        assert_eq!(normalise_prefix(None), None);
+        assert_eq!(normalise_prefix(Some(String::new())), None);
+        assert_eq!(normalise_prefix(Some("   ".to_owned())), None);
+        assert_eq!(
+            normalise_prefix(Some("  So111  ".to_owned())),
+            Some("So111".to_owned()),
+            "a real prefix survives, trimmed"
+        );
     }
 }

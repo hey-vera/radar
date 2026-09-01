@@ -5,8 +5,11 @@
 **Source:** the pump.fun global and fee-config accounts, both on-chain Anchor
 IDLs, and the three mainnet trades captured for
 [ADR 0009](../adr/0009-radar-builds-its-own-pump-fun-swaps.md)
-**Status:** measured. Two findings, one that **confirms** a number 0022 assumed
-and one that **contradicts** the program's own published interface.
+**Status:** measured, and one claim is **demonstrated**: a legacy pump.fun buy
+rebuilt by Radar simulates clean against mainnet. Three findings — one confirms a
+number 0022 assumed, one contradicts the program's own published interface, and
+one settles ADR 0009's last open question by asking the runtime instead of
+searching.
 
 ## Why this was looked at
 
@@ -92,16 +95,54 @@ differently from each other:
   contents read as running totals with a recent timestamp.
 - **The other is a function of the mint alone, and does not exist.** Six trades
   of the same token by six different signers pass the identical address, so it is
-  keyed on the mint and nothing else. The account has never been created.
+  keyed on the mint and nothing else. The account has never been created — which
+  did not stop it being required.
 
-**That last one is still unidentified**, and it is recorded that way. Roughly
-six hundred derivations were checked against all three captures simultaneously —
-every seed string in both IDLs, every plausible variant, every one- and two-key
-combination of the mint, curve, creator, user, fee recipient, creator vault and
-volume accumulator, under the pump.fun, fee, AMM and associated-token programs,
-plus ATA-shaped derivations. Named hypotheses ruled out include `sharing-config`,
-`mayhem-state`, the AMM `pool` and `pool-authority`, and every ATA of every owner
-in the account list.
+**That last one was then identified, by the runtime rather than by search.**
+Roughly six hundred derivations had been checked against all three captures
+simultaneously — every seed string in both IDLs, every plausible variant, every
+one- and two-key combination of the accounts in the list, under four programs,
+plus ATA-shaped derivations. All failed.
+
+Simulating the captured buy with a deliberately wrong address in that position
+produced the answer in one call:
+
+```
+AnchorError thrown in programs/pump/src/sell.rs:133.
+Error Code: InvalidBondingCurveV2. Error Number: 6074.
+Error Message: bonding_curve_v2 remaining account ...
+```
+
+It is `["bonding-curve-v2", mint]` under pump.fun, which matches all three
+captures. **The program will name an account it does not like, and asking it cost
+one request where searching had cost six hundred derivations and found nothing.**
+
+## Finding 3 — Radar can build a working pump.fun trade, and the runtime settled the rest
+
+The captured buy, rebuilt from the fixture as a **legacy** transaction and
+simulated against mainnet, returns `err: null`. That is ADR 0009's central claim
+demonstrated rather than argued: research 0021 established that Jupiter would not
+route these tokens as legacy, and this establishes that the venue itself always
+would.
+
+Three further facts fell out of simulating variants, none of which inspection
+could have produced:
+
+- **Both remaining accounts are required.** Dropping either fails with
+  `BuybackFeeRecipientMissing` (6062). The IDL's sixteen accounts are not a
+  sufficient instruction.
+- **Their order is load-bearing.** Present but swapped, the program returns
+  `BuybackFeeRecipientNotAuthorized` (6057) — a different error, so the position
+  is checked and not merely the membership.
+- **Any valid buyback vault index is accepted.** A trade built with index 2
+  simulates clean where the capture used 6. The rotation observed across captures
+  spreads load; it does not constrain a caller, so Radar may pick an index rather
+  than having to predict one. This removes the last thing that looked like a
+  blocker.
+
+The same simulation confirmed finding 1 a third way, from inside the program: the
+fee program's `GetFees` returned `lp 0, protocol 95, creator 30` — 125 bps,
+returned by the runtime at trade time rather than parsed from an account by us.
 
 ## What this changes about ADR 0009
 
@@ -111,12 +152,10 @@ reference. Had the builder been written against the published IDL — the most
 authoritative reference available, published by the program itself — it would
 have built a 16-account instruction, and mainnet passes 18.
 
-Whether those two are *required* is a separate question from what they are, and
-it is one **simulation answers and inspection cannot**. An Anchor program ignores
-remaining accounts it does not use; this one CPIs into a fee program that may
-require them. So the next step is to build the sixteen declared accounts, simulate,
-and let the runtime say which of the two it misses — rather than to keep guessing
-seeds, which has now had its fair run.
+Whether those two were *required* was a separate question from what they are, and
+it was one **simulation answered and inspection could not**. Finding 3 is that
+answer: both are required, in order. The account list in ADR 0009 is now complete
+and every one of the eighteen derives.
 
 **This is the second time a published reference has under-described this
 program.** `radar-decode`'s discriminator table exists because public references
@@ -138,7 +177,26 @@ better reference than those were and it is still not the program. Recorded in
   rotates by is not known, and a builder cannot currently predict which index a
   given trade should carry.
 
+## What is still open
+
+**The buyback vault index has no known rule**, only the observation that any
+valid one works. Radar should pick a fixed index and record that it is a choice.
+
+**Nothing has been signed or sent.** A simulation with `sigVerify: false` proves
+the instruction is well formed and the accounts resolve. It does not prove a
+transaction Radar signs would land, and it says nothing about what price it would
+land at.
+
+**The v2 curve account does not exist** for the tokens sampled, and what the
+program does when it *does* exist has not been observed.
+
 ## Reproducing
+
+Simulation needs no key and no signature: build the legacy message, prepend a
+64-byte zero signature, and call `simulateTransaction` with `sigVerify: false`
+and `replaceRecentBlockhash: true`. Every result above came from that, against
+the public mainnet endpoint. The account derivations are asserted offline in
+[`pda.rs`](../../crates/radar-pumpfun/src/pda.rs).
 
 The IDL for a program is at `create_with_seed(find_program_address([], program),
 "anchor:idl", program)`, zlib-compressed after an 8-byte discriminator, a 32-byte

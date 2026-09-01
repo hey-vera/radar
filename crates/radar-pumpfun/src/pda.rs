@@ -95,6 +95,37 @@ pub fn bonding_curve(mint: &Address) -> Option<Address> {
     find(&[b"bonding-curve", mint.as_bytes()], &PROGRAM_ID).map(|(a, _)| a)
 }
 
+/// The mint's second-generation bonding curve.
+///
+/// **Required on every trade, and absent from the program's published IDL.**
+/// Mainnet passes it as a remaining account, and the program validates its
+/// address -- a wrong one is refused with `InvalidBondingCurveV2`, which is how
+/// its name was learned. See
+/// [research 0023](https://github.com/hey-vera/radar/blob/main/docs/research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md).
+///
+/// The account **does not exist** for the tokens Radar selects, and passing it
+/// anyway is not optional: dropping it fails the instruction. An absent account
+/// at a validated address is the program saying "this token has no v2 curve",
+/// which is a fact rather than a gap.
+#[must_use]
+pub fn bonding_curve_v2(mint: &Address) -> Option<Address> {
+    find(&[b"bonding-curve-v2", mint.as_bytes()], &PROGRAM_ID).map(|(a, _)| a)
+}
+
+/// One of the fee program's buyback vaults.
+///
+/// Also a remaining account, and also required. `index` selects among several
+/// vaults; mainnet captures rotate through them, but **any valid index is
+/// accepted** -- simulation confirms a trade built with index 2 succeeds where
+/// the capture used 6. So the rotation spreads load rather than constraining a
+/// caller, and Radar may pick one.
+///
+/// It is derived under the **fee** program, not pump.fun.
+#[must_use]
+pub fn buyback_vault(index: u8) -> Option<Address> {
+    find(&[b"buyback-vault", &[index]], &FEE_PROGRAM).map(|(a, _)| a)
+}
+
 /// The program's global configuration.
 #[must_use]
 pub fn global() -> Option<Address> {
@@ -172,6 +203,15 @@ mod tests {
     const OBSERVED_BONDING_CURVE: &str = "BfVg4yLn5WcffzTyXvWgqaupqmAeX4en2Pawq32TdZpb";
     const OBSERVED_GLOBAL: &str = "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf";
     const OBSERVED_EVENT_AUTHORITY: &str = "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1";
+
+    /// The two accounts mainnet passes beyond the sixteen the IDL declares.
+    /// Both are required; see `research/0023`.
+    const OBSERVED_BONDING_CURVE_V2: &str = "BmvnaP7PdqZAigF9kPUggzWDCwZtiVvMT2BqQR2ajLm8";
+    const OBSERVED_BUYBACK_VAULT_6: &str = "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD";
+    /// A second mint, so the v2 derivation is checked against more than one
+    /// case -- a single match can be a coincidence of one address.
+    const MINT_TWO: &str = "BVQg1SM8P8DwUyHrJGfY7oS5y4kRDLL9iGB6At5yAd3m";
+    const OBSERVED_BONDING_CURVE_V2_TWO: &str = "6eHxRLJsrxP5GPxQttCbLnQJcAvy6MHNDxQoDKJyZXvJ";
 
     fn addr(s: &str) -> Address {
         s.parse().expect("a base58 address")
@@ -325,5 +365,49 @@ mod tests {
         let b = bonding_curve(&addr("So11111111111111111111111111111111111111112")).expect("b");
         assert_ne!(a, b);
         assert_ne!(global().expect("g"), event_authority().expect("e"));
+    }
+
+    #[test]
+    fn the_second_generation_curve_derives_for_every_captured_mint() {
+        // Learned from the runtime rather than from a reference: about six
+        // hundred seed derivations failed to find this, and the program named it
+        // in an error message the moment a wrong address was simulated.
+        assert_eq!(
+            bonding_curve_v2(&addr(MINT)).expect("a derivation"),
+            addr(OBSERVED_BONDING_CURVE_V2)
+        );
+        assert_eq!(
+            bonding_curve_v2(&addr(MINT_TWO)).expect("a derivation"),
+            addr(OBSERVED_BONDING_CURVE_V2_TWO)
+        );
+    }
+
+    #[test]
+    fn the_second_generation_curve_is_not_the_first() {
+        // Two accounts, one mint, both required on the same instruction and
+        // neither substitutable for the other. Passing one where the other
+        // belongs is refused on chain, so the difference is asserted here where
+        // it costs nothing to find.
+        let mint = addr(MINT);
+        assert_ne!(
+            bonding_curve(&mint).expect("v1"),
+            bonding_curve_v2(&mint).expect("v2")
+        );
+    }
+
+    #[test]
+    fn the_buyback_vault_derives_under_the_fee_program() {
+        // Under the *fee* program, not pump.fun. Deriving it under the program
+        // that consumes it is the obvious mistake and produces a valid-looking
+        // address that the instruction is then refused for.
+        assert_eq!(
+            buyback_vault(6).expect("a derivation"),
+            addr(OBSERVED_BUYBACK_VAULT_6)
+        );
+        assert_ne!(
+            buyback_vault(6).expect("six"),
+            buyback_vault(2).expect("two"),
+            "the index has to actually select"
+        );
     }
 }

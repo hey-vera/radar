@@ -204,46 +204,56 @@ instruction's account list** — it is read from the bonding curve account, so
 building a buy requires fetching the curve first. And `buy` and `sell` do not
 share an account order or an argument count.
 
-**Update, later the same day: the program publishes an IDL on chain, and it
-settles most of this.** See
+**Update, later the same day: the account list is complete, and a rebuilt buy
+simulates clean.** See
 [research 0023](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md).
-Every derivation below was verified against the captures rather than taken from
-the IDL, which is the same standard the discriminators are held to.
 
-Now named: `[13]` is the `user_volume_accumulator`, `[14]` the `fee_config`
-(`["fee_config", pump.fun program id]` under the **fee** program), `[15]` the fee
-program itself.
+Two sources settled it, in this order, and the order is the lesson.
 
-The finding that matters is that the IDL declares **sixteen** accounts for `buy`
-and mainnet passes **eighteen** — so the last two are *remaining accounts*,
-outside the program's own published interface. This is precondition 1 earning its
-keep: a builder written against the most authoritative available reference would
-have been two accounts short.
+**The on-chain IDL** named `[13]` `user_volume_accumulator`, `[14]` `fee_config`
+(`["fee_config", pump.fun program id]` under the **fee** program) and `[15]` the
+fee program itself. Every derivation was verified against the captures rather
+than taken from the IDL, which is the standard the discriminators are held to.
 
-- **`[17]` is a `BuybackVault`**, `["buyback-vault", index]` under the fee
-  program with a one-byte index, verified against all three captures at indices
-  6, 4 and 2. It **rotates per trade**, and the rule it rotates by is not known,
-  so a builder cannot currently predict which index to pass.
-- **`[16]` is a function of the mint alone and does not exist.** Six trades of
-  one token by six different signers pass the identical address. Roughly six
-  hundred derivations were checked against all three captures at once — every
-  seed string in both IDLs, every one- and two-key combination of the accounts in
-  the list, under four programs, plus ATA-shaped derivations. `sharing-config`,
-  `mayhem-state`, the AMM `pool` and `pool-authority` are all ruled out.
+It also revealed the discrepancy that matters: the IDL declares **sixteen**
+accounts for `buy` and mainnet passes **eighteen**, so the last two are Anchor
+*remaining accounts*, outside the published interface. This is precondition 1
+earning its keep — a builder written against the most authoritative reference
+available would have been two accounts short.
 
-It stays recorded as unknown. An account included on a hunch is the error this
-ADR's first precondition exists to prevent, and it is the kind that does not fail
-cleanly.
+**The runtime** settled the rest, after about six hundred seed derivations had
+failed to. Simulating with a deliberately wrong address returned
+`InvalidBondingCurveV2` and the account's name, so `[16]` is
+`["bonding-curve-v2", mint]` under pump.fun. `[17]` is a `BuybackVault`,
+`["buyback-vault", index]` under the fee program.
 
-**The next step is simulation, not more seeds.** Whether those two accounts are
-*required* is a different question from what they are, and it is one the runtime
-answers directly: build the sixteen declared accounts, simulate, and read which
-account the program says it is missing. Seed searching has had its run.
+Both are now in [`pda.rs`](../../crates/radar-pumpfun/src/pda.rs), asserted
+against the captures.
 
-**Also done: the fee.** [research 0023](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md)
-reads it off the fee program's tier schedule at **125 bps a side** — 250 for a
-round trip, which is what 0022 assumed without checking. It is parsed as a
-schedule rather than stored as a constant, because that is what it is.
+**What simulation established beyond the names:**
+
+- The captured buy, rebuilt as a **legacy** transaction, simulates with
+  `err: null`. This ADR's central claim is demonstrated rather than argued.
+- Both remaining accounts are **required**, and **in order** — dropping either
+  gives `BuybackFeeRecipientMissing`, swapping them gives
+  `BuybackFeeRecipientNotAuthorized`.
+- **Any valid buyback index is accepted**: index 2 simulates clean where the
+  capture used 6. So Radar may pick one rather than predict one, and the "index
+  rotates unpredictably" concern is gone.
+
+**Also done: the fee.** Read off the fee program's tier schedule at **125 bps a
+side** — 250 for a round trip, which is what 0022 assumed without checking, and
+which the runtime confirmed independently by returning `protocol 95, creator 30`
+from `GetFees` during simulation. It is parsed as a schedule rather than stored
+as a constant, because that is what it is.
+
+**Still open.** Nothing has been signed or sent — a simulation with
+`sigVerify: false` proves the instruction is well formed and the accounts
+resolve, not that a signed transaction would land or at what price. The buyback
+index has no known rule beyond "any valid one works", so Radar picking one is a
+choice to record. And `radar-signer`'s `verify::check` has not yet been run over
+a transaction this crate built, which is the next step and the one that matters
+for rule 1.
 
 ## What would reverse this
 

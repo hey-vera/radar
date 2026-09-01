@@ -615,6 +615,47 @@ mod tests {
     }
 
     #[test]
+    fn the_ceiling_is_inclusive_and_one_lamport_past_it_is_not() {
+        // The boundary itself, swept. `just mutants` found `>` could become
+        // `>=` with every test still passing, which means nothing exercised a
+        // transfer of exactly the ceiling.
+        //
+        // Both directions are wrong in a way that matters. Exclusive refuses a
+        // transaction that is precisely within the operator's limit, which reads
+        // as an unexplained failure at round numbers. Off by one the other way
+        // is an overspend, small but of exactly the kind these bounds exist to
+        // make impossible.
+        let mut auth = authorization();
+        auth.action = Action::Buy;
+        auth.max_notional = MicroUsd(1_000_000);
+
+        let at_the_ceiling = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(1_000_000))],
+        );
+        assert!(
+            check(
+                &auth,
+                &at_the_ceiling,
+                &Address::new(WALLET),
+                &allowlist(),
+                NOW
+            )
+            .is_ok(),
+            "exactly the ceiling is inside the limit"
+        );
+
+        let one_over = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(1_000_001))],
+        );
+        assert!(
+            check(&auth, &one_over, &Address::new(WALLET), &allowlist(), NOW).is_err(),
+            "one lamport past it is not"
+        );
+    }
+
+    #[test]
     fn a_reduce_is_capped_too() {
         // The third action, and it was exempt for the same reason. Swept rather
         // than sampled, because "Buy is capped" was true before this change as

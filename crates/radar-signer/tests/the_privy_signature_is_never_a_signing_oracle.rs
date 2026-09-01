@@ -13,7 +13,7 @@
 //! checked before anything is signed, and they are checked against the bytes
 //! inside the request that will be sent, not against a copy passed alongside it.
 
-use radar_risk::{Action, Address, Authorization, MicroUsd, Slot};
+use radar_risk::{Action, Address, Authorization, Autonomy, MicroUsd, Policy, Slot};
 use radar_signer::privy::{AuthorizationKey, NotAuthorised, PrivyRequest, authorise};
 use radar_signer::verify::Allowlist;
 use serde_json::{Value, json};
@@ -23,6 +23,21 @@ const DEX: [u8; 32] = [0x11; 32];
 const MINT: [u8; 32] = [0x22; 32];
 const WALLET: [u8; 32] = [0x33; 32];
 const NOW: Slot = Slot(1_000);
+
+/// A policy wide enough not to be what any of these tests are about.
+///
+/// ADR 0008's clamp is exercised in `verify.rs`. Here it must be out of the way,
+/// or a refusal could come from the policy rather than from the property being
+/// tested -- which is how a test passes for the wrong reason.
+fn policy() -> Policy {
+    Policy {
+        autonomy: Autonomy::Capped,
+        max_position: MicroUsd(1_000_000_000),
+        max_canary: MicroUsd(1_000_000_000),
+        max_input_staleness: radar_risk::SlotDelta(100_000),
+        ..Policy::CLOSED
+    }
+}
 
 fn allowlist() -> Allowlist {
     Allowlist {
@@ -104,6 +119,7 @@ fn a_request_the_kernel_authorised_is_signed() {
         &authorization(),
         &Address::new(WALLET),
         &allowlist(),
+        &policy(),
         NOW,
     )
     .expect("an authorised request is signed");
@@ -128,6 +144,7 @@ fn a_transaction_for_another_token_is_refused_rather_than_signed() {
         &authorization(),
         &Address::new(WALLET),
         &allowlist(),
+        &policy(),
         NOW,
     )
     .expect_err("a substituted mint must not be signed");
@@ -162,6 +179,7 @@ fn the_bytes_checked_are_the_bytes_the_request_carries() {
         &authorization(),
         &Address::new(WALLET),
         &allowlist(),
+        &policy(),
         NOW,
     );
     let refused = authorise(
@@ -170,6 +188,7 @@ fn the_bytes_checked_are_the_bytes_the_request_carries() {
         &authorization(),
         &Address::new(WALLET),
         &allowlist(),
+        &policy(),
         NOW,
     );
     assert!(signed.is_ok(), "the honest body signs");
@@ -186,6 +205,7 @@ fn an_expired_authorisation_signs_nothing() {
         &authorization(),
         &Address::new(WALLET),
         &allowlist(),
+        &policy(),
         Slot(9_999),
     )
     .expect_err("an expired authorisation must not sign");
@@ -213,6 +233,7 @@ fn a_request_with_no_transaction_in_it_is_refused_rather_than_passed() {
                     &authorization(),
                     &Address::new(WALLET),
                     &allowlist(),
+                    &policy(),
                     NOW,
                 ),
                 Err(NotAuthorised::NoTransaction)

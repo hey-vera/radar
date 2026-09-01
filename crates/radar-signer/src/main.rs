@@ -22,6 +22,7 @@
 use std::io::{BufRead as _, Write as _};
 use std::path::PathBuf;
 
+use radar_risk::Policy;
 use radar_signer::privy::{AuthorizationKey, authorise};
 use radar_signer::protocol::{Envelope, PrivyAuthorization, Response, place_signature, slot_of};
 use radar_signer::{Allowlist, Key, check};
@@ -46,9 +47,11 @@ fn main() -> std::process::ExitCode {
 
     if let Some(c) = &config {
         eprintln!(
-            "radar-signer: ready as {} with {} allowed programs",
+            "radar-signer: ready as {} with {} allowed programs, policy {:?} up to {} micro-USD",
             c.key.public(),
-            c.allowlist.programs.len()
+            c.allowlist.programs.len(),
+            c.policy.autonomy,
+            c.policy.max_position.get()
         );
     }
 
@@ -95,6 +98,19 @@ fn main() -> std::process::ExitCode {
 struct Config {
     key: Key,
     allowlist: Allowlist,
+    /// This signer's own policy, and the reason it is here rather than taken
+    /// from the caller.
+    ///
+    /// The signer does not verify that an `Authorization` came from the kernel
+    /// -- there is no MAC on it, and its nonce is checked against nothing. So an
+    /// authorisation's bounds are the caller's claim about what was approved.
+    /// Every one of them is clamped against this, unconditionally
+    /// ([ADR 0008](https://github.com/hey-vera/radar/blob/main/docs/adr/0008-the-signer-holds-its-own-policy.md)).
+    ///
+    /// Loaded once, at start, like the allowlist and for the same reason: rules
+    /// re-read per request are rules whoever can write that file can change
+    /// while the process runs.
+    policy: Policy,
     /// The Privy authorization key, when this instance serves customers.
     ///
     /// `None` is a refusal for the customer lane and leaves the local lane
@@ -124,6 +140,16 @@ impl Config {
             return Err("RADAR_SIGNER_PROGRAMS is empty".to_owned());
         }
 
+        // No default, and no fallback. Rule 8: a signer with no policy loaded
+        // refuses everything rather than accepting whatever bounds the caller
+        // asserts, which is the state this ran in until ADR 0008.
+        let policy_path = std::env::var("RADAR_SIGNER_POLICY")
+            .map_err(|_| "RADAR_SIGNER_POLICY is not set".to_owned())?;
+        let policy_text = std::fs::read_to_string(&policy_path)
+            .map_err(|e| format!("cannot read {policy_path}: {e}"))?;
+        let policy: Policy = serde_json::from_str(&policy_text)
+            .map_err(|e| format!("{policy_path} is not a policy: {e}"))?;
+
         // Optional, and its absence is a refusal rather than a failure to
         // start. An instance with no customers needs no customer key, and
         // refusing to run without one would take the local lane down too.
@@ -137,6 +163,7 @@ impl Config {
         Ok(Self {
             key,
             allowlist: Allowlist { programs },
+            policy,
             privy,
         })
     }
@@ -166,6 +193,7 @@ fn handle_privy(privy: &PrivyAuthorization, config: &Config) -> Response {
         &privy.authorization,
         &wallet,
         &config.allowlist,
+        &config.policy,
         Slot(privy.now_slot),
     ) {
         Ok(signature) => Response::Authorised { signature },
@@ -194,6 +222,7 @@ fn handle(line: &str, config: &Config) -> Response {
         &bytes,
         &config.key.public(),
         &config.allowlist,
+        &config.policy,
         slot_of(&request),
     ) {
         Ok(c) => c,

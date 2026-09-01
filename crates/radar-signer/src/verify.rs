@@ -13,7 +13,7 @@
 //! So every check here is against the *decoded bytes*, never against anything
 //! the caller said about them.
 
-use radar_risk::Authorization;
+use radar_risk::{Authorization, Autonomy, Policy};
 use radar_types::{Address, Slot};
 
 use crate::tx::{DecodeError, Message, decode};
@@ -42,6 +42,44 @@ pub enum Rejection {
     /// The bytes did not decode.
     #[error("undecodable: {0}")]
     Undecodable(String),
+    /// This signer's own policy authorises nothing.
+    ///
+    /// `Observe`, `Alert` and `Approve` cannot self-authorise, and this process
+    /// signs without a human present. Checked against the policy **the signer
+    /// loaded**, not the one the caller says it judged against — which is the
+    /// whole point of [ADR 0008](https://github.com/hey-vera/radar/blob/main/docs/adr/0008-the-signer-holds-its-own-policy.md).
+    ///
+    /// This is what makes `Policy::CLOSED` closed *at the key*, rather than
+    /// closed only in the process that decides.
+    #[error("this signer's policy ({level}) does not authorise unattended signing")]
+    AutonomyInsufficient {
+        /// The level the signer is configured with.
+        level: String,
+    },
+    /// The authorisation asks for more than this signer's policy permits.
+    ///
+    /// Refused rather than quietly clamped to the smaller number. A caller
+    /// asking for more than the operator allowed is either a bug or an attack,
+    /// and silently serving a reduced version hides both.
+    #[error("authorization allows {asked} micro-USD; this signer's policy allows {allowed}")]
+    AboveSignerPolicy {
+        /// What the authorisation asked for.
+        asked: u64,
+        /// What the signer's own policy permits.
+        allowed: u64,
+    },
+    /// The authorisation's window is longer than this signer's policy permits.
+    ///
+    /// Expiry is the only thing making a grant temporary, and the caller
+    /// currently chooses it. An authorisation valid for a year is a standing
+    /// authorisation wearing a short one's clothes.
+    #[error("authorization runs {slots} slots past now; this signer's policy allows {allowed}")]
+    LongerThanSignerPolicy {
+        /// How far ahead the authorisation expires.
+        slots: u64,
+        /// The longest window the signer accepts.
+        allowed: u64,
+    },
     /// The authorization has expired.
     ///
     /// Checked against a slot the caller supplies, which the caller could lie
@@ -145,6 +183,7 @@ pub fn check(
     bytes: &[u8],
     signing_wallet: &Address,
     allowlist: &Allowlist,
+    policy: &Policy,
     now: Slot,
 ) -> Result<Checked, Vec<Rejection>> {
     let message = match decode(bytes) {
@@ -154,6 +193,42 @@ pub fn check(
     };
 
     let mut rejections = Vec::new();
+
+    // The signer's own policy, applied unconditionally, before anything the
+    // caller asserted is used as a bound.
+    //
+    // Unconditional is the operative word (ADR 0008). A clamp does not depend on
+    // state the caller supplies, so unlike re-running the kernel here it cannot
+    // be defeated by lying about the portfolio. It answers a narrower question
+    // than the kernel does, and it answers it without trusting the questioner.
+    if !policy.autonomy.can_self_authorise() {
+        rejections.push(Rejection::AutonomyInsufficient {
+            level: format!("{:?}", policy.autonomy),
+        });
+    }
+
+    // Under `Canary` the dust bound applies instead. That level exists to permit
+    // exactly one thing, and inheriting the larger ceiling would make it the
+    // same as `Capped`.
+    let policy_ceiling = if policy.autonomy == Autonomy::Canary {
+        policy.max_canary
+    } else {
+        policy.max_position
+    };
+    if authorization.max_notional > policy_ceiling {
+        rejections.push(Rejection::AboveSignerPolicy {
+            asked: authorization.max_notional.get(),
+            allowed: policy_ceiling.get(),
+        });
+    }
+
+    let window = authorization.expires_after.get().saturating_sub(now.get());
+    if window > policy.max_input_staleness.get() {
+        rejections.push(Rejection::LongerThanSignerPolicy {
+            slots: window,
+            allowed: policy.max_input_staleness.get(),
+        });
+    }
 
     if now.get() > authorization.expires_after.get() {
         rejections.push(Rejection::Expired {
@@ -212,7 +287,9 @@ pub fn check(
     // was rightly worried about. This bound is finite, which is the property
     // that was missing.
     let moved = lamports_transferred(&message);
-    let ceiling = lamport_ceiling(authorization);
+    // The tighter of the two. The authorisation may narrow the signer's policy;
+    // it may never widen it, and a caller that tried is already refused above.
+    let ceiling = lamport_ceiling(authorization).min(policy_ceiling.get());
     if moved > ceiling {
         rejections.push(Rejection::OverSpend {
             found: moved,
@@ -304,7 +381,7 @@ fn changes_ownership(message: &Message) -> bool {
 /// That path is the one that would eventually get called from production.
 #[cfg(test)]
 pub mod tests_support {
-    use radar_risk::{Action, Authorization};
+    use radar_risk::{Action, Authorization, Autonomy, Policy};
     use radar_types::{Address, MicroUsd, Slot};
 
     use super::{Allowlist, Checked, SYSTEM_PROGRAM, check};
@@ -343,6 +420,17 @@ pub mod tests_support {
             &Allowlist {
                 programs: vec![DEX, SYSTEM_PROGRAM],
             },
+            // Wide on purpose. This fixture exists so other crates can get a
+            // `Checked` without reconstructing a transaction, and a policy that
+            // refused it would make every one of those tests fail for a reason
+            // that has nothing to do with what they are testing.
+            &Policy {
+                autonomy: Autonomy::Capped,
+                max_position: MicroUsd(1_000_000_000),
+                max_canary: MicroUsd(1_000_000_000),
+                max_input_staleness: radar_types::SlotDelta(100_000),
+                ..Policy::CLOSED
+            },
             Slot(1_000),
         )
         .expect("the fixture must verify")
@@ -360,6 +448,21 @@ mod tests {
     const MINT: [u8; 32] = [0x22; 32];
     const WALLET: [u8; 32] = [0x33; 32];
     const NOW: Slot = Slot(1_000);
+
+    /// A policy wide enough not to interfere with tests about other things.
+    ///
+    /// The clamp gets its own tests below. Everywhere else it must be out of the
+    /// way, or a refusal could come from the policy rather than from the
+    /// property under test.
+    fn policy() -> Policy {
+        Policy {
+            autonomy: Autonomy::Capped,
+            max_position: MicroUsd(1_000_000_000),
+            max_canary: MicroUsd(1_000_000_000),
+            max_input_staleness: radar_types::SlotDelta(100_000),
+            ..Policy::CLOSED
+        }
+    }
 
     fn allowlist() -> Allowlist {
         Allowlist {
@@ -425,6 +528,7 @@ mod tests {
             &honest(),
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect("should verify");
@@ -444,6 +548,7 @@ mod tests {
             &other,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -465,6 +570,7 @@ mod tests {
             &evil,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -489,6 +595,7 @@ mod tests {
             &big,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -515,6 +622,7 @@ mod tests {
             &split,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -548,6 +656,7 @@ mod tests {
                 &ok,
                 &Address::new(WALLET),
                 &allowlist(),
+                &policy(),
                 NOW
             )
             .is_ok()
@@ -576,7 +685,14 @@ mod tests {
             // reason that has nothing to do with the property.
             &[(2, vec![0, 1], vec![0xFF; 100])],
         );
-        let outcome = check(&auth, &sale, &Address::new(WALLET), &allowlist(), NOW);
+        let outcome = check(
+            &auth,
+            &sale,
+            &Address::new(WALLET),
+            &allowlist(),
+            &policy(),
+            NOW,
+        );
         assert!(
             outcome.is_ok(),
             "a large sale must still be signable: {outcome:?}"
@@ -604,8 +720,15 @@ mod tests {
             &[WALLET, MINT, STRANGER, SYSTEM_PROGRAM],
             &[(3, vec![0, 2], transfer(100_000_000_000))],
         );
-        let rejections = check(&auth, &drain, &Address::new(WALLET), &allowlist(), NOW)
-            .expect_err("draining the wallet must be refused");
+        let rejections = check(
+            &auth,
+            &drain,
+            &Address::new(WALLET),
+            &allowlist(),
+            &policy(),
+            NOW,
+        )
+        .expect_err("draining the wallet must be refused");
         assert!(
             rejections
                 .iter()
@@ -639,6 +762,7 @@ mod tests {
                 &at_the_ceiling,
                 &Address::new(WALLET),
                 &allowlist(),
+                &policy(),
                 NOW
             )
             .is_ok(),
@@ -650,7 +774,15 @@ mod tests {
             &[(3, vec![0, 2], transfer(1_000_001))],
         );
         assert!(
-            check(&auth, &one_over, &Address::new(WALLET), &allowlist(), NOW).is_err(),
+            check(
+                &auth,
+                &one_over,
+                &Address::new(WALLET),
+                &allowlist(),
+                &policy(),
+                NOW
+            )
+            .is_err(),
             "one lamport past it is not"
         );
     }
@@ -669,8 +801,222 @@ mod tests {
             &[(3, vec![0, 2], transfer(100_000_000_000))],
         );
         assert!(
-            check(&auth, &drain, &Address::new(WALLET), &allowlist(), NOW).is_err(),
+            check(
+                &auth,
+                &drain,
+                &Address::new(WALLET),
+                &allowlist(),
+                &policy(),
+                NOW
+            )
+            .is_err(),
             "a reduce must be capped as well"
+        );
+    }
+
+    /// [`check`] with the fixtures that are the same in every clamp test.
+    ///
+    /// Only the transaction, the authorisation, the policy and the slot vary
+    /// here, and naming just those keeps each test about the one thing it is
+    /// varying.
+    fn check_under(
+        bytes: &[u8],
+        authorization: &Authorization,
+        policy: &Policy,
+        now: Slot,
+    ) -> Result<Checked, Vec<Rejection>> {
+        check(
+            authorization,
+            bytes,
+            &Address::new(WALLET),
+            &allowlist(),
+            policy,
+            now,
+        )
+    }
+
+    #[test]
+    fn an_authorisation_wider_than_the_signers_policy_is_refused() {
+        // The only case this change is about.
+        //
+        // The signer does not verify that an `Authorization` came from the
+        // kernel -- no MAC, and the nonce is checked against nothing -- so its
+        // bounds are the caller's claim about what was approved. Before ADR
+        // 0008 that claim was the only ceiling there was.
+        //
+        // Refused rather than quietly clamped to the smaller number: a caller
+        // asking for more than the operator allowed is either a bug or an
+        // attack, and silently serving a reduced version hides both.
+        let mut auth = authorization();
+        auth.max_notional = MicroUsd(500_000_000);
+
+        let tight = Policy {
+            max_position: MicroUsd(10_000_000),
+            ..policy()
+        };
+        let rejections = check_under(&honest(), &auth, &tight, Slot(1_000))
+            .expect_err("an authorisation above the signer's policy must be refused");
+
+        assert!(
+            rejections.iter().any(|r| matches!(
+                r,
+                Rejection::AboveSignerPolicy {
+                    asked: 500_000_000,
+                    allowed: 10_000_000
+                }
+            )),
+            "expected an AboveSignerPolicy naming both numbers, got {rejections:?}"
+        );
+    }
+
+    #[test]
+    fn an_authorisation_exactly_at_the_policy_ceiling_is_allowed() {
+        // The boundary, swept. `just mutants` turned `>` into `>=` here and
+        // every test still passed, meaning nothing exercised an authorisation
+        // equal to the policy's ceiling.
+        //
+        // Exclusive would refuse an authorisation precisely at the operator's
+        // limit, which reads as an unexplained failure at exactly the round
+        // number an operator is most likely to configure.
+        let at_the_limit = Policy {
+            max_position: MicroUsd(50_000_000),
+            ..policy()
+        };
+        let mut auth = authorization();
+        auth.max_notional = MicroUsd(50_000_000);
+        assert!(
+            check_under(&honest(), &auth, &at_the_limit, Slot(1_000)).is_ok(),
+            "exactly the policy ceiling is inside the policy"
+        );
+
+        auth.max_notional = MicroUsd(50_000_001);
+        assert!(
+            check_under(&honest(), &auth, &at_the_limit, Slot(1_000)).is_err(),
+            "one micro-dollar past it is not"
+        );
+    }
+
+    #[test]
+    fn a_closed_policy_signs_nothing_whatever_the_caller_claims() {
+        // `Policy::CLOSED` enforced *at the key*, rather than only in the
+        // process that decides.
+        //
+        // The authorisation here is perfectly formed and entirely within its own
+        // bounds. Before this change the signer would have signed it, because
+        // nothing in this process had an opinion about whether Radar was
+        // trading at all.
+        let rejections = check_under(&honest(), &authorization(), &Policy::CLOSED, Slot(1_000))
+            .expect_err("a closed policy must sign nothing");
+
+        assert!(
+            rejections
+                .iter()
+                .any(|r| matches!(r, Rejection::AutonomyInsufficient { .. })),
+            "expected AutonomyInsufficient, got {rejections:?}"
+        );
+    }
+
+    #[test]
+    fn every_level_that_cannot_self_authorise_refuses() {
+        // Swept rather than sampled. `Approve` is the interesting one: the
+        // kernel sets `needs_operator_signature` for it, but that flag is on the
+        // authorisation -- which the caller writes. The signer's own policy is
+        // what makes the level stick.
+        for level in [Autonomy::Observe, Autonomy::Alert, Autonomy::Approve] {
+            let closed = Policy {
+                autonomy: level,
+                ..policy()
+            };
+            assert!(
+                check_under(&honest(), &authorization(), &closed, Slot(1_000)).is_err(),
+                "{level:?} must not authorise unattended signing"
+            );
+        }
+
+        for level in [Autonomy::Capped, Autonomy::Auto] {
+            let open = Policy {
+                autonomy: level,
+                ..policy()
+            };
+            assert!(
+                check_under(&honest(), &authorization(), &open, Slot(1_000)).is_ok(),
+                "{level:?} must still sign, or this test proves nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn canary_is_bounded_by_the_dust_limit_and_not_the_position_limit() {
+        // The level exists to permit exactly one thing: a dust round trip.
+        // Inheriting `max_position` would make it indistinguishable from
+        // `Capped`, which is the whole distinction it carries.
+        let canary = Policy {
+            autonomy: Autonomy::Canary,
+            max_position: MicroUsd(1_000_000_000),
+            max_canary: MicroUsd(2_000_000),
+            ..policy()
+        };
+
+        let mut small = authorization();
+        small.max_notional = MicroUsd(1_000_000);
+        assert!(
+            check_under(&honest(), &small, &canary, Slot(1_000)).is_ok(),
+            "a dust authorisation is what Canary is for"
+        );
+
+        let mut large = authorization();
+        large.max_notional = MicroUsd(500_000_000);
+        assert!(
+            check_under(&honest(), &large, &canary, Slot(1_000)).is_err(),
+            "Canary must not inherit the position limit"
+        );
+    }
+
+    #[test]
+    fn an_authorisation_valid_for_far_too_long_is_refused() {
+        // Expiry is the only thing making a grant temporary, and the caller
+        // chooses it. An authorisation good for a year is a standing
+        // authorisation wearing a short one's clothes.
+        let short = Policy {
+            max_input_staleness: radar_types::SlotDelta(150),
+            ..policy()
+        };
+
+        let mut auth = authorization();
+        auth.expires_after = Slot(1_150);
+        assert!(
+            check_under(&honest(), &auth, &short, Slot(1_000)).is_ok(),
+            "exactly the permitted window is inside it"
+        );
+
+        auth.expires_after = Slot(1_151);
+        assert!(
+            check_under(&honest(), &auth, &short, Slot(1_000)).is_err(),
+            "one slot past the permitted window is not"
+        );
+    }
+
+    #[test]
+    fn the_transfer_ceiling_is_the_tighter_of_the_two() {
+        // An authorisation may narrow the signer's policy; it may never widen
+        // it. A caller that tried to widen is already refused, so what this
+        // covers is the other order: a *narrow* authorisation under a wide
+        // policy must still be the bound that applies.
+        let mut auth = authorization();
+        auth.action = Action::Buy;
+        auth.max_notional = MicroUsd(1_000);
+
+        let wide = Policy {
+            max_position: MicroUsd(1_000_000_000),
+            ..policy()
+        };
+        let over_the_authorisation = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(500_000))],
+        );
+        assert!(
+            check_under(&over_the_authorisation, &auth, &wide, Slot(1_000)).is_err(),
+            "the narrower of the two bounds is the one that applies"
         );
     }
 
@@ -681,6 +1027,7 @@ mod tests {
             &honest(),
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             Slot(2_000),
         )
         .expect_err("must refuse");
@@ -695,8 +1042,15 @@ mod tests {
     fn an_authorization_awaiting_an_operator_is_refused() {
         let mut auth = authorization();
         auth.needs_operator_signature = true;
-        let rejections = check(&auth, &honest(), &Address::new(WALLET), &allowlist(), NOW)
-            .expect_err("must refuse");
+        let rejections = check(
+            &auth,
+            &honest(),
+            &Address::new(WALLET),
+            &allowlist(),
+            &policy(),
+            NOW,
+        )
+        .expect_err("must refuse");
         assert!(rejections.contains(&Rejection::NeedsOperator));
     }
 
@@ -709,6 +1063,7 @@ mod tests {
             &honest(),
             &Address::new([0x77; 32]),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -730,6 +1085,7 @@ mod tests {
             &evil,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -744,6 +1100,7 @@ mod tests {
             &empty,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -765,6 +1122,7 @@ mod tests {
             &bad,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             Slot(9_999),
         )
         .expect_err("must refuse");
@@ -780,6 +1138,7 @@ mod tests {
             &[0xFF; 8],
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect_err("must refuse");
@@ -797,6 +1156,7 @@ mod tests {
             &bytes,
             &Address::new(WALLET),
             &allowlist(),
+            &policy(),
             NOW,
         )
         .expect("verifies");

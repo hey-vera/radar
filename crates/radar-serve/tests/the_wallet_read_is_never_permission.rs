@@ -25,9 +25,19 @@ impl Transport for Canned {
             url.ends_with(DID),
             "the DID must come from the verified token and reach the URL: {url}"
         );
-        assert!(
-            credentials.basic().starts_with("Basic "),
-            "Privy authenticates the application with Basic auth"
+        // Both halves of what Privy requires on every call, checked here
+        // because this is the only place they are assembled. A wrong app id
+        // fails every request with an authentication error, which reads as a
+        // credential problem rather than as a bug in this crate.
+        assert_eq!(
+            credentials.app_id(),
+            "app",
+            "the `privy-app-id` header carries the configured application"
+        );
+        assert_eq!(
+            credentials.basic(),
+            format!("Basic {}", radar_types::b64::encode(b"app:secret")),
+            "Basic auth is the app id as user and the secret as password"
         );
         self.0.clone()
     }
@@ -201,4 +211,25 @@ fn the_secret_never_reaches_a_debug_string() {
         "the application id should still be there, since it identifies which \
          application an operator is looking at: {rendered}"
     );
+}
+
+#[test]
+fn the_basic_header_is_the_application_id_and_secret_in_that_order() {
+    // Asserted against a decode rather than against a literal, so the test says
+    // what the header *means* instead of restating what the code emits.
+    //
+    // The order matters and is invisible once encoded: id-then-secret
+    // authenticates, secret-then-id fails every call with a message about
+    // credentials that sends an operator to Privy's dashboard.
+    let credentials = Credentials::new("cmthhkznr0a3u0cl86prxlb7x", "sk-test");
+    let encoded = credentials
+        .basic()
+        .strip_prefix("Basic ")
+        .expect("the Basic scheme")
+        .to_owned();
+    let decoded =
+        String::from_utf8(radar_types::b64::decode(&encoded).expect("base64")).expect("utf-8");
+
+    assert_eq!(decoded, "cmthhkznr0a3u0cl86prxlb7x:sk-test");
+    assert_eq!(credentials.app_id(), "cmthhkznr0a3u0cl86prxlb7x");
 }

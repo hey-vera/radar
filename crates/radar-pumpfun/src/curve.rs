@@ -55,7 +55,11 @@ pub struct BondingCurve {
     pub creator: Address,
 }
 
-/// Why an account could not be read as a bonding curve.
+/// Why an account could not be read as the layout it was asked for.
+///
+/// Shared by every parser in this crate -- the curve, the fee schedule and the
+/// global account -- because the two ways a Solana account can be the wrong
+/// thing do not vary by which thing you wanted.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Malformed {
     /// Fewer bytes than the layout needs.
@@ -65,12 +69,12 @@ pub enum Malformed {
         /// How many the layout requires.
         needed: usize,
     },
-    /// The account's Anchor discriminator is not a bonding curve's.
+    /// The account's Anchor discriminator is not the one the layout expects.
     ///
     /// Refused rather than parsed anyway: every Solana account is bytes, and a
     /// different account of the right length would produce reserves that look
     /// entirely reasonable.
-    NotABondingCurve {
+    WrongDiscriminator {
         /// What the first eight bytes actually were.
         found: [u8; 8],
     },
@@ -92,7 +96,7 @@ impl BondingCurve {
     ///
     /// [`Malformed`] when the account is too short or is not a bonding curve.
     /// Both are refusals rather than best-effort parses, for the reason
-    /// [`Malformed::NotABondingCurve`] gives.
+    /// [`Malformed::WrongDiscriminator`] gives.
     ///
     /// # Panics
     ///
@@ -109,7 +113,7 @@ impl BondingCurve {
         }
         let found: [u8; 8] = data[..8].try_into().expect("checked above");
         if found != DISCRIMINATOR {
-            return Err(Malformed::NotABondingCurve { found });
+            return Err(Malformed::WrongDiscriminator { found });
         }
 
         let at = |i: usize| -> u64 {
@@ -415,7 +419,7 @@ mod tests {
         data[..8].copy_from_slice(&[9, 9, 9, 9, 9, 9, 9, 9]);
         assert!(matches!(
             BondingCurve::parse(&data),
-            Err(Malformed::NotABondingCurve { .. })
+            Err(Malformed::WrongDiscriminator { .. })
         ));
 
         assert!(matches!(

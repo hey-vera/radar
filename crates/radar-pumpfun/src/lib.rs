@@ -29,8 +29,10 @@
 #![forbid(unsafe_code)]
 
 pub mod curve;
+pub mod fees;
 pub mod instruction;
 pub mod pda;
 
 pub use curve::{BondingCurve, Fill};
+pub use fees::{FeeConfig, Fees};
 pub use instruction::Trade;

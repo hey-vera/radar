@@ -1167,3 +1167,40 @@ X, and go and look. ADR 0003 said the signer accepts only legacy transactions. I
 did not say "and this requires every venue we trade on to offer legacy routing",
 because that consequence lived in a different crate and nobody owned the sentence
 that joined them.
+
+## 25. A published interface that was not the deployed program
+
+pump.fun publishes an Anchor IDL on chain, signed into an account by the program
+authority. It is the most authoritative reference available for the program: not
+a blog post, not a third-party decompilation, but the program's own declaration
+of its interface.
+
+It declares sixteen accounts for `buy`. Every `buy` captured from mainnet carries
+eighteen.
+
+The two extras are Anchor *remaining accounts*, which by construction do not
+appear in a declared account list. So the IDL is not wrong — it is complete about
+the thing it describes, and the thing it describes is not the whole call. A
+builder written against it would have been two accounts short, and would have
+found out at simulation if it was lucky and on chain if it was not.
+
+**What makes this worth recording is that it is the second occurrence.**
+`radar-decode`'s discriminator table exists because public references described a
+program with three instructions where the live one has twenty-one. The lesson
+taken from that was "do not trust third-party references, capture from mainnet".
+The lesson available now is stronger and less comfortable: **first-party
+references are also not the program**. The program is what the network accepted,
+and the only way to know what that was is to read a transaction it accepted.
+
+The IDL was still worth fetching. It named three accounts that six hundred seed
+derivations had failed to find, and it was the thing that revealed the count
+mismatch in the first place — a reference is a good source of hypotheses and a
+bad source of facts. The discipline is not "ignore references", it is **let the
+reference propose and let the capture dispose**, which is what ADR 0009's first
+precondition already said and what the fixture-first ordering already enforced.
+
+The corollary for what remains unknown: after a reference has been consulted and
+a search has been exhausted, the next authority is the runtime. Two accounts are
+still unidentified, and the way to learn whether they matter is to simulate a
+transaction without them and read the error — not to widen the search again.
+

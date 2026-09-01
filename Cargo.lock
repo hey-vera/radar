@@ -1545,6 +1545,7 @@ dependencies = [
  "ed25519-dalek",
  "radar-decode",
  "radar-types",
+ "serde_json",
  "sha2 0.10.9",
 ]
 
@@ -1619,6 +1620,7 @@ dependencies = [
 name = "radar-sim"
 version = "0.0.1"
 dependencies = [
+ "radar-pumpfun",
  "radar-types",
  "serde",
  "serde_json",

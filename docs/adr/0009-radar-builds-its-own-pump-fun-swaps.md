@@ -204,24 +204,46 @@ instruction's account list** — it is read from the bonding curve account, so
 building a buy requires fetching the curve first. And `buy` and `sell` do not
 share an account order or an argument count.
 
-**Not done: buy accounts 16 and 17.** Across five captures, `[17]` is constant
-within an instruction variant and differs between `buy` and `buy_exact_sol_in`;
-`[16]` varies with the **mint** rather than the trader, and is read-only.
+**Update, later the same day: the program publishes an IDL on chain, and it
+settles most of this.** See
+[research 0023](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md).
+Every derivation below was verified against the captures rather than taken from
+the IDL, which is the same standard the discriminators are held to.
 
-Ruled out for `[16]`, checked against two captures simultaneously so a
-coincidence cannot pass: the creator itself; PDAs of pump.fun, the fee program
-and the ATA program seeded with any of the creator, mint, curve, trader or fee
-recipient, under a dozen candidate seed strings; and associated token accounts
-of each of those owners.
+Now named: `[13]` is the `user_volume_accumulator`, `[14]` the `fee_config`
+(`["fee_config", pump.fun program id]` under the **fee** program), `[15]` the fee
+program itself.
 
-They are recorded as unknown rather than guessed. An account included on a hunch
-is the error this ADR's first precondition exists to prevent, and it is the kind
-that does not fail cleanly — a wrong account is either rejected on chain or,
-worse, accepted as a different account.
+The finding that matters is that the IDL declares **sixteen** accounts for `buy`
+and mainnet passes **eighteen** — so the last two are *remaining accounts*,
+outside the program's own published interface. This is precondition 1 earning its
+keep: a builder written against the most authoritative available reference would
+have been two accounts short.
 
-Next attempt should widen the capture set and correlate `[16]` against a mint's
-*other* on-chain accounts rather than against derivations, since a dozen seeds
-have now been eliminated.
+- **`[17]` is a `BuybackVault`**, `["buyback-vault", index]` under the fee
+  program with a one-byte index, verified against all three captures at indices
+  6, 4 and 2. It **rotates per trade**, and the rule it rotates by is not known,
+  so a builder cannot currently predict which index to pass.
+- **`[16]` is a function of the mint alone and does not exist.** Six trades of
+  one token by six different signers pass the identical address. Roughly six
+  hundred derivations were checked against all three captures at once — every
+  seed string in both IDLs, every one- and two-key combination of the accounts in
+  the list, under four programs, plus ATA-shaped derivations. `sharing-config`,
+  `mayhem-state`, the AMM `pool` and `pool-authority` are all ruled out.
+
+It stays recorded as unknown. An account included on a hunch is the error this
+ADR's first precondition exists to prevent, and it is the kind that does not fail
+cleanly.
+
+**The next step is simulation, not more seeds.** Whether those two accounts are
+*required* is a different question from what they are, and it is one the runtime
+answers directly: build the sixteen declared accounts, simulate, and read which
+account the program says it is missing. Seed searching has had its run.
+
+**Also done: the fee.** [research 0023](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md)
+reads it off the fee program's tier schedule at **125 bps a side** — 250 for a
+round trip, which is what 0022 assumed without checking. It is parsed as a
+schedule rather than stored as a constant, because that is what it is.
 
 ## What would reverse this
 

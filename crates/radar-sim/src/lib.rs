@@ -21,11 +21,13 @@
 
 #![forbid(unsafe_code)]
 
+pub mod curve;
 pub mod exit;
 pub mod jupiter;
 pub mod mint;
 pub mod rpc;
 
+pub use curve::Depth;
 pub use exit::{
     Confidence, ExitReport, QuoteError, QuotePoint, Quoter, Search, capacity_table,
     discover_capacity, probe,

@@ -21,3 +21,9 @@ sha2 = "0.10"
 # what makes an address a program-derived one. No key is held, generated or used
 # in this crate.
 ed25519-dalek = { workspace = true }
+
+[dev-dependencies]
+# Test-only, to read the mainnet account captures the fee model is asserted
+# against. The crate itself parses bytes and needs no JSON.
+serde_json.workspace = true
+

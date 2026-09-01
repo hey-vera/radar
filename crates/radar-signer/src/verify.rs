@@ -13,7 +13,7 @@
 //! So every check here is against the *decoded bytes*, never against anything
 //! the caller said about them.
 
-use radar_risk::{Action, Authorization};
+use radar_risk::Authorization;
 use radar_types::{Address, Slot};
 
 use crate::tx::{DecodeError, Message, decode};
@@ -182,18 +182,42 @@ pub fn check(
         rejections.push(Rejection::ForeignFeePayer);
     }
 
-    // A buy commits lamports, so it gets a ceiling. A reduce or an exit does
-    // not: refusing to sign a sale because it is large is how a position gets
-    // trapped in exactly the situation the limits exist to prevent.
-    if authorization.action == Action::Buy {
-        let moved = lamports_transferred(&message);
-        let ceiling = lamport_ceiling(authorization);
-        if moved > ceiling {
-            rejections.push(Rejection::OverSpend {
-                found: moved,
-                allowed: ceiling,
-            });
-        }
+    // Every action gets a ceiling on outgoing lamports, and until 2026-08-31
+    // only `Buy` did.
+    //
+    // # The hole that was here, because it is instructive
+    //
+    // The exemption read: "refusing to sign a sale because it is large is how a
+    // position gets trapped in exactly the situation the limits exist to
+    // prevent." The concern is real. The reasoning conflated two different
+    // things, and the gap between them was a way to empty a wallet.
+    //
+    // A large *sale* is tokens leaving through a DEX and lamports arriving.
+    // [`lamports_transferred`] counts neither of those: it sums **system-program
+    // transfers out**. A legitimate exit moves almost none -- rent for an
+    // account, a fee -- so bounding it does not trap anything.
+    //
+    // What the exemption did allow: given any `Exit` authorisation, a
+    // transaction that lists the authorised mint as an inert account, uses only
+    // allowlisted programs (the system program is necessarily one), pays its fee
+    // from the right wallet, and transfers **the entire balance to any address**
+    // passed every check. Demonstrated before this was changed: a 100 SOL
+    // transfer to an unrelated address, authorised against an `Exit` whose
+    // notional was one micro-dollar.
+    //
+    // The ceiling used is the authorisation's own, not a tighter rent-sized
+    // constant. A constant would be better and this is not the moment to invent
+    // one: no real exit has ever been signed, so any number here would be a
+    // guess, and a guess that is too small traps the position the old comment
+    // was rightly worried about. This bound is finite, which is the property
+    // that was missing.
+    let moved = lamports_transferred(&message);
+    let ceiling = lamport_ceiling(authorization);
+    if moved > ceiling {
+        rejections.push(Rejection::OverSpend {
+            found: moved,
+            allowed: ceiling,
+        });
     }
 
     if changes_ownership(&message) {
@@ -531,19 +555,123 @@ mod tests {
     }
 
     #[test]
-    fn an_exit_is_not_capped_by_notional() {
-        // Refusing to sign a sale because it is large is how a position gets
-        // trapped in exactly the situation the limits exist to prevent.
+    fn a_large_sale_is_still_signed() {
+        // The concern the old exemption was protecting, stated correctly this
+        // time. Refusing to sign a sale because it is large is how a position
+        // gets trapped, so a big exit must still go through.
+        //
+        // What makes it big is the DEX instruction, not lamports leaving the
+        // wallet -- a sale sends tokens out and brings lamports in. That is why
+        // bounding outgoing system transfers does not trap anything, and why the
+        // old exemption was solving this problem with the wrong tool.
         let mut auth = authorization();
         auth.action = Action::Exit;
-        let big = build(
+        let sale = build(
             &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
-            &[
-                (2, vec![0, 1], vec![0xAB]),
-                (3, vec![0, 1], transfer(900_000_000)),
-            ],
+            // Opaque, and deliberately so: whatever amount this sale is for is
+            // inside the DEX instruction, where the signer cannot read it. A
+            // hundred bytes rather than more, because the fixture writes a
+            // single-byte shortvec length and anything past 127 is not a valid
+            // transaction -- a malformed fixture would fail this test for a
+            // reason that has nothing to do with the property.
+            &[(2, vec![0, 1], vec![0xFF; 100])],
         );
-        assert!(check(&auth, &big, &Address::new(WALLET), &allowlist(), NOW).is_ok());
+        let outcome = check(&auth, &sale, &Address::new(WALLET), &allowlist(), NOW);
+        assert!(
+            outcome.is_ok(),
+            "a large sale must still be signable: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn an_exit_authorisation_cannot_move_the_balance_to_a_stranger() {
+        // The hole this replaced, kept as the test that would have caught it.
+        //
+        // Until 2026-08-31 only `Buy` was capped. So any `Exit` authorisation --
+        // one micro-dollar of notional was enough -- could be spent on a
+        // transaction that listed the mint as an inert account, used only
+        // allowlisted programs, paid its fee from the right wallet, and
+        // transferred the entire balance somewhere nobody authorised. Every
+        // check passed.
+        //
+        // A hundred SOL, against a notional of one micro-dollar.
+        const STRANGER: [u8; 32] = [0x66; 32];
+        let mut auth = authorization();
+        auth.action = Action::Exit;
+        auth.max_notional = MicroUsd(1);
+
+        let drain = build(
+            &[WALLET, MINT, STRANGER, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(100_000_000_000))],
+        );
+        let rejections = check(&auth, &drain, &Address::new(WALLET), &allowlist(), NOW)
+            .expect_err("draining the wallet must be refused");
+        assert!(
+            rejections
+                .iter()
+                .any(|r| matches!(r, Rejection::OverSpend { .. })),
+            "expected an overspend rejection, got {rejections:?}"
+        );
+    }
+
+    #[test]
+    fn the_ceiling_is_inclusive_and_one_lamport_past_it_is_not() {
+        // The boundary itself, swept. `just mutants` found `>` could become
+        // `>=` with every test still passing, which means nothing exercised a
+        // transfer of exactly the ceiling.
+        //
+        // Both directions are wrong in a way that matters. Exclusive refuses a
+        // transaction that is precisely within the operator's limit, which reads
+        // as an unexplained failure at round numbers. Off by one the other way
+        // is an overspend, small but of exactly the kind these bounds exist to
+        // make impossible.
+        let mut auth = authorization();
+        auth.action = Action::Buy;
+        auth.max_notional = MicroUsd(1_000_000);
+
+        let at_the_ceiling = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(1_000_000))],
+        );
+        assert!(
+            check(
+                &auth,
+                &at_the_ceiling,
+                &Address::new(WALLET),
+                &allowlist(),
+                NOW
+            )
+            .is_ok(),
+            "exactly the ceiling is inside the limit"
+        );
+
+        let one_over = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(1_000_001))],
+        );
+        assert!(
+            check(&auth, &one_over, &Address::new(WALLET), &allowlist(), NOW).is_err(),
+            "one lamport past it is not"
+        );
+    }
+
+    #[test]
+    fn a_reduce_is_capped_too() {
+        // The third action, and it was exempt for the same reason. Swept rather
+        // than sampled, because "Buy is capped" was true before this change as
+        // well and asserting only that would not have caught anything.
+        let mut auth = authorization();
+        auth.action = Action::Reduce;
+        auth.max_notional = MicroUsd(1);
+
+        let drain = build(
+            &[WALLET, MINT, DEX, SYSTEM_PROGRAM],
+            &[(3, vec![0, 2], transfer(100_000_000_000))],
+        );
+        assert!(
+            check(&auth, &drain, &Address::new(WALLET), &allowlist(), NOW).is_err(),
+            "a reduce must be capped as well"
+        );
     }
 
     #[test]

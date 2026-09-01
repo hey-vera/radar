@@ -82,6 +82,8 @@ fn router(keys: Keys) -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-customer-guard-test")),
         x402: None,
@@ -185,6 +187,8 @@ async fn the_wallet_route_refuses_a_request_carrying_no_customer_identity() {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     let router = app(Arc::new(AppState {
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-wallet-route-test")),
         x402: None,

@@ -23,6 +23,7 @@ pub mod link;
 pub mod mcp;
 mod ops;
 pub mod privy;
+pub mod share;
 pub mod x402;
 
 use core::convert::Infallible;
@@ -85,6 +86,18 @@ pub struct AppState {
     /// rotation schedules, and one cache holding both would let a fetch failure
     /// for one refuse tokens for the other.
     pub customer_keys: customer::KeyCache,
+    /// How much of the day's model budget any one customer may take.
+    ///
+    /// Separate from the agent's global budget rather than replacing it. The
+    /// global one bounds what Radar spends; this bounds what any single customer
+    /// can take of it, which is a different question and was unasked.
+    pub shares: share::Shares,
+    /// The per-instance salt customer identifiers are hashed with.
+    ///
+    /// Empty when unconfigured, which is a refusal rather than a fallback: an
+    /// unsalted hash of a DID is a stable identifier anyone holding a DID can
+    /// recompute, and `Subject::derive` refuses it. Rule 8.
+    pub customer_salt: Vec<u8>,
     /// The one credential-linking flow that may be in progress.
     pub linker: link::Linker,
 }

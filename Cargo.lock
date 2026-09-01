@@ -1574,6 +1574,7 @@ dependencies = [
  "http-body-util",
  "radar-agent",
  "radar-asof",
+ "radar-customer",
  "radar-instruments",
  "radar-model",
  "radar-research",

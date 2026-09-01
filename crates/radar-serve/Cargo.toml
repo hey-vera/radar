@@ -18,6 +18,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 radar-agent.workspace = true
 radar-asof.workspace = true
+radar-customer.workspace = true
 radar-model.workspace = true
 radar-instruments.workspace = true
 radar-research.workspace = true

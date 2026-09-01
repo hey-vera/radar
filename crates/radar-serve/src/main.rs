@@ -140,7 +140,37 @@ async fn main() -> ExitCode {
 
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
+
+    // How much of the day's model budget any one customer may take.
+    //
+    // A malformed value stops the server rather than resolving to closed: a typo
+    // and a deliberate zero are indistinguishable once collapsed, and an
+    // operator would go looking at the wrong thing.
+    let shares = match radar_serve::share::Allowance::from_vars(&|k| std::env::var(k).ok()) {
+        Ok(allowance) => allowance,
+        Err(why) => {
+            eprintln!("radar-serve: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let share_note = if shares == radar_serve::share::Allowance::CLOSED {
+        "closed - no customer may spend the model budget".to_owned()
+    } else {
+        format!("{} questions per customer per day", shares.get())
+    };
+
+    // The salt customer identifiers are hashed with before anything durable or
+    // long lived records them. Empty when unset, which `Subject::derive` refuses
+    // -- so an unsalted instance cannot meter a customer and therefore will not
+    // spend on one. Rule 8, and it is why this is not fatal: the operator
+    // surface does not need it.
+    let customer_salt = std::env::var("RADAR_CUSTOMER_SALT")
+        .map(String::into_bytes)
+        .unwrap_or_default();
+
     let state = Arc::new(AppState {
+        shares: radar_serve::share::Shares::new(shares),
+        customer_salt,
         registry: registry(),
         store: Reader::open(&store_dir),
         x402,
@@ -173,6 +203,7 @@ async fn main() -> ExitCode {
             access::Mode::Off => "OFF — anyone who can reach this can read it".to_owned(),
         }
     );
+    println!("  chat share : {share_note}");
     println!(
         "  customers  : {}",
         match &customer {

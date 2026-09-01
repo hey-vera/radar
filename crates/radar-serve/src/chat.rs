@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::AppState;
+use crate::share;
 
 /// Radar's own framing, and the only text in a system position.
 ///
@@ -184,7 +185,18 @@ pub enum LastCall {
 ///
 /// Never returns `Err`; every failure is a status and a JSON body, because this
 /// is answering a browser.
-pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> Response {
+pub async fn ask(
+    State(state): State<Arc<AppState>>,
+    // Present only when the guard verified a *customer* token. Absent for an
+    // operator, and absent today for everyone, because no customer
+    // authenticator is configured and every request falls back to the operator
+    // check.
+    //
+    // `Option`, so the route keeps working for the operator it currently serves
+    // rather than refusing everyone the day this landed.
+    customer: Option<axum::Extension<crate::customer::Customer>>,
+    Json(body): Json<Ask>,
+) -> Response {
     let Some(chat) = state.chat.as_ref() else {
         // Not 503. An unconfigured route does not exist, the same way the
         // unconfigured paid routes do not: a surface that announces its own
@@ -204,6 +216,47 @@ pub async fn ask(State(state): State<Arc<AppState>>, Json(body): Json<Ask>) -> R
     }
 
     let day = today_utc();
+
+    // A customer's share of the day, charged before the global budget is
+    // touched.
+    //
+    // The order matters: reserving globally first and then refusing here would
+    // hold a commitment for a call that never goes out, and `Meter::ledger`
+    // records in-flight commitments — so a refused customer would show up as
+    // spend nobody made.
+    //
+    // An operator has no `Customer` extension and is not metered here. There is
+    // one of him, he pays for the instance, and the global budget already bounds
+    // what he can spend.
+    if let Some(axum::Extension(who)) = customer.as_ref()
+        && let Err(why) = state.shares.charge(&who.did, &state.customer_salt, day)
+    {
+        {
+            return match why {
+                share::Refused::Spent { allowance } => refuse(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    &format!(
+                        "you have asked {allowance} questions today, which is this \
+                         instance's per-customer limit. It resets at midnight UTC."
+                    ),
+                ),
+                // 503 rather than 429: nothing the customer does fixes this, and
+                // a rate-limit status would have them waiting for a window that
+                // is never going to open.
+                share::Refused::Unconfigured => refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "this instance has no per-customer question allowance configured, \
+                     so no customer may spend its model budget",
+                ),
+                share::Refused::NoSubject(_) => refuse(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "this instance cannot meter customers, so it will not spend on \
+                     their behalf",
+                ),
+            };
+        }
+    }
+
     let estimate = chat.provider.estimate();
 
     // Reserve before calling. Checking a budget and then spending it is a race

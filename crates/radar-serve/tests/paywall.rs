@@ -22,6 +22,8 @@ fn configured() -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: Some(Config {
@@ -45,6 +47,8 @@ fn unconfigured() -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: None,

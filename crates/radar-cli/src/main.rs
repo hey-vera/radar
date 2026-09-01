@@ -19,6 +19,7 @@ mod cost;
 mod exits;
 mod graduations;
 mod replay;
+mod route;
 mod selection;
 mod study;
 
@@ -42,6 +43,13 @@ commands:
   graduations --store <dir> [-n N]
                                  every graduation recorded, and the population
                                  rate the creator signal is measured against
+  route --mint <mint> --wallet <addr> --lamports <n>
+                                 build the swap transaction and describe it.
+                                 Runs the only part of the lane that has never
+                                 run -- Jupiter's /swap, the lookup-table
+                                 avoidance, and the shape the signer's decoder
+                                 needs. Holds no key and no RPC endpoint, so it
+                                 cannot sign and cannot send
   consider --store <dir> [--window N] [--cap N] [--record [dir]]
                                  run the whole decision lane over recorded
                                  tokens; commits nothing. --record appends what
@@ -631,6 +639,7 @@ fn main() -> ExitCode {
         "exit" => exit_analysis(&args),
         "graduations" => graduation_report(&args),
         "consider" => decision_lane(&args),
+        "route" => route::run(&args),
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
         "selection" => selection_report(&args),

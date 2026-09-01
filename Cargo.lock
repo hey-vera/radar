@@ -1432,6 +1432,7 @@ dependencies = [
  "radar-asof",
  "radar-backfill",
  "radar-decode",
+ "radar-exec",
  "radar-graph",
  "radar-instruments",
  "radar-research",

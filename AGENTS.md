@@ -93,9 +93,20 @@ exactly. `Router` and `Submitter` now implement the traits, and
 checks the trait methods delegate to the real ones rather than being present and
 inert.
 
-**There is still no production caller.** Nothing invokes the pipeline, for the
-local wallet or a customer's. Writing one is opening the trading path, and it is
-a decision about money rather than a wiring task. Every cost and failure
+**There is still no production caller** for the *trading* path. Nothing invokes
+the pipeline, for the local wallet or a customer's. Writing one is opening the
+trading path, and it is a decision about money rather than a wiring task.
+
+`radar route` is the first thing that runs any of it. It builds a swap
+transaction and describes it, holding no key and no RPC endpoint, so it cannot
+sign and cannot send. **Read
+[`0021`](docs/research/0021-the-signer-cannot-read-the-only-venue-that-lists-them.md)
+before planning any execution work**: on its second invocation it found that
+Radar cannot build a transaction for any token it selects, and never could.
+Jupiter routes pre-graduation pump.fun liquidity only as a versioned transaction,
+the signer accepts only legacy ones (ADR 0003), and Radar selects only
+pre-graduation pump.fun tokens. Eight of eight recent candidates confirm it.
+LEARNINGS 24. Every cost and failure
 rate in it is supplied by the test rather than measured, and the real signer —
 a separate process that re-decodes what this side built — is not in the loop.
 

@@ -19,6 +19,7 @@ radar-graph.workspace = true
 radar-backfill.workspace = true
 radar-decode.workspace = true
 radar-instruments.workspace = true
+radar-exec.workspace = true
 radar-risk.workspace = true
 radar-sim.workspace = true
 radar-strategy.workspace = true

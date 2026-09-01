@@ -1125,3 +1125,45 @@ adversary. "Protects against a mistake" and "protects against an attacker" are
 different claims, they are one word apart in English, and a design note that
 means the first while saying the second is how a system ends up trusting a
 component nobody decided to trust.
+
+## 24. Three constraints that were each correct and could not all hold
+
+`radar-exec` had no production caller. Its pipeline traits were satisfied only by
+stubs inside their own test module, so everything from the transaction forward —
+Jupiter's `/swap`, the lookup-table avoidance, the shape check the signer's
+decoder depends on — had never run.
+
+`radar route` was written to run exactly that and nothing else. On its second
+invocation it found that **Radar cannot build a transaction for any token it
+selects**, and has never been able to.
+
+Three constraints, each individually right:
+
+1. The signer must read every account in the bytes it signs, so it accepts only
+   legacy transactions (ADR 0003).
+2. Jupiter routes pre-graduation pump.fun liquidity **only** as a versioned
+   transaction with address lookup tables.
+3. Radar selects pre-graduation pump.fun tokens exclusively.
+
+Any two are fine. All three cannot hold at once. Eight of eight recent candidates
+route versioned and refuse legacy; BONK routes legacy fine, so it is pump.fun's
+own AMM — the only venue that lists a pre-graduation token — that is unreachable.
+
+**What makes this entry different from entry 10 is that nothing was wrong.** No
+component had a bug. Every one of the three was written deliberately, argued in a
+document, and correct in isolation. The failure lived in the space between them,
+where no test looks, because each test was scoped to one component and the
+constraint each imposed on the others was never written down as a shared fact.
+
+**Two checks, and the second is the one that would have caught it.**
+
+The first: a component with no production caller has not been tested, however
+many tests it has. Its traits will be satisfied by stubs shaped like what the
+author expected reality to be, which is the same thing as not having checked.
+
+The second: when a design decision constrains an external system's behaviour —
+"we will only accept X" — write down what happens if that system stops offering
+X, and go and look. ADR 0003 said the signer accepts only legacy transactions. It
+did not say "and this requires every venue we trade on to offer legacy routing",
+because that consequence lived in a different crate and nobody owned the sentence
+that joined them.

@@ -187,6 +187,42 @@ call or a trusted snapshot. The same problem wearing a hat.
    own failure in the opposite direction, and it would be worse, because it
    traps capital rather than refusing to deploy it.
 
+## Progress, 2026-09-01
+
+`radar-pumpfun` carries what is settled. Every claim in it is checked against a
+transaction the network accepted, not against itself.
+
+**Done.** The three instructions' data encodes byte-for-byte to captured
+mainnet bytes. Sixteen of the eighteen buy accounts derive: the bonding curve,
+global, event authority, both token accounts (ordinary ATAs, with the token
+program as a *seed* — captures show both SPL Token and Token-2022), the creator
+vault, both volume accumulators, and the fee config. The curve account parses
+and prices a fill exactly.
+
+Two ordering facts fell out and are pinned by tests. The **creator is not in the
+instruction's account list** — it is read from the bonding curve account, so
+building a buy requires fetching the curve first. And `buy` and `sell` do not
+share an account order or an argument count.
+
+**Not done: buy accounts 16 and 17.** Across five captures, `[17]` is constant
+within an instruction variant and differs between `buy` and `buy_exact_sol_in`;
+`[16]` varies with the **mint** rather than the trader, and is read-only.
+
+Ruled out for `[16]`, checked against two captures simultaneously so a
+coincidence cannot pass: the creator itself; PDAs of pump.fun, the fee program
+and the ATA program seeded with any of the creator, mint, curve, trader or fee
+recipient, under a dozen candidate seed strings; and associated token accounts
+of each of those owners.
+
+They are recorded as unknown rather than guessed. An account included on a hunch
+is the error this ADR's first precondition exists to prevent, and it is the kind
+that does not fail cleanly — a wrong account is either rejected on chain or,
+worse, accepted as a different account.
+
+Next attempt should widen the capture set and correlate `[16]` against a mint's
+*other* on-chain accounts rather than against derivations, since a dozen seeds
+have now been eliminated.
+
 ## What would reverse this
 
 Jupiter routing pump.fun pre-graduation liquidity as legacy. It is one HTTP call

@@ -29,6 +29,8 @@
 #![forbid(unsafe_code)]
 
 pub mod curve;
+pub mod instruction;
 pub mod pda;
 
 pub use curve::{BondingCurve, Fill};
+pub use instruction::Trade;

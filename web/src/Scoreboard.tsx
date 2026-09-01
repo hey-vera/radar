@@ -35,6 +35,7 @@
 import { useEffect, useState } from "react";
 import { ApiError, research, type Cohort, type Scoreboard as Board } from "./api";
 import { CapacityWall } from "./CapacityWall";
+import { CostCurve } from "./CostCurve";
 import { clearedCost, median, netOfCost, pct } from "./honesty";
 
 /** Below this many scored proposals, no comparison is reported at all. */
@@ -85,6 +86,11 @@ export function Scoreboard() {
           after them deliberately: a reader arrives wanting a performance
           number, and the honest answer is that the constraint is capacity. */}
       <CapacityWall />
+
+      {/* And why the position that fits in that capacity cannot pay for
+          itself. The two together are the argument; either alone reads as a
+          detail. */}
+      <CostCurve />
 
       {enough ? (
         <>

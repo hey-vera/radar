@@ -126,6 +126,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/decisions", get(decisions))
         .route("/v1/evidence/capacity", get(capacity))
         .route("/v1/evidence/returns", get(returns))
+        .route("/v1/evidence/activity", get(activity))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
@@ -583,6 +584,31 @@ async fn returns(State(state): State<Arc<AppState>>) -> Response {
         api::ASSUMED_COST_BPS,
     ))
     .into_response()
+}
+
+/// How many decisions were taken per day, most recent fortnight.
+///
+/// Its obvious job is answered by the watermark on the operator's page. This is
+/// the same question asked in a form that shows a **gap**: a watermark tells you
+/// where the recorder got to, and a row of buckets tells you it stopped on
+/// Tuesday.
+async fn activity(State(state): State<Arc<AppState>>) -> Response {
+    /// A fortnight. Long enough for a weekly rhythm to be visible and short
+    /// enough that a gap is obvious rather than a thin line among many.
+    const DAYS: u64 = 14;
+
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(decisions) = state.store.read_decisions(AsOf::at(watermark)) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cannot read the store" })),
+        )
+            .into_response();
+    };
+    Json(api::activity(&decisions, watermark.get(), DAYS)).into_response()
 }
 
 /// The decision record, newest first, one page at a time.

@@ -20,6 +20,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError, subscribe, type Funnel } from "./api";
+import { Activity } from "./Activity";
 import { Feed } from "./Feed";
 import { Link } from "wouter";
 import { decisionsPath } from "./routes";
@@ -88,6 +89,11 @@ export function Decisions() {
             : `Could not read the funnel — ${load.detail}`}
         </Placeholder>
       )}
+
+      {/* Whether the recorder is still running, in a form that shows a gap.
+          Above the funnel because an outage makes every figure below it stale,
+          and a reader should meet that first. */}
+      <Activity />
 
       {load.state === "ready" && <FunnelView funnel={load.value} />}
 

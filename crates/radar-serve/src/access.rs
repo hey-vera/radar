@@ -1040,6 +1040,7 @@ mod tests {
             ("/v1/decisions", Audience::Customer),
             ("/v1/evidence/capacity", Audience::Customer),
             ("/v1/evidence/returns", Audience::Customer),
+            ("/v1/evidence/activity", Audience::Customer),
             // The watermark only. `/v1/events` stays Operator because its
             // payload is the operator's store counts.
             ("/v1/customer/events", Audience::Customer),

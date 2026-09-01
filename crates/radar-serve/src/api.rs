@@ -669,6 +669,95 @@ pub fn returns(
     }
 }
 
+/// Roughly how many slots a day is on Solana, at ~400ms a slot.
+///
+/// Approximate on purpose, and it does not need to be better. This groups
+/// decisions into buckets so a reader can see whether the recorder is still
+/// running; a bucket boundary drifting by a few minutes changes nothing about
+/// that, and pretending to a precision the slot clock does not offer would.
+pub const SLOTS_PER_DAY: u64 = 216_000;
+
+/// How many decisions were taken in one bucket of the record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Interval {
+    /// The first slot of the bucket.
+    pub from_slot: u64,
+    /// How many decisions were taken in it.
+    pub decisions: usize,
+    /// How many of those raised a proposal.
+    pub proposed: usize,
+}
+
+/// The shape of the recorder's activity over time.
+///
+/// # Why this is worth a screen
+///
+/// Its obvious job — "is the recorder alive" — is also answered by the watermark
+/// on the operator's page. This is the same question asked in a form that shows
+/// a **gap**, and that difference has mattered: the follow recorder has died
+/// before, on a query error, with no restart and no alarm. A watermark tells you
+/// where it got to. A row of buckets tells you it stopped on Tuesday.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Activity {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// Buckets, oldest first, with **no gaps**.
+    ///
+    /// A day with no decisions is a bucket with a zero, not an absent bucket.
+    /// Absent, a client drawing bars in order would close the gap and show an
+    /// unbroken record over an outage — which is exactly the failure this is
+    /// meant to reveal.
+    pub intervals: Vec<Interval>,
+}
+
+/// Buckets the decision record by day, most recent `days` of it.
+///
+/// Pure, and the gap-filling is why: the wrong version is one that emits only
+/// the days it saw, which draws an unbroken chart over an outage.
+#[must_use]
+pub fn activity(decisions: &[Decision], as_of: u64, days: u64) -> Activity {
+    let Some(newest) = decisions.iter().map(|d| d.decided_at.get()).max() else {
+        return Activity {
+            as_of,
+            intervals: Vec::new(),
+        };
+    };
+
+    // Anchored on the newest decision rather than on the watermark. If the
+    // recorder died a week ago the watermark keeps moving -- it follows the
+    // chain, not the decider -- and anchoring there would draw seven empty
+    // buckets and no data, which reads as "no decisions" rather than "it
+    // stopped".
+    let newest_bucket = newest / SLOTS_PER_DAY;
+    let oldest_bucket = newest_bucket.saturating_sub(days.saturating_sub(1));
+
+    let mut intervals: Vec<Interval> = (oldest_bucket..=newest_bucket)
+        .map(|b| Interval {
+            from_slot: b * SLOTS_PER_DAY,
+            decisions: 0,
+            proposed: 0,
+        })
+        .collect();
+
+    for decision in decisions {
+        let bucket = decision.decided_at.get() / SLOTS_PER_DAY;
+        if bucket < oldest_bucket {
+            continue;
+        }
+        let Ok(index) = usize::try_from(bucket - oldest_bucket) else {
+            continue;
+        };
+        if let Some(interval) = intervals.get_mut(index) {
+            interval.decisions += 1;
+            if decision.proposed() {
+                interval.proposed += 1;
+            }
+        }
+    }
+
+    Activity { as_of, intervals }
+}
+
 /// How many rows each table holds, for the health screen.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Default)]
 pub struct StoreCounts {
@@ -1368,5 +1457,75 @@ mod tests {
         assert_eq!(got.scored, 0);
         assert_eq!(got.exactly_zero, 0);
         assert_eq!(got.as_of, 7);
+    }
+
+    #[test]
+    fn a_day_with_no_decisions_is_a_zero_rather_than_a_missing_bucket() {
+        // The failure this exists to reveal. Emitting only the days it saw draws
+        // an unbroken chart over an outage -- and the follow recorder has died
+        // before, on a query error, with no restart and no alarm.
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day * 10), at(2, day * 12)];
+        let got = activity(&all, day * 12, 3);
+
+        assert_eq!(got.intervals.len(), 3, "no gaps");
+        assert_eq!(got.intervals[0].decisions, 1, "day 10");
+        assert_eq!(
+            got.intervals[1].decisions, 0,
+            "day 11 is a zero, not absent"
+        );
+        assert_eq!(got.intervals[2].decisions, 1, "day 12");
+    }
+
+    #[test]
+    fn it_is_anchored_on_the_newest_decision_and_not_on_the_watermark() {
+        // The watermark follows the chain, not the decider. If the recorder died
+        // a week ago the watermark keeps moving, and anchoring there would draw
+        // a row of empty buckets that reads as "no decisions" rather than "it
+        // stopped".
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day * 5)];
+        let got = activity(&all, day * 30, 3);
+
+        let last = got.intervals.last().expect("a bucket");
+        assert_eq!(last.from_slot, day * 5);
+        assert_eq!(last.decisions, 1);
+    }
+
+    #[test]
+    fn proposals_are_counted_separately_from_decisions() {
+        // A day of nine hundred refusals and a day of nine hundred proposals are
+        // different systems, and one bar cannot tell them apart.
+        let day = SLOTS_PER_DAY;
+        let all = vec![
+            Decision {
+                decided_at: Slot(day * 4),
+                ..decision(1, true, &[], false)
+            },
+            at(2, day * 4),
+        ];
+        let got = activity(&all, day * 4, 1);
+        let only = got.intervals.first().expect("a bucket");
+        assert_eq!(only.decisions, 2);
+        assert_eq!(only.proposed, 1);
+    }
+
+    #[test]
+    fn decisions_older_than_the_window_are_dropped_rather_than_folded_in() {
+        // Folding them into the oldest bucket would draw a spike that never
+        // happened.
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day), at(2, day * 20)];
+        let got = activity(&all, day * 20, 2);
+        let total: usize = got.intervals.iter().map(|i| i.decisions).sum();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn an_empty_record_is_no_buckets_rather_than_a_row_of_zeroes() {
+        // A row of zeroes says the recorder ran and found nothing. Nothing ran.
+        let got = activity(&[], 99, 7);
+        assert!(got.intervals.is_empty());
+        assert_eq!(got.as_of, 99);
     }
 }

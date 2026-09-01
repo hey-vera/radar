@@ -383,6 +383,27 @@ export interface Returns {
   round_trip_bps: number;
 }
 
+/** How many decisions were taken in one bucket of the record. */
+export interface Interval {
+  from_slot: number;
+  decisions: number;
+  proposed: number;
+}
+
+/** The shape of the recorder's activity over time. */
+export interface Activity {
+  as_of: number;
+  /**
+   * Buckets, oldest first, with **no gaps**.
+   *
+   * A day with no decisions is a bucket with a zero, never an absent bucket. A
+   * client drawing bars in order would otherwise close the gap and show an
+   * unbroken record straight over an outage — which is the failure this exists
+   * to reveal.
+   */
+  intervals: Interval[];
+}
+
 /** Radar's selection against its own refusals. */
 export interface Scoreboard {
   decisions: number;
@@ -422,4 +443,6 @@ export const research = {
     get<Capacity>("/v1/evidence/capacity", signal),
   returns: (signal?: AbortSignal) =>
     get<Returns>("/v1/evidence/returns", signal),
+  activity: (signal?: AbortSignal) =>
+    get<Activity>("/v1/evidence/activity", signal),
 };

@@ -310,6 +310,35 @@ export interface Cohort {
   returns_bps: number[];
 }
 
+/** One band of the exit-capacity distribution. */
+export interface Band {
+  /** Inclusive floor, micro-USD. */
+  floor: number;
+  /** Exclusive ceiling, micro-USD. Null on the open-ended top band. */
+  ceiling: number | null;
+  decisions: number;
+}
+
+/** The capacity wall: what the venue offers, and what Radar sized into it. */
+export interface Capacity {
+  as_of: number;
+  bands: Band[];
+  /** Decisions where a capacity was measured. */
+  measured: number;
+  /**
+   * Decisions where it was not.
+   *
+   * Reported apart from the bands and never drawn inside them. Rule 9: a
+   * capacity that could not be measured means "cannot exit", not "thin" and not
+   * zero, and bucketing these into the bottom band would draw a wall of tokens
+   * nobody measured.
+   */
+  unmeasured: number;
+  median_capacity: number | null;
+  median_notional: number | null;
+  round_trip_bps: number;
+}
+
 /** Radar's selection against its own refusals. */
 export interface Scoreboard {
   decisions: number;
@@ -345,4 +374,6 @@ export const research = {
     get<TokenEvidence>(`/v1/tokens/${encodeURIComponent(mint)}`, signal),
   scoreboard: (signal?: AbortSignal) => get<Scoreboard>("/v1/scoreboard", signal),
   health: (signal?: AbortSignal) => get<Health>("/health", signal),
+  capacity: (signal?: AbortSignal) =>
+    get<Capacity>("/v1/evidence/capacity", signal),
 };

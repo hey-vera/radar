@@ -11,7 +11,7 @@
 //! rather than from the component's.
 
 import { render, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Scoreboard } from "./Scoreboard";
 import type { Scoreboard as Board } from "./api";
 
@@ -36,22 +36,65 @@ const board: Board = {
   cost_bps: 850,
 };
 
+/** An empty capacity wall, so the child component on this screen can render. */
+const emptyWall = {
+  as_of: 441_734_987,
+  bands: [],
+  measured: 0,
+  unmeasured: 0,
+  median_capacity: null,
+  median_notional: null,
+  round_trip_bps: 850,
+};
+
+/**
+ * Serves each route the screen actually calls.
+ *
+ * URL-aware, and it has to be. The first version answered every request with the
+ * scoreboard body, which handed `CapacityWall` a payload with no `bands` — and
+ * it crashed, every test, silently. Every assertion still passed, because they
+ * were about a sibling. A stub that answers one shape to every question is a
+ * stub that tests one component and breaks the rest without saying so.
+ */
 function serve(body: Board) {
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
+    vi.fn((url: string) =>
       Promise.resolve({
         ok: true,
         status: 200,
         statusText: "OK",
-        json: () => Promise.resolve(body),
+        json: () =>
+          Promise.resolve(String(url).includes("/capacity") ? emptyWall : body),
       }),
     ),
   );
 }
 
+/**
+ * Fails the test if any component on the screen threw while rendering.
+ *
+ * React reports a child's crash to `console.error` and carries on, so a screen
+ * can be half broken while every assertion about the other half passes. That
+ * happened here: `CapacityWall` threw in all six tests below and none of them
+ * noticed.
+ */
+let errors: string[] = [];
+
+beforeEach(() => {
+  errors = [];
+  vi.spyOn(console, "error").mockImplementation((...args: unknown[]) => {
+    errors.push(args.map(String).join(" "));
+  });
+});
+
 afterEach(() => {
+  const crashed = errors.filter((line) =>
+    /An error occurred in the|Cannot read properties/.test(line),
+  );
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  expect(crashed, "a component on this screen threw while rendering").toEqual([]);
 });
 
 describe("the scoreboard's claims", () => {

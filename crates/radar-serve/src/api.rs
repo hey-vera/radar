@@ -388,6 +388,129 @@ pub fn page(mut decisions: Vec<Decision>, query: &Query, as_of: u64) -> Page {
     }
 }
 
+/// The exit-capacity bands, in micro-USD, matching research 0018.
+///
+/// Fixed rather than computed from the data, and deliberately the **same** bands
+/// the published note used. A chart whose buckets move with the data cannot be
+/// compared against the note it is illustrating, and the reader would have no
+/// way to tell a change in the market from a change in the histogram.
+const BANDS: &[(u64, Option<u64>)] = &[
+    (0, Some(25_000_000)),
+    (25_000_000, Some(30_000_000)),
+    (30_000_000, Some(35_000_000)),
+    (35_000_000, Some(60_000_000)),
+    (60_000_000, None),
+];
+
+/// One band of the exit-capacity distribution.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Band {
+    /// Inclusive floor, micro-USD.
+    pub floor: u64,
+    /// Exclusive ceiling, micro-USD. `None` on the open-ended top band.
+    pub ceiling: Option<u64>,
+    /// How many decisions measured a capacity in this band.
+    pub decisions: usize,
+}
+
+/// The capacity wall: what the venue actually offers, and what Radar sized into
+/// it.
+///
+/// The single most important picture in the product, because it is the reason
+/// the thing does not work yet. 80% of proposals sit in a ±13% band around $31,
+/// because every pre-graduation pump.fun token rides the same bonding curve —
+/// capacity is closer to a property of the venue than of the token, and the
+/// median position it produces is $6.21 against an 850 bps round trip.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Capacity {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// The distribution.
+    pub bands: Vec<Band>,
+    /// Decisions where a capacity was measured.
+    pub measured: usize,
+    /// Decisions where it was **not**.
+    ///
+    /// Reported rather than bucketed. AGENTS.md rule 9: a capacity that could
+    /// not be measured is `None`, and `None` means "cannot exit", never "no
+    /// limit found" — and certainly not zero. Folding these into the bottom band
+    /// would draw a wall of thin tokens that nobody measured.
+    pub unmeasured: usize,
+    /// The median measured capacity, micro-USD. `None` when nothing was
+    /// measured.
+    pub median_capacity: Option<u64>,
+    /// The median proposed notional, micro-USD, over proposals that carried one.
+    pub median_notional: Option<u64>,
+    /// What a round trip is assumed to cost, per ten thousand.
+    pub round_trip_bps: u64,
+}
+
+/// The median of a sorted-in-place list, or `None` when it is empty.
+///
+/// `None` rather than zero, for the reason every other absent figure in this
+/// interface is: a median of nothing is not a median of zero.
+fn median_of(mut values: Vec<u64>) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    values.get(values.len() / 2).copied()
+}
+
+/// Builds the capacity distribution from recorded decisions.
+///
+/// Pure, and separate from the handler for the usual reason: the bucketing has a
+/// wrong version that looks right — every boundary is a place where a token can
+/// land in the wrong band or in none at all — and it needs no store to test.
+#[must_use]
+pub fn capacity(decisions: &[Decision], as_of: u64, round_trip_bps: u64) -> Capacity {
+    let mut bands: Vec<Band> = BANDS
+        .iter()
+        .map(|&(floor, ceiling)| Band {
+            floor,
+            ceiling,
+            decisions: 0,
+        })
+        .collect();
+
+    let mut measured = 0usize;
+    let mut unmeasured = 0usize;
+    let mut capacities: Vec<u64> = Vec::new();
+
+    for decision in decisions {
+        let Some(capacity) = decision.exit_capacity_micro_usd else {
+            unmeasured += 1;
+            continue;
+        };
+        measured += 1;
+        capacities.push(capacity);
+        // Half-open `[floor, ceiling)`, so a value exactly on a boundary lands in
+        // exactly one band. Inclusive on both ends would double-count it and the
+        // totals would quietly exceed `measured`.
+        if let Some(band) = bands
+            .iter_mut()
+            .find(|b| capacity >= b.floor && b.ceiling.is_none_or(|c| capacity < c))
+        {
+            band.decisions += 1;
+        }
+    }
+
+    let notionals: Vec<u64> = decisions
+        .iter()
+        .filter_map(|d| d.notional_micro_usd)
+        .collect();
+
+    Capacity {
+        as_of,
+        bands,
+        measured,
+        unmeasured,
+        median_capacity: median_of(capacities),
+        median_notional: median_of(notionals),
+        round_trip_bps,
+    }
+}
+
 /// How many rows each table holds, for the health screen.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Default)]
 pub struct StoreCounts {
@@ -856,5 +979,118 @@ mod tests {
         assert_eq!(got.matched, 0);
         assert!(got.next.is_none());
         assert_eq!(got.as_of, 7, "the watermark is reported even with no rows");
+    }
+
+    /// A decision with a measured exit capacity.
+    fn with_capacity(mint: u8, capacity: Option<u64>, notional: Option<u64>) -> Decision {
+        Decision {
+            exit_capacity_micro_usd: capacity,
+            notional_micro_usd: notional,
+            ..decision(mint, notional.is_some(), &[], false)
+        }
+    }
+
+    #[test]
+    fn an_unmeasured_capacity_is_counted_apart_rather_than_as_zero() {
+        // Rule 9, and the version of it that would draw a false picture: a
+        // capacity that could not be measured means "cannot exit", and folding
+        // it into the bottom band draws a wall of thin tokens nobody measured.
+        let all = vec![
+            with_capacity(1, None, None),
+            with_capacity(2, None, None),
+            with_capacity(3, Some(31_000_000), None),
+        ];
+        let got = capacity(&all, 1, 850);
+
+        assert_eq!(got.unmeasured, 2);
+        assert_eq!(got.measured, 1);
+        let bottom = got.bands.first().expect("a bottom band");
+        assert_eq!(bottom.decisions, 0, "the unmeasured must not land here");
+    }
+
+    #[test]
+    fn every_measured_decision_lands_in_exactly_one_band() {
+        // The totals are the check. A boundary that is inclusive on both sides
+        // double-counts, and one that is exclusive on both drops a value
+        // silently -- and both produce a histogram that looks entirely normal.
+        let all: Vec<Decision> = [
+            0,
+            24_999_999,
+            25_000_000,
+            29_999_999,
+            30_000_000,
+            34_999_999,
+            35_000_000,
+            59_999_999,
+            60_000_000,
+            618_400_000,
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let mint = u8::try_from(i + 1).expect("small");
+            with_capacity(mint, Some(c), None)
+        })
+        .collect();
+
+        let got = capacity(&all, 1, 850);
+        let binned: usize = got.bands.iter().map(|b| b.decisions).sum();
+        assert_eq!(binned, got.measured, "every measured value is binned once");
+        assert_eq!(got.measured, 10);
+    }
+
+    #[test]
+    fn the_boundaries_fall_where_the_research_put_them() {
+        // Swept individually, because "every value is binned once" holds just as
+        // well when they are all binned into the *wrong* band.
+        let at = |c: u64| {
+            let got = capacity(&[with_capacity(1, Some(c), None)], 1, 850);
+            got.bands
+                .iter()
+                .position(|b| b.decisions == 1)
+                .expect("binned somewhere")
+        };
+        assert_eq!(at(24_999_999), 0);
+        assert_eq!(at(25_000_000), 1, "the floor belongs to the band above");
+        assert_eq!(at(29_999_999), 1);
+        assert_eq!(at(30_000_000), 2);
+        assert_eq!(at(34_999_999), 2);
+        assert_eq!(at(35_000_000), 3);
+        assert_eq!(at(59_999_999), 3);
+        assert_eq!(at(60_000_000), 4, "the open-ended band");
+        assert_eq!(at(u64::MAX), 4, "which really is open-ended");
+    }
+
+    #[test]
+    fn the_medians_are_absent_rather_than_zero_when_nothing_was_measured() {
+        let got = capacity(&[with_capacity(1, None, None)], 1, 850);
+        assert_eq!(got.median_capacity, None);
+        assert_eq!(got.median_notional, None);
+    }
+
+    #[test]
+    fn the_notional_median_ignores_refusals_that_proposed_nothing() {
+        // A refusal that never reached the exit probe has no notional, and
+        // treating that as a proposal of zero drags the median to the floor --
+        // which is the figure the whole chart exists to report.
+        let all = vec![
+            with_capacity(1, Some(31_000_000), None),
+            with_capacity(2, Some(31_000_000), Some(6_210_000)),
+            with_capacity(3, Some(31_000_000), Some(6_210_000)),
+        ];
+        let got = capacity(&all, 1, 850);
+        assert_eq!(got.median_notional, Some(6_210_000));
+    }
+
+    #[test]
+    fn an_empty_store_reports_a_shape_rather_than_nothing() {
+        // The bands still exist with zero counts. A chart handed an empty list
+        // should draw an empty chart, not fail to draw axes.
+        let got = capacity(&[], 7, 850);
+        assert_eq!(got.bands.len(), BANDS.len());
+        assert_eq!(got.measured, 0);
+        assert_eq!(got.unmeasured, 0);
+        assert_eq!(got.as_of, 7);
+        assert_eq!(got.round_trip_bps, 850);
     }
 }

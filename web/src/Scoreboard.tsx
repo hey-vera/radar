@@ -34,6 +34,7 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, research, type Cohort, type Scoreboard as Board } from "./api";
+import { CapacityWall } from "./CapacityWall";
 import { clearedCost, median, netOfCost, pct } from "./honesty";
 
 /** Below this many scored proposals, no comparison is reported at all. */
@@ -79,6 +80,11 @@ export function Scoreboard() {
         <Figure label="proposed" value={board.proposed.scored.toLocaleString()} />
         <Figure label="refused" value={board.refused.scored.toLocaleString()} />
       </dl>
+
+      {/* The reason the returns above are the wrong thing to look at. Placed
+          after them deliberately: a reader arrives wanting a performance
+          number, and the honest answer is that the constraint is capacity. */}
+      <CapacityWall />
 
       {enough ? (
         <>

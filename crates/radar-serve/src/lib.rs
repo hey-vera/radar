@@ -124,6 +124,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/health", get(health))
         .route("/v1/funnel", get(funnel))
         .route("/v1/decisions", get(decisions))
+        .route("/v1/evidence/capacity", get(capacity))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
@@ -524,6 +525,32 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
     // scope on the field itself.
     let closed = radar_risk::Policy::SHIPPED.is_closed();
     Json(api::funnel(&decisions, launches, watermark.get(), closed)).into_response()
+}
+
+/// The capacity wall.
+///
+/// The reason the product does not work yet, in one picture: 80% of proposals
+/// sit in a ±13% band around $31, because every pre-graduation pump.fun token
+/// rides the same bonding curve. It is an aggregate rather than rows because
+/// ~938k measurements must never reach a browser.
+async fn capacity(State(state): State<Arc<AppState>>) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    let Ok(decisions) = state.store.read_decisions(AsOf::at(watermark)) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cannot read the store" })),
+        )
+            .into_response();
+    };
+    Json(api::capacity(
+        &decisions,
+        watermark.get(),
+        api::ASSUMED_COST_BPS,
+    ))
+    .into_response()
 }
 
 /// The decision record, newest first, one page at a time.

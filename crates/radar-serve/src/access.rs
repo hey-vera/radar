@@ -575,6 +575,7 @@ pub fn audience_of(path: &str) -> Audience {
         || path.starts_with("/assets/")
         || path == "/v1/funnel"
         || path == "/v1/scoreboard"
+        || path == "/v1/decisions"
         || path.starts_with("/v1/tokens/")
         || path == "/v1/customer/wallet"
         || path == "/v1/chat"
@@ -1034,6 +1035,7 @@ mod tests {
             ("/assets/index-abc123.js", Audience::Customer),
             ("/v1/funnel", Audience::Customer),
             ("/v1/scoreboard", Audience::Customer),
+            ("/v1/decisions", Audience::Customer),
             (
                 "/v1/tokens/So11111111111111111111111111111111111111112",
                 Audience::Customer,
@@ -1045,7 +1047,10 @@ mod tests {
             ("/evidence", Audience::Customer),
             ("/wallet", Audience::Customer),
             ("/ask", Audience::Customer),
-            ("/token/So11111111111111111111111111111111111111112", Audience::Customer),
+            (
+                "/token/So11111111111111111111111111111111111111112",
+                Audience::Customer,
+            ),
             // The operator's surface. `/v1/store` and `/v1/events` are here on
             // purpose: store counts and a raw event stream are debugging tools,
             // not product.

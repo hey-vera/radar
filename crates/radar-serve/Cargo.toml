@@ -14,7 +14,7 @@ name = "radar-serve"
 path = "src/main.rs"
 
 [dependencies]
-axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "query", "tokio"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 radar-agent.workspace = true
 radar-asof.workspace = true

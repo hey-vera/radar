@@ -29,7 +29,7 @@ use core::convert::Infallible;
 use core::time::Duration;
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Response};
@@ -102,6 +102,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/ops", get(ops_page))
         .route("/health", get(health))
         .route("/v1/funnel", get(funnel))
+        .route("/v1/decisions", get(decisions))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
@@ -444,6 +445,89 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
     // scope on the field itself.
     let closed = radar_risk::Policy::SHIPPED.is_closed();
     Json(api::funnel(&decisions, launches, watermark.get(), closed)).into_response()
+}
+
+/// The decision record, newest first, one page at a time.
+///
+/// # Why this exists beside `/v1/funnel`
+///
+/// The funnel is an aggregate, and an aggregate barely moves: roughly 960
+/// decisions a day fall into the same handful of reason buckets, so a reader
+/// coming back tomorrow learns nothing from it they did not know today. What
+/// changes is *which* tokens were refused and *why*, and that is this route.
+///
+/// It is also the one screen no competitor can build, because no competitor
+/// records a reason list per decision.
+///
+/// # The cursor
+///
+/// `after=<slot>:<mint>`, and the mint half is load-bearing rather than
+/// decorative. See [`api::Cursor`].
+async fn decisions(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<DecisionParams>,
+) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    let as_of = AsOf::at(watermark);
+
+    let Ok(all) = state.store.read_decisions(as_of) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cannot read the store" })),
+        )
+            .into_response();
+    };
+
+    // A cursor that does not parse is refused rather than ignored. Ignoring it
+    // silently restarts the reader at the newest page, which looks like the
+    // record looping rather than like a bad request.
+    let after = match params.after.as_deref() {
+        None => None,
+        Some(raw) => match api::Cursor::parse(raw) {
+            Some(cursor) => Some(cursor),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(json!({ "error": "after must be <slot>:<mint>" })),
+                )
+                    .into_response();
+            }
+        },
+    };
+
+    let conclusion = match params.conclusion.as_deref() {
+        None => None,
+        Some("proposed") => Some(radar_store::Conclusion::Proposed),
+        Some("passed") => Some(radar_store::Conclusion::Passed),
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "conclusion must be proposed or passed" })),
+            )
+                .into_response();
+        }
+    };
+
+    let query = api::Query {
+        after,
+        reason: params.reason,
+        conclusion,
+        limit: params.limit.unwrap_or(api::DEFAULT_LIMIT),
+    };
+
+    Json(api::page(all, &query, watermark.get())).into_response()
+}
+
+/// The query string `/v1/decisions` accepts.
+#[derive(serde::Deserialize)]
+struct DecisionParams {
+    after: Option<String>,
+    reason: Option<String>,
+    conclusion: Option<String>,
+    limit: Option<usize>,
 }
 
 /// How often the store is asked whether anything moved.

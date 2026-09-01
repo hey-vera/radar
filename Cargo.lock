@@ -1539,6 +1539,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-pumpfun"
+version = "0.0.1"
+dependencies = [
+ "ed25519-dalek",
+ "radar-decode",
+ "radar-types",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "radar-research"
 version = "0.0.1"
 dependencies = [

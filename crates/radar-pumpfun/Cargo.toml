@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "radar-pumpfun"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# The discriminator table, shared rather than copied. ADR 0009 precondition 2:
+# a builder that learned its own discriminators could come to disagree with the
+# decoder about the same program, and the disagreement would be invisible until
+# a transaction was rejected.
+radar-decode.workspace = true
+radar-types.workspace = true
+sha2 = "0.10"
+# Only to ask whether a 32-byte value is a point on the ed25519 curve, which is
+# what makes an address a program-derived one. No key is held, generated or used
+# in this crate.
+ed25519-dalek = { workspace = true }

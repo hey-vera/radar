@@ -84,6 +84,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-research` | Replay. Re-runs a recorded decision at its original watermark and separates a store that gained history from a strategy that is not a pure function of its inputs. |
 | `radar-signer` | A separate process holding the key. Re-decodes every transaction and trusts nothing the caller said about it. |
 | `radar-exec` | Route, gate, sign, submit, reconcile. The last stage, and the one holding the least authority. |
+| `radar-pumpfun` | Builds pump.fun instructions and prices them off the bonding curve. Pure: no clock, no network, no key. The curve is `x·y=k` over published reserves, so a fill is computed rather than quoted — see ADR 0009. |
 | `radar-customer` | The customer model. Pure: a bounded grant derived from the kernel's authorisation, and a signature meter. No account table — see ADR 0006. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 

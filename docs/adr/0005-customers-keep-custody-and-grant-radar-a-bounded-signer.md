@@ -312,6 +312,46 @@ disclosure required above should say so in those words.
 6. **Withdrawal must work before deposit is offered.** A deposit path without a
    proven withdrawal path is custody with extra steps, whatever the architecture
    diagram says.
+
+   **Resolved 2026-08-31, structurally, and better than this precondition asked
+   for.** It assumed Radar would have to *build* a withdrawal path. It does not,
+   and it should not, because Privy gives the customer two exits that do not
+   involve Radar at all:
+
+   - **Export.** The private key is assembled on an origin separate from the
+     application's, so neither Radar nor Privy can ever see it. The customer is
+     the only party who can. They can take the wallet to Phantom and leave.
+   - **Revocation.** `removeSessionSigners` removes Radar's signer, after which
+     Radar can take no further action on the wallet.
+
+   Neither needs Radar's cooperation, or its uptime, or its good behaviour. That
+   is a materially stronger answer than a withdrawal endpoint, which would have
+   been a path Radar could break, throttle, or be compromised into refusing.
+
+   So the precondition is met by *not building the thing it was worried about* —
+   and the product's obligation becomes making both exits **visible**, not
+   implementing them. A wallet the customer cannot find the exit from is
+   custodial in effect regardless of who holds the key.
+
+8. **The wallet must be user-owned, not app-owned.** Added 2026-08-31, and it is
+   the piece that makes the rest of the story hold.
+
+   Privy distinguishes an **owner** from a **signer**. The owner may update
+   policies, change owners, add signers and export the key. A signer may do none
+   of those — it may only sign, within the policy the owner set.
+
+   [ADR 0008](0008-the-signer-holds-its-own-policy.md) names Privy's policy
+   engine as the independent backstop against a compromised `radar-serve`, on the
+   grounds that it holds bounds Radar does not supply per request. **That is only
+   true if Radar is not the owner.** An app-owned wallet lets whoever holds the
+   application credential rewrite the policy that was supposed to bound them,
+   which turns the backstop into a formality and takes the rest of the design
+   with it.
+
+   So: the customer is the owner. Radar is a signer and nothing more. This is a
+   configuration decision at wallet creation, it is invisible in normal
+   operation, and it is the difference between a bounded signer and a custodian
+   with extra steps.
 7. **An ES256 verifier, which does not exist.** Found by checking rather than
    assuming, and it would otherwise have been discovered after the integration
    was wired up.

@@ -10,7 +10,13 @@
 //! is what wakes somebody up; this is what you read once it has.
 
 import { useEffect, useState } from "react";
-import { ApiError, research, type Health as HealthReport, type StoreCounts } from "./api";
+import {
+  ApiError,
+  operator,
+  research,
+  type Health as HealthReport,
+  type StoreCounts,
+} from "./api";
 
 export function Health() {
   const [health, setHealth] = useState<HealthReport | null>(null);
@@ -27,7 +33,13 @@ export function Health() {
           setError(e instanceof ApiError ? e.detail : String(e));
         }
       });
-    research
+    // `operator`, not `research`, and the import is the point: `/v1/store` is
+    // an `Audience::Operator` route. It answers today only because no customer
+    // authenticator is configured, so every request falls back to the operator
+    // check. The day the customer lane switches on it refuses customer sessions
+    // and this block shows its failure message permanently -- which is correct,
+    // and is why this screen is the operator's rather than the product's.
+    operator
       .store(controller.signal)
       .then(setCounts)
       .catch(() => {
@@ -102,9 +114,27 @@ export function Health() {
           </li>
           <li>
             Trading:{" "}
-            <span className="text-[var(--color-refuse)]">
-              policy closed — nothing can be authorised
+            <span
+              className={
+                health.policyClosed
+                  ? "text-[var(--color-refuse)]"
+                  : "text-[var(--color-warn)]"
+              }
+            >
+              {health.policyClosed
+                ? "policy closed — the deciding policy authorises nothing"
+                : "CAPITAL IS ARMED — the deciding policy can authorise"}
             </span>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--color-dim)]">
+              The policy is only one of two independent reasons nothing trades,
+              and it is the reversible one. Radar also cannot{" "}
+              <strong>build</strong> a transaction for a token it selects: the
+              signer reads every account it signs, so it takes legacy
+              transactions only, and pump.fun&rsquo;s pre-graduation liquidity —
+              the only venue that lists these tokens — routes versioned. Eight of
+              eight recent candidates refused legacy (research 0021). Opening the
+              policy would not change that.
+            </p>
           </li>
         </ul>
       </section>

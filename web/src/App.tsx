@@ -24,8 +24,13 @@ type Load<T> =
   | { state: "ready"; value: T }
   | { state: "failed"; status: number; detail: string };
 
-function useFunnel(): [Load<Funnel>, () => void] {
+function useFunnel(): [Load<Funnel>, boolean] {
   const [load, setLoad] = useState<Load<Funnel>>({ state: "loading" });
+  // Whether the change stream is following the store. `/v1/events` is an
+  // operator route, so a customer session will be refused there -- and a refused
+  // `EventSource` retries silently forever. Without this the page would keep
+  // rendering its first fetch and look like a store where nothing had happened.
+  const [stale, setStale] = useState(false);
 
   const refresh = useCallback(() => {
     const controller = new AbortController();
@@ -47,14 +52,14 @@ function useFunnel(): [Load<Funnel>, () => void] {
     const cancel = refresh();
     // Re-fetch when the store moves rather than on a timer. The stream says
     // *that* something changed; what changed is this fetch.
-    const stop = subscribe(refresh);
+    const stop = subscribe(refresh, setStale);
     return () => {
       cancel?.();
       stop();
     };
   }, [refresh]);
 
-  return [load, refresh];
+  return [load, stale];
 }
 
 /// The five screens, in the order the product argues for itself: what was
@@ -71,7 +76,7 @@ const SCREENS = [
 type Screen = (typeof SCREENS)[number];
 
 export function App() {
-  const [load] = useFunnel();
+  const [load, stale] = useFunnel();
   // Deliberately not a router. The plan argued for TanStack Router on the
   // grounds that a drill-down needs shareable, typed search params -- and it
   // will, once a screen takes a filter. Today none does, so a router would be
@@ -114,6 +119,14 @@ export function App() {
       {screen === "Funnel" && (
         <>
 
+      {stale && (
+        <Placeholder tone="warn">
+          Not following the store. The figures below are from the last successful
+          read and may be older than they look — this is not a report that
+          nothing has changed.
+        </Placeholder>
+      )}
+
       {load.state === "loading" && <Placeholder>Reading the store…</Placeholder>}
 
       {load.state === "failed" && (
@@ -139,8 +152,14 @@ function FunnelView({ funnel }: { funnel: Funnel }) {
       {funnel.policy_closed && (
         <p className="mb-8 rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
           <strong className="text-[var(--color-refuse)]">Policy closed.</strong>{" "}
-          Nothing can be authorised, whatever a token looks like. Every refusal
-          below the last stage is that one fact, not a finding about a token.
+          The policy Radar decides with authorises nothing, whatever a token
+          looks like — so every refusal below the last stage is that one fact,
+          not a finding about a token.{" "}
+          <span className="text-[var(--color-dim)]">
+            This describes the deciding policy. It is not a claim about the
+            signer, which holds its own policy in another process and can refuse
+            what this one permits.
+          </span>
         </p>
       )}
 

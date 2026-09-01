@@ -72,8 +72,30 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
+/**
+ * Routes this interface may call as a **customer**.
+ *
+ * The distinction is not cosmetic. `access::audience_of` classifies every path,
+ * and `/v1/store`, `/v1/events` and `/v1/link` are `Audience::Operator` — the
+ * operator's debugging surface rather than product. They are reachable today
+ * only because no customer authenticator is configured, so every request falls
+ * back to the operator check. The day `RADAR_PRIVY_APP_ID` is set they begin
+ * refusing customer sessions, and anything built on them stops working for
+ * everyone who is not Josh.
+ *
+ * So they are grouped separately below rather than left to look like product.
+ */
 export const api = {
   funnel: (signal?: AbortSignal) => get<Funnel>("/v1/funnel", signal),
+};
+
+/**
+ * Routes that require **operator** identity.
+ *
+ * Kept apart so a screen built on one is a deliberate choice rather than an
+ * accident, and so the seam is already drawn when the customer lane switches on.
+ */
+export const operator = {
   store: (signal?: AbortSignal) => get<StoreCounts>("/v1/store", signal),
 };
 
@@ -83,10 +105,30 @@ export const api = {
  * Returns a teardown. The browser reconnects a dropped `EventSource` on its
  * own, which is most of why this is server-sent events rather than a socket:
  * the reconnect logic is the part that would otherwise be written badly here.
+ *
+ * # Why `onStale` exists
+ *
+ * `/v1/events` is an **operator** route. When the customer lane switches on it
+ * will refuse a customer session, and an `EventSource` that is refused fails
+ * silently — it retries forever and never calls its listener. The page would go
+ * on rendering the funnel it fetched once, with nothing to say it had stopped
+ * following the store.
+ *
+ * That is rule 9 in the interface: a page that cannot see changes must not look
+ * like a page where nothing has changed. `onStale` fires on the error so the
+ * caller can say so.
  */
-export function subscribe(onChange: () => void): () => void {
+export function subscribe(
+  onChange: () => void,
+  onStale?: (stale: boolean) => void,
+): () => void {
   const source = new EventSource("/v1/events");
-  source.addEventListener("store", onChange);
+  source.addEventListener("store", () => {
+    onStale?.(false);
+    onChange();
+  });
+  source.addEventListener("open", () => onStale?.(false));
+  source.addEventListener("error", () => onStale?.(true));
   return () => source.close();
 }
 
@@ -143,7 +185,24 @@ export const agent = {
 /** One price measurement of a token. */
 export interface Measurement {
   measured_at: number;
-  fills: number;
+  /**
+   * Price reads the figures below were computed from. **Not a fill count.**
+   *
+   * The server renames it on the wire for this reason. It is folded with
+   * `saturating_add` across windows that overlap by five of their six hours, so
+   * it grows while nothing trades and two measurements are not comparable —
+   * LEARNINGS 19, the defect that invalidated the first runs of research 0017
+   * and 0018. It was previously rendered in a column headed `fills`, which is
+   * the one thing it must not be read as.
+   */
+  price_reads: number;
+  /**
+   * The last slot a transfer was observed, or null if none ever was.
+   *
+   * A `max`, so it cannot be inflated by re-reading. This is what answers
+   * whether the token still trades; `price_reads` does not.
+   */
+  last_transfer_slot: number | null;
   first_price: number | null;
   last_price: number | null;
   peak_price: number | null;
@@ -196,6 +255,17 @@ export interface Health {
   instruments: number;
   watermarkSlot: number | null;
   paidSurface: boolean;
+  /**
+   * Whether the policy Radar **decides** with could authorise anything.
+   *
+   * Reported by the server rather than asserted here. This screen used to print
+   * "policy closed" as literal text, which is a claim the page could not stop
+   * making — the same shape as the four backend instances it was found beside.
+   *
+   * It scopes to the deciding policy. The signer holds its own (ADR 0008) and
+   * can refuse what this one permits, never the reverse.
+   */
+  policyClosed: boolean;
   agent: { configured: boolean; [k: string]: unknown };
 }
 
@@ -204,5 +274,4 @@ export const research = {
     get<TokenEvidence>(`/v1/tokens/${encodeURIComponent(mint)}`, signal),
   scoreboard: (signal?: AbortSignal) => get<Scoreboard>("/v1/scoreboard", signal),
   health: (signal?: AbortSignal) => get<Health>("/health", signal),
-  store: (signal?: AbortSignal) => get<StoreCounts>("/v1/store", signal),
 };

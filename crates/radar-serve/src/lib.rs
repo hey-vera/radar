@@ -333,6 +333,15 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
         // "recorded up to genesis" are different states.
         "watermarkSlot": watermark.map(radar_types::Slot::get),
         "paidSurface": state.x402.is_some(),
+        // The deciding policy, so the interface reports it rather than asserting
+        // it. The health screen printed "policy closed" as literal text, which
+        // is the same shape as the four backend instances this replaced: a
+        // claim that could not stop being made.
+        //
+        // Scope, on the field because the name invites more than it means: this
+        // is `Policy::SHIPPED`, what `radar consider` judges against. The signer
+        // holds its own policy (ADR 0008) and can refuse what this one permits.
+        "policyClosed": radar_risk::Policy::SHIPPED.is_closed(),
         // The agent's own account of itself, so `radar brief` can alarm on it
         // from the probe it already makes rather than by opening a second
         // connection to a component that might be the thing that is down.

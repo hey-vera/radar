@@ -161,10 +161,21 @@ function Measurements({ evidence }: { evidence: TokenEvidence }) {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-[var(--color-line)] text-left text-xs uppercase tracking-wide text-[var(--color-dim)]">
-              <th className="pb-2 font-medium">at slot</th>
-              <th className="pb-2 text-right font-medium">fills</th>
-              <th className="pb-2 text-right font-medium">held to end</th>
-              <th className="pb-2 text-right font-medium">graduated</th>
+              <th scope="col" className="pb-2 font-medium">
+                at slot
+              </th>
+              <th scope="col" className="pb-2 text-right font-medium">
+                last trade
+              </th>
+              <th scope="col" className="pb-2 text-right font-medium">
+                price reads
+              </th>
+              <th scope="col" className="pb-2 text-right font-medium">
+                held to end
+              </th>
+              <th scope="col" className="pb-2 text-right font-medium">
+                graduated
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--color-line)]">
@@ -173,21 +184,32 @@ function Measurements({ evidence }: { evidence: TokenEvidence }) {
                 <td className="py-1.5 tabular-nums">
                   {m.measured_at.toLocaleString()}
                 </td>
-                <td className="py-1.5 text-right tabular-nums">{m.fills}</td>
-                <td
-                  className={`py-1.5 text-right tabular-nums ${
-                    m.held_to_end_bps === null
-                      ? "text-[var(--color-dim)]"
-                      : m.held_to_end_bps > 0
-                        ? "text-[var(--color-good)]"
-                        : "text-[var(--color-refuse)]"
-                  }`}
-                >
-                  {/* Null rather than zero: a price that was never measured is
-                      not a return of nothing. */}
-                  {m.held_to_end_bps === null
-                    ? "not priced"
-                    : `${m.held_to_end_bps > 0 ? "+" : ""}${(m.held_to_end_bps / 100).toFixed(1)}%`}
+                {/* A `max`, so it cannot be inflated by re-reading. This is the
+                    column that answers whether the token still trades. */}
+                <td className="py-1.5 text-right tabular-nums">
+                  {m.last_transfer_slot === null ? (
+                    <span className="text-[var(--color-dim)]">never</span>
+                  ) : (
+                    m.last_transfer_slot.toLocaleString()
+                  )}
+                </td>
+                {/* Not "fills", which is what this column used to be headed.
+                    The number over-counts across overlapping windows and grows
+                    while nothing trades, so a reader must not take it as
+                    evidence that something changed hands. */}
+                <td className="py-1.5 text-right tabular-nums text-[var(--color-dim)]">
+                  {m.price_reads.toLocaleString()}
+                </td>
+                {/* Deliberately not coloured. It was green above zero and red
+                    below, which reads as "this is what you made" -- and it is
+                    neither net of the 850 bps round trip nor measured from
+                    Radar's entry. The sign carries the direction. */}
+                <td className="py-1.5 text-right tabular-nums">
+                  {m.held_to_end_bps === null ? (
+                    <span className="text-[var(--color-dim)]">not priced</span>
+                  ) : (
+                    `${m.held_to_end_bps > 0 ? "+" : ""}${(m.held_to_end_bps / 100).toFixed(1)}%`
+                  )}
                 </td>
                 <td className="py-1.5 text-right tabular-nums text-[var(--color-dim)]">
                   {m.graduated_at === null ? "no" : m.graduated_at.toLocaleString()}
@@ -197,6 +219,30 @@ function Measurements({ evidence }: { evidence: TokenEvidence }) {
           </tbody>
         </table>
       </div>
+
+      <dl className="mt-3 space-y-1.5 text-xs leading-relaxed text-[var(--color-dim)]">
+        <div>
+          <dt className="inline font-medium">Price reads </dt>
+          <dd className="inline">
+            is not a fill count. The six-hour price windows overlap by five
+            hours and the fold adds, so a single trade is counted again on every
+            hourly pass — it grows while nothing trades, and two rows are not
+            comparable. Use <strong>last trade</strong> for whether anything
+            changed hands.
+          </dd>
+        </div>
+        <div>
+          <dt className="inline font-medium">Held to end </dt>
+          <dd className="inline">
+            is <strong>gross</strong> — nothing here is net of the measured 850
+            bps round trip — and it runs from the token&rsquo;s{" "}
+            <strong>first fill</strong>, which is not Radar&rsquo;s entry. Radar
+            decides around forty minutes later, by which point the token has
+            usually already moved. It is what the token did, not what Radar
+            would have made.
+          </dd>
+        </div>
+      </dl>
     </section>
   );
 }

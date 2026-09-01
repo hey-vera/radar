@@ -148,8 +148,28 @@ pub struct TokenEvidence {
 pub struct Measurement {
     /// When it was taken.
     pub measured_at: u64,
-    /// Fills observed in the window.
+    /// Price reads the figures below were computed from.
+    ///
+    /// **Not a fill count, and it over-counts.** The price windows it is folded
+    /// across overlap by five of their six hours and the fold is
+    /// `saturating_add`, so a fill inside the window is counted again on every
+    /// hourly pass: it grows while nothing trades, and two measurements of the
+    /// same token are not comparable
+    /// ([LEARNINGS](https://github.com/hey-vera/radar/blob/main/LEARNINGS.md)
+    /// entry 19, which invalidated the first runs of research 0017 and 0018).
+    ///
+    /// Renamed on the wire from `fills` so a client cannot render it under a
+    /// label the number does not support. Use
+    /// [`last_transfer_slot`](Self::last_transfer_slot) for "did anything
+    /// change hands".
+    #[serde(rename = "price_reads")]
     pub fills: u64,
+    /// The last slot a transfer was observed, or `None` if none ever was.
+    ///
+    /// A `max`, so unlike [`fills`](Self::fills) it cannot be inflated by
+    /// re-reading the same window. This is the field that answers whether the
+    /// token still trades.
+    pub last_transfer_slot: Option<u64>,
     /// Prices, scaled by `PRICE_SCALE`. Null where not measured, never zero.
     pub first_price: Option<u64>,
     /// The last price observed.
@@ -186,6 +206,7 @@ pub fn token_evidence(
         .map(|o| Measurement {
             measured_at: o.measured_at.get(),
             fills: o.fills,
+            last_transfer_slot: o.last_transfer_slot.map(radar_types::Slot::get),
             first_price: o.first_price,
             last_price: o.last_price,
             peak_price: o.peak_price,

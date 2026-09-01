@@ -12,6 +12,7 @@
 #![forbid(unsafe_code)]
 
 pub mod access;
+pub mod admission;
 pub mod api;
 pub mod chat;
 pub mod customer;
@@ -86,6 +87,13 @@ pub struct AppState {
     /// rotation schedules, and one cache holding both would let a fetch failure
     /// for one refuse tokens for the other.
     pub customer_keys: customer::KeyCache,
+    /// Which verified customers this instance lets in.
+    ///
+    /// Separate from `customer`, which decides whether a token is *genuine*.
+    /// This decides whether the identity in a genuine token is one of ours, and
+    /// nothing asked that before: the product was private only because no
+    /// customer authenticator was configured at all.
+    pub admission: admission::Admission,
     /// How much of the day's model budget any one customer may take.
     ///
     /// Separate from the agent's global budget rather than replacing it. The
@@ -235,6 +243,12 @@ async fn guard(
         return next.run(request).await;
     }
 
+    // Set when a token verified but names an identity this instance does not
+    // admit. Carried so the eventual refusal can name the actual problem: a
+    // reader told only "denied" cannot tell a private instance from a broken
+    // login, and the two want opposite responses.
+    let mut not_admitted: Option<String> = None;
+
     // A customer token is tried first, and only where the route is product.
     // `accepts_customer` is false for every operator route, so a valid customer
     // token cannot reach `/v1/store` or `/mcp` however well formed it is.
@@ -247,16 +261,31 @@ async fn guard(
             customer::verify(&token, &keys, config, now_unix())
         });
         if let Ok(customer) = verified {
-            // The verified identity travels in the request, so a handler never
-            // re-parses a token. Two parses of one token are two chances to
-            // disagree about who is calling, and the handler's copy would be the
-            // one nothing checked a signature on.
-            //
-            // Inserted only after a successful verification, so an extension
-            // being present *is* the proof rather than something to re-check.
-            let mut request = request;
-            request.extensions_mut().insert(customer);
-            return next.run(request).await;
+            // Genuine, and now: is this one of ours? `verify` proves Privy
+            // issued the token for this application, which is authentication.
+            // Anyone can sign up to a Privy application, so a verified stranger
+            // is a thing that exists and must not be a customer of this
+            // instance while it is private.
+            if state.admission.admits(&customer.did) {
+                // The verified identity travels in the request, so a handler
+                // never re-parses a token. Two parses of one token are two
+                // chances to disagree about who is calling, and the handler's
+                // copy would be the one nothing checked a signature on.
+                //
+                // Inserted only after a successful verification, so an extension
+                // being present *is* the proof rather than something to
+                // re-check.
+                let mut request = request;
+                request.extensions_mut().insert(customer);
+                return next.run(request).await;
+            }
+            // Not admitted. Fall through to the operator check for the same
+            // reason an unverified token does -- an operator debugging with
+            // their own session must not be locked out by whichever bearer token
+            // their browser happened to send -- but remember who it was, so the
+            // refusal below can say something an operator can act on rather
+            // than "denied".
+            not_admitted = Some(customer.did);
         }
         // A customer token that does not verify falls through to the operator
         // check rather than refusing here. That is deliberate: an operator
@@ -265,10 +294,20 @@ async fn guard(
     }
 
     let access::Mode::Enforce(config) = &state.access else {
+        // No operator check either. A verified customer who is not admitted must
+        // still be refused here, or an instance with Access off would admit
+        // every Privy identity in the world through the front door it just
+        // closed.
+        if let Some(did) = not_admitted {
+            return private(&did);
+        }
         return next.run(request).await;
     };
 
     let Some(token) = access::token_from(request.headers()) else {
+        if let Some(did) = not_admitted {
+            return private(&did);
+        }
         return denied(&access::Denied::Missing);
     };
 
@@ -282,8 +321,34 @@ async fn guard(
 
     match verified {
         Ok(_) => next.run(request).await,
-        Err(why) => denied(&why),
+        Err(why) => match not_admitted {
+            // The admission problem is the more useful diagnosis: the operator
+            // check failing is expected for a customer, and reporting that
+            // instead would send them to Cloudflare.
+            Some(did) => private(&did),
+            None => denied(&why),
+        },
     }
+}
+
+/// Refuses a verified identity this instance does not admit.
+///
+/// Names the identity, which is the whole point: the operator has to be able to
+/// add it, and nobody can look up their own DID from a login screen. It reveals
+/// nothing to the caller that the caller did not already send.
+fn private(did: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "error": "this instance is private",
+            "identity": did,
+            "remedy": format!(
+                "add this identity to {} to grant access",
+                admission::VAR
+            ),
+        })),
+    )
+        .into_response()
 }
 
 /// Seconds since the epoch, for the expiry check.

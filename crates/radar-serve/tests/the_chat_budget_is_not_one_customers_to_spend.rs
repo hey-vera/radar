@@ -102,6 +102,7 @@ fn router(allowance: Allowance, keys: Keys) -> (axum::Router, Arc<AtomicBool>) {
     let dir = std::env::temp_dir().join("radar-share-test");
     let reached = Arc::new(AtomicBool::new(false));
     let router = app(Arc::new(AppState {
+        admission: radar_serve::admission::Admission::Open,
         shares: Shares::new(allowance),
         customer_salt: vec![7u8; 32],
         registry: radar_instruments::Registry::new(),

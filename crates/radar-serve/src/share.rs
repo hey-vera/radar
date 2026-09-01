@@ -43,6 +43,9 @@ use std::sync::Mutex;
 
 use radar_customer::{Subject, SubjectError};
 
+/// The variable that configures the per-customer ceiling.
+pub const VAR: &str = "RADAR_CHAT_PER_CUSTOMER_DAILY";
+
 /// How many questions one customer may ask in a day.
 ///
 /// No default, and rule 8's direction when absent: an instance with no
@@ -80,7 +83,7 @@ impl Allowance {
     /// resolve to "closed" silently — that is indistinguishable from a
     /// deliberate zero, and an operator would be looking at the wrong thing.
     pub fn from_vars(get: &impl Fn(&str) -> Option<String>) -> Result<Self, String> {
-        let Some(raw) = get("RADAR_CHAT_PER_CUSTOMER_DAILY") else {
+        let Some(raw) = get(VAR) else {
             return Ok(Self::CLOSED);
         };
         let trimmed = raw.trim();
@@ -90,7 +93,7 @@ impl Allowance {
         trimmed
             .parse()
             .map(Self)
-            .map_err(|_| format!("RADAR_CHAT_PER_CUSTOMER_DAILY is not a whole number: {trimmed}"))
+            .map_err(|_| format!("{VAR} is not a whole number: {trimmed}"))
     }
 }
 
@@ -147,6 +150,20 @@ impl Shares {
     #[must_use]
     pub const fn allowance(&self) -> Allowance {
         self.allowance
+    }
+
+    /// How an operator should see this at start.
+    ///
+    /// Says which state it is in rather than only reporting a number. A line
+    /// that reads the same whether the lane is open or shut is the failure
+    /// LEARNINGS records repeatedly.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        if self.allowance == Allowance::CLOSED {
+            format!("closed — no customer may spend the model budget (set {VAR})")
+        } else {
+            format!("{} questions per customer per day", self.allowance.get())
+        }
     }
 
     /// Charges one question to a customer, or refuses.

@@ -40,6 +40,7 @@ fn state_with_a_store() -> (Arc<AppState>, tempfile::TempDir) {
     writer.flush().expect("flush");
     (
         Arc::new(AppState {
+            admission: radar_serve::admission::Admission::Open,
             shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
             customer_salt: vec![7u8; 32],
             registry: Registry::new(),
@@ -140,6 +141,7 @@ async fn an_empty_store_does_not_stall_the_stream_open() {
     // instance is a normal state and the page has to render something.
     let dir = tempfile::tempdir().expect("tempdir");
     let state = Arc::new(AppState {
+        admission: radar_serve::admission::Admission::Open,
         shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
         customer_salt: vec![7u8; 32],
         registry: Registry::new(),

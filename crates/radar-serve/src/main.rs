@@ -96,6 +96,42 @@ fn configure_agent() -> (Option<Chat>, String) {
     }
 }
 
+/// The three settings that govern the customer lane.
+///
+/// Extracted from `main` because it grew past what one function should hold, and
+/// because these three belong together: they are the whole of what decides
+/// whether a stranger can reach this instance and what they can spend on it.
+///
+/// Every one of them fails closed and none of them defaults quietly. A malformed
+/// value stops the server rather than resolving to "closed", because the two are
+/// indistinguishable once collapsed and an operator would spend the outage
+/// looking at the vendor.
+///
+/// # Errors
+///
+/// Returns the message to print when any of them cannot be read.
+fn customer_lane() -> Result<
+    (
+        radar_serve::admission::Admission,
+        radar_serve::share::Shares,
+        Vec<u8>,
+    ),
+    String,
+> {
+    let env = |k: &str| std::env::var(k).ok();
+    let admission = radar_serve::admission::Admission::from_vars(&env)?;
+    let allowance = radar_serve::share::Allowance::from_vars(&env)?;
+    // The salt customer identifiers are hashed with before anything long lived
+    // records them. Empty when unset, which `Subject::derive` refuses -- so an
+    // unsalted instance cannot meter a customer and therefore will not spend on
+    // one. Rule 8, and it is why this is not fatal: the operator surface does
+    // not need it.
+    let salt = env("RADAR_CUSTOMER_SALT")
+        .map(String::into_bytes)
+        .unwrap_or_default();
+    Ok((admission, radar_serve::share::Shares::new(allowance), salt))
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let store_dir = std::env::var("RADAR_STORE").unwrap_or_else(|_| "./data/store".to_owned());
@@ -141,35 +177,19 @@ async fn main() -> ExitCode {
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
 
-    // How much of the day's model budget any one customer may take.
-    //
-    // A malformed value stops the server rather than resolving to closed: a typo
-    // and a deliberate zero are indistinguishable once collapsed, and an
-    // operator would go looking at the wrong thing.
-    let shares = match radar_serve::share::Allowance::from_vars(&|k| std::env::var(k).ok()) {
-        Ok(allowance) => allowance,
+    let (admission, shares, customer_salt) = match customer_lane() {
+        Ok(lane) => lane,
         Err(why) => {
             eprintln!("radar-serve: {why}");
             return ExitCode::FAILURE;
         }
     };
-    let share_note = if shares == radar_serve::share::Allowance::CLOSED {
-        "closed - no customer may spend the model budget".to_owned()
-    } else {
-        format!("{} questions per customer per day", shares.get())
-    };
-
-    // The salt customer identifiers are hashed with before anything durable or
-    // long lived records them. Empty when unset, which `Subject::derive` refuses
-    // -- so an unsalted instance cannot meter a customer and therefore will not
-    // spend on one. Rule 8, and it is why this is not fatal: the operator
-    // surface does not need it.
-    let customer_salt = std::env::var("RADAR_CUSTOMER_SALT")
-        .map(String::into_bytes)
-        .unwrap_or_default();
+    let admission_note = admission.describe();
+    let share_note = shares.describe();
 
     let state = Arc::new(AppState {
-        shares: radar_serve::share::Shares::new(shares),
+        admission,
+        shares,
         customer_salt,
         registry: registry(),
         store: Reader::open(&store_dir),
@@ -203,6 +223,7 @@ async fn main() -> ExitCode {
             access::Mode::Off => "OFF — anyone who can reach this can read it".to_owned(),
         }
     );
+    println!("  admission  : {admission_note}");
     println!("  chat share : {share_note}");
     println!(
         "  customers  : {}",

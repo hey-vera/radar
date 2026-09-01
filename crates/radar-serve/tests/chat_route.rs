@@ -21,6 +21,7 @@ fn unconfigured() -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        admission: radar_serve::admission::Admission::Open,
         shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
         customer_salt: vec![7u8; 32],
         registry,

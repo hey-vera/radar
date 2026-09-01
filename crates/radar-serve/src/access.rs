@@ -578,6 +578,7 @@ pub fn audience_of(path: &str) -> Audience {
         || path == "/v1/decisions"
         || path.starts_with("/v1/tokens/")
         || path == "/v1/customer/wallet"
+        || path == "/v1/customer/events"
         || path == "/v1/chat"
         // The interface's own routes, which are not `/` and are not assets.
         //
@@ -1036,6 +1037,9 @@ mod tests {
             ("/v1/funnel", Audience::Customer),
             ("/v1/scoreboard", Audience::Customer),
             ("/v1/decisions", Audience::Customer),
+            // The watermark only. `/v1/events` stays Operator because its
+            // payload is the operator's store counts.
+            ("/v1/customer/events", Audience::Customer),
             (
                 "/v1/tokens/So11111111111111111111111111111111111111112",
                 Audience::Customer,

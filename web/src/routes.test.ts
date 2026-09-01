@@ -169,6 +169,36 @@ describe("isMintLike", () => {
   });
 });
 
+describe("the API routes the interface calls", () => {
+  // Not pages, so not in `ROUTES` — but the same silent failure applies: an API
+  // route the interface calls that the server classifies as Operator answers
+  // today (everything falls back to the operator check) and refuses every
+  // customer the day the customer lane switches on.
+  it.each([
+    ["/v1/funnel"],
+    ["/v1/decisions"],
+    ["/v1/scoreboard"],
+    ["/v1/tokens/"],
+    ["/v1/customer/events"],
+    ["/v1/customer/wallet"],
+    ["/v1/chat"],
+  ])("%s is a customer route on the server", (path) => {
+    expect(customerBlock(), `${path} would refuse every customer`).toContain(
+      `"${path}"`,
+    );
+  });
+
+  it.each([["/v1/store"], ["/v1/events"], ["/v1/link"], ["/mcp"], ["/ops"]])(
+    "%s stays an operator route",
+    (path) => {
+      // `/v1/events` in particular: its payload is the operator's store counts,
+      // and opening it to save writing a customer stream is how an operator
+      // surface ends up in front of a paying stranger.
+      expect(customerBlock()).not.toContain(`"${path}"`);
+    },
+  );
+});
+
 describe("filters in the address bar", () => {
   it("round-trips through the path and back", () => {
     // `parseFilters` and `decisionsPath` are inverses, and a pair that drifts

@@ -129,6 +129,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/wallet", get(customer_wallet))
         .route("/v1/events", get(events))
+        .route("/v1/customer/events", get(customer_events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
         .route("/mcp", post(mcp_endpoint))
@@ -659,23 +660,80 @@ impl Tick {
 async fn events(
     State(state): State<Arc<AppState>>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    changes(state, Tick::read)
+}
+
+/// The watermark, and nothing else.
+///
+/// What a customer's page needs in order to know the store moved. Deliberately
+/// **not** [`Tick`], which carries row counts: those are the operator's view of
+/// the instance and there is no product reason for a customer to have them.
+#[derive(PartialEq, Eq, Debug, serde::Serialize)]
+struct Watermark {
+    as_of: u64,
+}
+
+impl Watermark {
+    fn read(state: &AppState) -> Option<Self> {
+        Reader::watermark(&state.store)
+            .ok()
+            .flatten()
+            .map(|slot| Self { as_of: slot.get() })
+    }
+}
+
+/// A stream of changes, for a customer.
+///
+/// # Why this exists rather than opening `/v1/events`
+///
+/// `/v1/events` is `Audience::Operator` because its payload is the operator's
+/// store counts. Reclassifying it would hand those to every customer to save
+/// writing forty lines, which is the trade that puts an operator surface in
+/// front of a paying stranger.
+///
+/// The interface needs one bit from it — *did the store move* — so that is what
+/// this sends. Without it the funnel would keep rendering its first fetch
+/// forever on the day the customer lane switches on, and a page that cannot see
+/// changes must not look like a page where nothing has changed.
+async fn customer_events(
+    State(state): State<Arc<AppState>>,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    changes(state, Watermark::read)
+}
+
+/// The machinery both change streams share.
+///
+/// Extracted rather than copied, because the two properties worth having here
+/// are easy to lose in a second copy: the seed is `None` so a page that connects
+/// during a quiet minute is not blank, and the keep-alive is a comment rather
+/// than data so silence still means "nothing happened" instead of "this
+/// connection died".
+fn changes<T, F>(
+    state: Arc<AppState>,
+    read: F,
+) -> Sse<impl Stream<Item = Result<Event, Infallible>>>
+where
+    T: PartialEq + serde::Serialize + Send + 'static,
+    F: Fn(&AppState) -> Option<T> + Send + 'static,
+{
     // `None` as the seed rather than the current state, so the first tick is
     // always sent. A page that connected during a quiet minute would otherwise
     // show nothing at all until the store moved.
-    let stream = futures_util::stream::unfold((state, None::<Tick>), |(state, last)| async move {
-        loop {
-            if let Some(tick) = Tick::read(&state)
-                && last.as_ref() != Some(&tick)
-            {
-                let event = Event::default()
-                    .event("store")
-                    .json_data(&tick)
-                    .unwrap_or_else(|_| Event::default().comment("unserialisable"));
-                return Some((Ok(event), (state, Some(tick))));
+    let stream =
+        futures_util::stream::unfold((state, None::<T>, read), |(state, last, read)| async move {
+            loop {
+                if let Some(tick) = read(&state)
+                    && last.as_ref() != Some(&tick)
+                {
+                    let event = Event::default()
+                        .event("store")
+                        .json_data(&tick)
+                        .unwrap_or_else(|_| Event::default().comment("unserialisable"));
+                    return Some((Ok(event), (state, Some(tick), read)));
+                }
+                tokio::time::sleep(POLL).await;
             }
-            tokio::time::sleep(POLL).await;
-        }
-    });
+        });
 
     Sse::new(stream).keep_alive(
         KeepAlive::new()

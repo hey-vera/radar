@@ -110,11 +110,12 @@ export const operator = {
  *
  * # Why `onStale` exists
  *
- * `/v1/events` is an **operator** route. When the customer lane switches on it
- * will refuse a customer session, and an `EventSource` that is refused fails
- * silently — it retries forever and never calls its listener. The page would go
- * on rendering the funnel it fetched once, with nothing to say it had stopped
- * following the store.
+ * `/v1/customer/events` carries the watermark and nothing else — `/v1/events`
+ * is an operator route because its payload is the operator's store counts.
+ *
+ * An `EventSource` that is refused fails **silently**: it retries forever and
+ * never calls its listener. The page would go on rendering the funnel it
+ * fetched once, with nothing to say it had stopped following the store.
  *
  * That is rule 9 in the interface: a page that cannot see changes must not look
  * like a page where nothing has changed. `onStale` fires on the error so the
@@ -124,7 +125,7 @@ export function subscribe(
   onChange: () => void,
   onStale?: (stale: boolean) => void,
 ): () => void {
-  const source = new EventSource("/v1/events");
+  const source = new EventSource("/v1/customer/events");
   source.addEventListener("store", () => {
     onStale?.(false);
     onChange();

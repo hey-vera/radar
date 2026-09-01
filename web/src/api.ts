@@ -297,6 +297,7 @@ export interface DecisionPage {
 /** What to ask the decision record for. */
 export interface DecisionQuery {
   after?: string | undefined;
+  prefix?: string | undefined;
   reason?: string | undefined;
   conclusion?: "proposed" | "passed" | undefined;
   limit?: number | undefined;
@@ -305,6 +306,7 @@ export interface DecisionQuery {
 function decisionSearch(query: DecisionQuery): string {
   const params = new URLSearchParams();
   if (query.after) params.set("after", query.after);
+  if (query.prefix) params.set("prefix", query.prefix);
   if (query.reason) params.set("reason", query.reason);
   if (query.conclusion) params.set("conclusion", query.conclusion);
   if (query.limit !== undefined) params.set("limit", String(query.limit));

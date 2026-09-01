@@ -19,7 +19,7 @@
 //! the top gainers" is a question this data answers wrongly.
 
 import { useCallback, useEffect, useState } from "react";
-import { Link, useSearch } from "wouter";
+import { Link, useLocation, useSearch } from "wouter";
 
 import { api, ApiError, type DecisionPage, type DecisionRecord } from "./api";
 import { Address } from "./Figures";
@@ -49,7 +49,7 @@ export function Feed() {
 
   // Refetch from the top whenever the filter changes. The dependency is the
   // parsed values rather than the object, which is rebuilt on every render.
-  const { reason, conclusion } = filters;
+  const { reason, conclusion, prefix } = filters;
 
   useEffect(() => {
     const controller = new AbortController();
@@ -58,7 +58,11 @@ export function Feed() {
     setError(null);
     api
       .decisions(
-        { reason: reason ?? undefined, conclusion: conclusion ?? undefined },
+        {
+          reason: reason ?? undefined,
+          conclusion: conclusion ?? undefined,
+          prefix: prefix ?? undefined,
+        },
         controller.signal,
       )
       .then((first) => {
@@ -76,7 +80,7 @@ export function Feed() {
         );
       });
     return () => controller.abort();
-  }, [reason, conclusion]);
+  }, [reason, conclusion, prefix]);
 
   const more = useCallback(() => {
     if (!page?.next || loadingMore) return;
@@ -86,6 +90,7 @@ export function Feed() {
         after: page.next,
         reason: reason ?? undefined,
         conclusion: conclusion ?? undefined,
+        prefix: prefix ?? undefined,
       })
       .then((next) => {
         setPage(next);
@@ -97,7 +102,7 @@ export function Feed() {
         setError(e instanceof ApiError ? e.detail : String(e));
       })
       .finally(() => setLoadingMore(false));
-  }, [page, reason, conclusion, loadingMore]);
+  }, [page, reason, conclusion, prefix, loadingMore]);
 
   if (error) {
     return (
@@ -109,6 +114,7 @@ export function Feed() {
 
   return (
     <section className="mt-8">
+      <Search filters={filters} />
       <Heading filters={filters} matched={page?.matched ?? null} />
 
       {page === null && (
@@ -119,7 +125,9 @@ export function Feed() {
         <p className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
           No decision matches that filter.{" "}
           <span className="text-[var(--color-dim)]">
-            That is a fact about the filter, not about the store —{" "}
+            That is a fact about the filter, not about the store. Note the record
+            covers the ~4,400 tokens Radar <strong>decided on</strong>, not every
+            launch it observed —{" "}
             <Link href={decisionsPath(NO_FILTERS)} className="underline">
               clear it
             </Link>{" "}
@@ -150,6 +158,50 @@ export function Feed() {
   );
 }
 
+/// Narrows the record by mint or creator.
+///
+/// Scoped to what Radar **decided on** — about 4,400 tokens — and not to every
+/// launch it recorded. That is a real limit and the placeholder says so: a
+/// search that silently covers a tenth of what a reader expects is worse than
+/// one that says which tenth.
+function Search({ filters }: { filters: Filters }) {
+  const [, navigate] = useLocation();
+  const [typed, setTyped] = useState(filters.prefix ?? "");
+
+  // Follows the address bar, so the back button cannot leave the box
+  // disagreeing with the record under it.
+  useEffect(() => setTyped(filters.prefix ?? ""), [filters.prefix]);
+
+  return (
+    <form
+      className="mb-3 flex gap-2"
+      onSubmit={(event) => {
+        event.preventDefault();
+        navigate(decisionsPath({ ...filters, prefix: typed.trim() || null }));
+      }}
+    >
+      <label htmlFor="prefix" className="sr-only">
+        Mint or creator address
+      </label>
+      <input
+        id="prefix"
+        value={typed}
+        onChange={(e) => setTyped(e.target.value)}
+        placeholder="Start of a mint or creator address"
+        spellCheck={false}
+        autoComplete="off"
+        className="min-w-0 flex-1 rounded-md border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--color-dim)]"
+      />
+      <button
+        type="submit"
+        className="shrink-0 rounded-md border border-[var(--color-edge)] px-3 py-2 text-sm hover:border-[var(--color-dim)]"
+      >
+        Filter
+      </button>
+    </form>
+  );
+}
+
 function Heading({
   filters,
   matched,
@@ -157,7 +209,10 @@ function Heading({
   filters: Filters;
   matched: number | null;
 }) {
-  const filtered = filters.reason !== null || filters.conclusion !== null;
+  const filtered =
+    filters.reason !== null ||
+    filters.conclusion !== null ||
+    filters.prefix !== null;
 
   return (
     <div className="mb-3">
@@ -175,6 +230,11 @@ function Heading({
           {filters.conclusion && (
             <span className="rounded border border-[var(--color-edge)] px-2 py-0.5 font-mono text-xs">
               {filters.conclusion}
+            </span>
+          )}
+          {filters.prefix && (
+            <span className="rounded border border-[var(--color-edge)] px-2 py-0.5 font-mono text-xs">
+              {filters.prefix}…
             </span>
           )}
           {/* The total, not the page. It is what says a reason accounts for four
@@ -272,7 +332,7 @@ function Row({ decision }: { decision: DecisionRecord }) {
             // rather than about a price.
             <Link
               key={reason}
-              href={decisionsPath({ reason, conclusion: null })}
+              href={decisionsPath({ ...NO_FILTERS, reason })}
               className="rounded border border-[var(--color-line)] px-1.5 py-0.5 font-mono text-xs hover:border-[var(--color-edge)]"
             >
               {reason}

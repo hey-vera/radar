@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  NO_FILTERS,
   ROUTES,
   decisionsPath,
   isMintLike,
@@ -204,10 +205,11 @@ describe("filters in the address bar", () => {
     // `parseFilters` and `decisionsPath` are inverses, and a pair that drifts
     // apart produces a link nobody can follow back to what they were reading.
     const cases: Filters[] = [
-      { reason: null, conclusion: null },
-      { reason: "CapacityBelowFloor", conclusion: null },
-      { reason: null, conclusion: "proposed" },
-      { reason: "NoRoute", conclusion: "passed" },
+      { reason: null, conclusion: null, prefix: null },
+      { reason: "CapacityBelowFloor", conclusion: null, prefix: null },
+      { reason: null, conclusion: "proposed", prefix: null },
+      { reason: "NoRoute", conclusion: "passed", prefix: "So111" },
+      { reason: null, conclusion: null, prefix: "EPjFWdd5" },
     ];
     for (const filters of cases) {
       const path = decisionsPath(filters);
@@ -244,12 +246,40 @@ describe("filters in the address bar", () => {
     expect(parseFilters("?sort=gainers&reason=NoRoute")).toEqual({
       reason: "NoRoute",
       conclusion: null,
+      prefix: null,
     });
   });
 
   it("encodes a reason that would otherwise break the query string", () => {
-    const path = decisionsPath({ reason: "a&b=c", conclusion: null });
+    const path = decisionsPath({ ...NO_FILTERS, reason: "a&b=c" });
     expect(path).not.toContain("b=c&");
     expect(parseFilters(path.slice(path.indexOf("?"))).reason).toBe("a&b=c");
+  });
+});
+
+describe("the address prefix filter", () => {
+  it("round-trips and composes with the others", () => {
+    // Filters that silently replace each other are how a reader ends up looking
+    // at a different set than the controls say.
+    const both: Filters = {
+      reason: "NoRoute",
+      conclusion: "passed",
+      prefix: "So111",
+    };
+    const path = decisionsPath(both);
+    expect(parseFilters(path.slice(path.indexOf("?")))).toEqual(both);
+  });
+
+  it("drops an empty prefix rather than filtering on nothing", () => {
+    // Every address starts with the empty string, so filtering on it would
+    // silently do nothing and look like the filter had failed.
+    expect(parseFilters("?prefix=").prefix).toBeNull();
+    expect(parseFilters("?prefix=%20%20").prefix).toBeNull();
+  });
+
+  it("preserves case, because base58 does", () => {
+    // `A` and `a` are different characters in the alphabet. Folding them would
+    // build a link that matches addresses which do not exist.
+    expect(parseFilters("?prefix=EPjFW").prefix).toBe("EPjFW");
   });
 });

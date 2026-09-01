@@ -23,7 +23,7 @@ import { api, ApiError, subscribe, type Funnel } from "./api";
 import { Activity } from "./Activity";
 import { Feed } from "./Feed";
 import { Link } from "wouter";
-import { decisionsPath } from "./routes";
+import { decisionsPath, NO_FILTERS } from "./routes";
 
 /** What the page is doing right now. */
 type Load<T> =
@@ -163,10 +163,7 @@ function FunnelView({ funnel }: { funnel: Funnel }) {
                     valuable interaction in the product, and it is a question
                     about Radar's rules rather than about a price. */}
                 <Link
-                  href={decisionsPath({
-                    reason: reason.reason,
-                    conclusion: null,
-                  })}
+                  href={decisionsPath({ ...NO_FILTERS, reason: reason.reason })}
                   className="flex items-baseline justify-between px-4 py-2 text-sm hover:bg-[var(--color-surface)]"
                 >
                   <span>{reason.reason}</span>

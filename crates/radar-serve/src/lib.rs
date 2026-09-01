@@ -679,6 +679,13 @@ async fn decisions(
         after,
         reason: params.reason,
         conclusion,
+        // Trimmed and dropped when empty. `?prefix=` is a stray parameter, not a
+        // request for decisions whose mint starts with nothing -- which every
+        // decision does, so it would look like the filter had silently failed.
+        prefix: params
+            .prefix
+            .map(|p| p.trim().to_owned())
+            .filter(|p| !p.is_empty()),
         limit: params.limit.unwrap_or(api::DEFAULT_LIMIT),
     };
 
@@ -689,6 +696,7 @@ async fn decisions(
 #[derive(serde::Deserialize)]
 struct DecisionParams {
     after: Option<String>,
+    prefix: Option<String>,
     reason: Option<String>,
     conclusion: Option<String>,
     limit: Option<usize>,

@@ -303,6 +303,15 @@ pub struct Query {
     pub reason: Option<String>,
     /// Only `proposed` or only `passed`.
     pub conclusion: Option<Conclusion>,
+    /// Only decisions whose mint or creator starts with this.
+    ///
+    /// A **prefix**, not a substring, and case-sensitive. Both are the same
+    /// choice: base58 addresses are compared by their leading characters
+    /// everywhere else in this system, a substring match over 4,400 addresses
+    /// returns noise, and case-folding a base58 string is wrong -- `A` and `a`
+    /// are different characters in the alphabet, so folding them would match
+    /// addresses that do not exist.
+    pub prefix: Option<String>,
     /// How many to return.
     pub limit: usize,
 }
@@ -373,6 +382,11 @@ pub fn page(mut decisions: Vec<Decision>, query: &Query, as_of: u64) -> Page {
                 .reason
                 .as_deref()
                 .is_none_or(|reason| carries(d, reason))
+        })
+        .filter(|d| {
+            query.prefix.as_deref().is_none_or(|prefix| {
+                d.mint.to_string().starts_with(prefix) || d.creator.to_string().starts_with(prefix)
+            })
         })
         .collect();
 
@@ -1527,5 +1541,104 @@ mod tests {
         let got = activity(&[], 99, 7);
         assert!(got.intervals.is_empty());
         assert_eq!(got.as_of, 99);
+    }
+
+    #[test]
+    fn a_prefix_matches_the_mint_or_the_creator() {
+        // Both, because a reader pasting an address does not think about which
+        // column it is in -- and "everything this creator launched" is one of
+        // the two questions this record is for.
+        let all = vec![at(1, 10_000), at(2, 10_000)];
+        let mint = all[0].mint.to_string();
+        let creator = all[0].creator.to_string();
+
+        let by_mint = page(
+            all.clone(),
+            &Query {
+                prefix: Some(mint[..8].to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(by_mint.matched, 1);
+
+        // Every fixture shares a creator, so this matches both.
+        let by_creator = page(
+            all,
+            &Query {
+                prefix: Some(creator[..8].to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(by_creator.matched, 2);
+    }
+
+    #[test]
+    fn a_prefix_is_a_prefix_and_not_a_substring() {
+        // A substring match over four thousand base58 addresses returns noise:
+        // any three characters appear somewhere in most of them.
+        let all = vec![at(1, 10_000)];
+        let mint = all[0].mint.to_string();
+        let middle = &mint[4..10];
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(middle.to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(got.matched, 0, "a middle fragment must not match");
+    }
+
+    #[test]
+    fn a_prefix_is_case_sensitive_because_base58_is() {
+        // `A` and `a` are different characters in the alphabet, so folding case
+        // would match addresses that do not exist.
+        let all = vec![at(1, 10_000)];
+        let mint = all[0].mint.to_string();
+        let folded = mint[..8].to_lowercase();
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(folded.clone()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        // Only meaningful when the fixture's prefix actually has an upper-case
+        // character in it; when it does not, folding changes nothing.
+        if folded != mint[..8] {
+            assert_eq!(got.matched, 0);
+        }
+    }
+
+    #[test]
+    fn a_prefix_composes_with_the_other_filters() {
+        // Filters that silently replace each other are how a reader ends up
+        // looking at a different set than the controls say.
+        let mut kernel = at(1, 10_000);
+        kernel.reasons = vec!["NoRoute".to_owned()];
+        let mint = kernel.mint.to_string();
+        let all = vec![kernel, at(2, 10_000)];
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(mint[..8].to_owned()),
+                reason: Some("CapacityBelowFloor".to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(got.matched, 0, "both filters apply, not the last one");
     }
 }

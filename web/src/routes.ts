@@ -126,10 +126,23 @@ export interface Filters {
   reason: string | null;
   /** Only proposals, or only tokens passed over. */
   conclusion: "proposed" | "passed" | null;
+  /**
+   * Only decisions whose mint or creator starts with this.
+   *
+   * A prefix, and the server treats it as one. Base58 addresses are compared by
+   * their leading characters everywhere in this system, and a substring match
+   * over four thousand of them returns noise — any three characters appear
+   * somewhere in most.
+   */
+  prefix: string | null;
 }
 
 /** Nothing filtered. */
-export const NO_FILTERS: Filters = { reason: null, conclusion: null };
+export const NO_FILTERS: Filters = {
+  reason: null,
+  conclusion: null,
+  prefix: null,
+};
 
 /**
  * Reads the filters out of a URL query string.
@@ -154,11 +167,13 @@ export function parseFilters(search: string): Filters {
 
   const reason = params.get("reason")?.trim();
   const conclusion = params.get("conclusion")?.trim();
+  const prefix = params.get("prefix")?.trim();
 
   return {
     reason: reason ? reason : null,
     conclusion:
       conclusion === "proposed" || conclusion === "passed" ? conclusion : null,
+    prefix: prefix ? prefix : null,
   };
 }
 
@@ -172,6 +187,7 @@ export function decisionsPath(filters: Filters): string {
   const params = new URLSearchParams();
   if (filters.reason) params.set("reason", filters.reason);
   if (filters.conclusion) params.set("conclusion", filters.conclusion);
+  if (filters.prefix) params.set("prefix", filters.prefix);
   const search = params.toString();
   return search ? `/?${search}` : "/";
 }

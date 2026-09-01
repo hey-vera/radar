@@ -5,7 +5,11 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "jsx": "react-jsx",
-    "types": ["vite/client"],
+    // `node` is here for the tests only -- `palette.test.ts` reads the real
+    // stylesheet off disk so it cannot drift from a copy. Nothing under `src`
+    // that ships imports from `node:`, and the bundle is checked for size in
+    // CI, so a stray import would show up as bytes rather than as a type error.
+    "types": ["vite/client", "node"],
 
     "strict": true,
     "noUncheckedIndexedAccess": true,

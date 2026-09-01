@@ -577,7 +577,27 @@ pub fn audience_of(path: &str) -> Audience {
         || path == "/v1/scoreboard"
         || path.starts_with("/v1/tokens/")
         || path == "/v1/customer/wallet"
-        || path == "/v1/chat";
+        || path == "/v1/chat"
+        // The interface's own routes, which are not `/` and are not assets.
+        //
+        // The SPA is registered as the router's fallback, so it is *served* on
+        // any path -- but the guard runs first and classifies by path, and an
+        // unclassified path falls to `Operator`. Without these, a customer
+        // opening a deep link, or simply refreshing the page they are on, is
+        // refused for a page the server would have rendered happily.
+        //
+        // Listed rather than matched by prefix, for the same reason `/v1` is:
+        // "anything that is not an API route belongs to the customer" hands
+        // over `/ops` the day somebody adds a page next to it.
+        //
+        // `/instance` is deliberately absent. It is the operator's screen, and
+        // it falls through to the strictest audience -- which is the fallback
+        // doing its job rather than an omission.
+        || path == "/decisions"
+        || path == "/evidence"
+        || path == "/wallet"
+        || path == "/ask"
+        || path.starts_with("/token/");
     if customer {
         return Audience::Customer;
     }
@@ -1019,10 +1039,21 @@ mod tests {
                 Audience::Customer,
             ),
             ("/v1/chat", Audience::Customer),
+            // The interface's own routes. A customer must be able to open one
+            // directly and to refresh on it.
+            ("/decisions", Audience::Customer),
+            ("/evidence", Audience::Customer),
+            ("/wallet", Audience::Customer),
+            ("/ask", Audience::Customer),
+            ("/token/So11111111111111111111111111111111111111112", Audience::Customer),
             // The operator's surface. `/v1/store` and `/v1/events` are here on
             // purpose: store counts and a raw event stream are debugging tools,
             // not product.
             ("/ops", Audience::Operator),
+            // The operator's screen in the interface. It is *not* in the
+            // customer list above, and this row is what says that is deliberate
+            // rather than forgotten.
+            ("/instance", Audience::Operator),
             ("/v1/store", Audience::Operator),
             ("/v1/events", Audience::Operator),
             ("/v1/instruments", Audience::Operator),

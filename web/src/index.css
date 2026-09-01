@@ -3,16 +3,63 @@
 
 /* Dark by default. This is an operations surface read at night beside a
    terminal, and a white page beside a black one is the thing people complain
-   about first. */
+   about first.
+
+   Single-theme on purpose rather than by omission. A light palette is a second
+   set of values to get wrong, and every ratio below would need measuring again.
+   The tokens are named semantically so adding one later is an addition rather
+   than a rewrite.
+
+   Every ratio in the comments below is measured by `palette.test.ts`, which
+   parses this file. They are not estimates -- an earlier version of this work
+   guessed the border contrast at "roughly 2:1" and it was 1.53:1. */
 @theme {
+  /* Grounds. */
   --color-ink: oklch(0.16 0.01 260);
   --color-surface: oklch(0.21 0.012 260);
+
+  /* Hairlines between rows, and card edges. 1.53:1 against ink.
+     Deliberately below the 3:1 that WCAG 1.4.11 asks of non-text content,
+     because that rule is about content "required to identify a control" and a
+     table's zebra rule is not one. Anything a person has to *find* -- an input,
+     a button, a focus ring -- uses `edge` instead. */
   --color-line: oklch(0.32 0.014 260);
-  --color-text: oklch(0.93 0.005 260);
-  --color-dim: oklch(0.68 0.012 260);
-  --color-refuse: oklch(0.72 0.14 55);
-  --color-good: oklch(0.75 0.13 155);
-  --color-warn: oklch(0.78 0.15 85);
+  /* Component boundaries that must be perceivable. 3.10:1 against ink, which is
+     the lowest lightness in this hue that clears 3:1. */
+  --color-edge: oklch(0.49 0.014 260);
+
+  /* Text. */
+  --color-text: oklch(0.93 0.005 260); /* 15.80:1 */
+  --color-dim: oklch(0.68 0.012 260); /*  6.74:1 */
+
+  /* Status. What a *thing* is doing. */
+  --color-refuse: oklch(0.72 0.14 55); /*  7.51:1 */
+  --color-good: oklch(0.75 0.13 155); /*  9.24:1 */
+  --color-warn: oklch(0.78 0.15 85); /*  9.60:1 */
+
+  /* Numbers. What a *figure* means, which is a different job from status and
+     needs its own pair.
+
+     Green and amber rather than green and red, and separated on **lightness**
+     as well as hue. Roughly 8% of men have red-green colour vision deficiency,
+     and the figure this pair encodes is the most important on the screen.
+
+     The separation is the part that is easy to get wrong and was: the previous
+     `good`/`refuse` pair sits at 1.36:1 against *each other*, so in greyscale,
+     or to someone who cannot separate the hues, they are the same colour. This
+     pair is 1.85:1 apart, and both still clear 4.5:1 on ink.
+
+     Colour is never the only channel regardless -- `pct()` always emits the
+     sign, and the tests hold it there. */
+  --color-gain: oklch(0.8 0.13 155); /* 10.94:1 on ink */
+  --color-loss: oklch(0.66 0.15 45); /*  5.92:1 on ink */
+
+  /* Absent. Rule 9 in one token.
+
+     A measurement nobody took is not a gain, not a loss, and not zero. It gets
+     a colour of its own so it cannot be mistaken for either end of the pair
+     above, and it renders as an em dash rather than a number. */
+  --color-absent: oklch(0.6 0.01 260); /*  4.92:1 */
 }
 
 html {
@@ -23,4 +70,31 @@ body {
   background: var(--color-ink);
   color: var(--color-text);
   font-feature-settings: "tnum" 1;
+}
+
+/* Keyboard focus, everywhere, on one rule.
+
+   Previously nothing declared a focus style and the buttons styled only
+   `:hover`, so a keyboard user had whatever the browser defaulted to over a
+   dark ground -- which on some engines is a thin black ring on a near-black
+   page. `:focus-visible` rather than `:focus` so a mouse click does not leave a
+   ring behind. */
+:focus-visible {
+  outline: 2px solid var(--color-warn);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Motion is opt-out, and there is almost none to opt out of. The only animation
+   in the interface marks a row that has just arrived, which carries information
+   rather than delight -- and a reader who has asked for less motion would
+   rather have the information without it. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
 }

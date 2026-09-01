@@ -1,0 +1,359 @@
+{
+  "source": "Solana mainnet via api.mainnet-beta.solana.com getTransaction, jsonParsed",
+  "captured": "2026-09-01",
+  "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "why": "Account lists for the instructions ADR 0009 has to build. Captured from mainnet rather than copied from a reference, for the reason pumpfun.rs gives about discriminators: public references describe a smaller program than the live one. Every transaction here is LEGACY, which is the point -- the curve is reachable in a legacy transaction, it is the aggregator that will not route one (research 0021).",
+  "instructions": [
+    {
+      "name": "buy",
+      "discriminator": "66063d1201daebea",
+      "version": "legacy",
+      "signature": "4NnuQG113HEs1DJrmd22h85w2bBniv6nUKtqjKiNHyJqsU6DENNVeAYneKKbqw4cnaKLhksyy3gMCYxtuK7Bgd9q",
+      "slot": 443495548,
+      "data_len": 25,
+      "args_hex": "68461a7418000000407c43000000000001",
+      "accounts": [
+        {
+          "index": 0,
+          "pubkey": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 1,
+          "pubkey": "7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 2,
+          "pubkey": "6T1BNshzGAKAHvJ3NZ5n62X2eg5rqqsMipUMZJvLpump",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 3,
+          "pubkey": "BfVg4yLn5WcffzTyXvWgqaupqmAeX4en2Pawq32TdZpb",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 4,
+          "pubkey": "9TJmRk1oLNYzSWfLJZmUf7ZuUfHwdATs45xjA91kQioX",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 5,
+          "pubkey": "4To2g3f93LVuZmDMVu6ow1nWKJ58wZxXsEfhyDXrBF3X",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 6,
+          "pubkey": "5Kuix3HiXh7adsdcybmr5N5coLBi2mv7exGMLvoPSKjM",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "index": 7,
+          "pubkey": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 8,
+          "pubkey": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 9,
+          "pubkey": "CnJeYMf13M2AKZSkjMtKFsAB7zRPtYCbUdZvgzdbsDGe",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 10,
+          "pubkey": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 11,
+          "pubkey": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 12,
+          "pubkey": "Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 13,
+          "pubkey": "3315RuJqJ3uza7LYUdkcKQNzV6GfiTNot9jQg2YESQmj",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 14,
+          "pubkey": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 15,
+          "pubkey": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 16,
+          "pubkey": "BmvnaP7PdqZAigF9kPUggzWDCwZtiVvMT2BqQR2ajLm8",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 17,
+          "pubkey": "5eHhjP8JaYkz83CWwvGU2uMUXefd3AazWGx4gpcuEEYD",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    },
+    {
+      "name": "buy_exact_sol_in",
+      "discriminator": "38fc74089edfcd5f",
+      "version": "legacy",
+      "signature": "RDxncQhyxUN1J91MuBAoyc4hgEi2ZXwKXqubaT7yV9FV3He8zKNZHPzzKyNkb9BiDspR6P1kBQ6NTg41ZssGpp7",
+      "slot": 443495548,
+      "data_len": 25,
+      "args_hex": "00c39dd000000000f40100000000000000",
+      "accounts": [
+        {
+          "index": 0,
+          "pubkey": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 1,
+          "pubkey": "G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 2,
+          "pubkey": "BVQg1SM8P8DwUyHrJGfY7oS5y4kRDLL9iGB6At5yAd3m",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 3,
+          "pubkey": "DFjcPEyzh2xB1WvXmoUWW1kGh1gFWAEBstckvveg4jHn",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 4,
+          "pubkey": "9dn9g5BuUCXjkiEo6wLswXj886z9YFidmhuTmWcQiY4t",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 5,
+          "pubkey": "93HoS9wRbrH8bX9uKGk5vHA3aRWywyZy9dt9ZfcUMfWK",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 6,
+          "pubkey": "CDyhUVdRQ99n9a95nELtHD919dKJTNpvtH6CpieSvyrn",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "index": 7,
+          "pubkey": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 8,
+          "pubkey": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 9,
+          "pubkey": "9wGX3Uj5zVGALaWqX8ygJo7gYJFuRTBdee6wTk6Bfi9N",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 10,
+          "pubkey": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 11,
+          "pubkey": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 12,
+          "pubkey": "Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 13,
+          "pubkey": "CakDFwUQoGQeJ8rGWE25kb7r3LB8KdFeqgV5KkeZ71Fy",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 14,
+          "pubkey": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 15,
+          "pubkey": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 16,
+          "pubkey": "6eHxRLJsrxP5GPxQttCbLnQJcAvy6MHNDxQoDKJyZXvJ",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 17,
+          "pubkey": "5cjcW9wExnJJiqgLjq7DEG75Pm6JBgE1hNv4B2vHXUW6",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    },
+    {
+      "name": "sell",
+      "discriminator": "33e685a4017f83ad",
+      "version": "legacy",
+      "signature": "5aSzwUyhmw3J8AzrjvXEyzFi7EwjCuBNELFu7um9UaEjtQ82ZQ6cDS66AV5Zj5hnfX3zgoe6vevBapKSr7GiyTtX",
+      "slot": 443495548,
+      "data_len": 24,
+      "args_hex": "7bd4d7c31e0000000000000000000000",
+      "accounts": [
+        {
+          "index": 0,
+          "pubkey": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 1,
+          "pubkey": "62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 2,
+          "pubkey": "C1cMgAFRn7Z83KggdZCAdiAR9npqFgpf1jGkkcKHpump",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 3,
+          "pubkey": "EPKB3wZbiurVf5CnSCG1F4tvb2v3dMHLPDa2ywpkYUaX",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 4,
+          "pubkey": "5gKaZMGCinFT3nCjXFXzm5sU1zP1BxMH7Cg3Wy8rESL3",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 5,
+          "pubkey": "2is5yD12qRW52X2UkXTTh4gq95KCwst9Sbn8jkoogJdP",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 6,
+          "pubkey": "Gsm1ExN2kswyUsy6TomaoNdR3iiGMjQnHhaVhDcU3fQR",
+          "signer": true,
+          "writable": true
+        },
+        {
+          "index": 7,
+          "pubkey": "11111111111111111111111111111111",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 8,
+          "pubkey": "DMw3jzCxUmAi98biwB2a5FZwEtY3zrmkFHCochMe3C6o",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 9,
+          "pubkey": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 10,
+          "pubkey": "Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 11,
+          "pubkey": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 12,
+          "pubkey": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 13,
+          "pubkey": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+          "signer": false,
+          "writable": false
+        },
+        {
+          "index": 14,
+          "pubkey": "DhZxf45FvWfc4j7366LrG8kBVsEXnZp3u4rTob3NXyaZ",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 15,
+          "pubkey": "9T2JgRptEh2KvcmGAqTksVtmXVCcn97zhWdpWR6Xqbqh",
+          "signer": false,
+          "writable": true
+        },
+        {
+          "index": 16,
+          "pubkey": "GXPFM2caqTtQYC2cJ5yJRi9VDkpsYZXzYdwYpGnLmtDL",
+          "signer": false,
+          "writable": true
+        }
+      ]
+    }
+  ]
+}

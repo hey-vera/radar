@@ -142,11 +142,28 @@ call or a trusted snapshot. The same problem wearing a hat.
 
 ## What has to be true before this ships
 
-1. **The account list comes from mainnet, not from a reference.** Every
-   discriminator in `radar-decode` was captured from a real transaction and none
-   copied from documentation, for the reason that file gives: public references
-   describe a program with three instructions and the live one has twenty-one.
-   The account list is held to the same standard.
+1. ~~**The account list comes from mainnet, not from a reference.**~~ **Done,
+   2026-09-01.** Captured in
+   [`pumpfun_accounts.json`](../../crates/radar-decode/tests/fixtures/pumpfun_accounts.json)
+   and asserted by
+   [`the_account_layouts_are_what_mainnet_shows.rs`](../../crates/radar-decode/tests/the_account_layouts_are_what_mainnet_shows.rs):
+   `buy`, `buy_exact_sol_in` and `sell`, from live transactions.
+
+   Three things it established that would each have been a plausible wrong
+   assumption, and the third is the one that would have cost money:
+
+   - **Every capture is a legacy transaction.** The curve *is* reachable in a
+     legacy transaction; people trade it that way every block. 0021 is about the
+     aggregator refusing to route one, not about the venue refusing to accept
+     one. This decision is therefore buildable rather than merely desirable.
+   - **The token program varies by mint** — SPL Token in one capture, Token-2022
+     in the others. It is an input, never a constant, and hardcoding either
+     produces a builder that fails for half of all mints.
+   - **`buy` and `sell` do not share an account order.** Buy carries the token
+     program at index 8 and the creator vault at 9; sell has them the other way
+     round and one account fewer. A sell built on the buy layout passes the
+     creator vault where the token program belongs — which is precisely the
+     class of error that does not fail cleanly.
 2. **One discriminator table, shared.** The builder imports
    `radar_decode::pumpfun`, and a test asserts a built instruction decodes back
    to the instruction it claims to be. Two tables that can disagree about the

@@ -150,6 +150,24 @@ compiles and the tests pass — in which case the tests are also wrong.
    bytes. Anything that would let it sign something it has not fully read breaks
    the guarantee, however convenient.
 
+   **The customer lane composes end to end as of 2026-09-01**, in
+   [`the_customer_lane_composes.rs`](crates/radar-exec/tests/the_customer_lane_composes.rs),
+   and its shape is different from the local one in the way that matters: **no
+   process in Radar can produce a signature on its own.** Three parties hold one
+   thing each — the executor an application credential that authorises nothing,
+   `radar-signer` a P-256 key that authorises one request it has checked, and
+   Privy the wallet key.
+
+   What that test establishes: an authorised trade reaches Privy signed; a trade
+   for another token stops **inside Radar** and never reaches the network; a
+   `Policy::CLOSED` in the signer's own file refuses the identical request a
+   permissive one allows; the body Privy receives is the body the signer
+   authorised; and a spent signature allowance refuses before anything is
+   signed. The signer in it is the real `verify::check`, not a stub.
+
+   What it does not: nothing has been signed by Privy, sent, or filled, and no
+   customer has ever existed. `Policy::CLOSED` is still shipped.
+
    **The customer path holds the same line, and it took an ADR to keep it.**
    Privy's API requires a `privy-authorization-signature` — an ECDSA P-256
    signature Radar makes with a key whose public half is registered as a signer

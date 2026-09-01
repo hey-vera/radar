@@ -21,6 +21,7 @@
 //! impact, and *before* signing because a trade that does not pay for itself
 //! should never reach the process that holds the key.
 
+pub mod customer_signing;
 pub mod economics;
 pub mod pipeline;
 pub mod route;

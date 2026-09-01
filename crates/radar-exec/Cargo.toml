@@ -10,6 +10,7 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+radar-customer.workspace = true
 radar-risk.workspace = true
 radar-signer.workspace = true
 radar-types.workspace = true
@@ -19,6 +20,10 @@ thiserror.workspace = true
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 [dev-dependencies]
+radar-signer.workspace = true
+radar-types.workspace = true
+ring = { version = "0.17", default-features = false }
+serde_json.workspace = true
 # The composition test only. Nothing in this crate's own source depends on the
 # strategy or the simulator -- the direction of the dependency matters, and a
 # dev-dependency keeps the production graph unchanged while letting the lane be

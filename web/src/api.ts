@@ -87,6 +87,8 @@ async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
  */
 export const api = {
   funnel: (signal?: AbortSignal) => get<Funnel>("/v1/funnel", signal),
+  decisions: (query: DecisionQuery, signal?: AbortSignal) =>
+    get<DecisionPage>(`/v1/decisions${decisionSearch(query)}`, signal),
 };
 
 /**
@@ -215,7 +217,16 @@ export interface Measurement {
 export interface DecisionRecord {
   mint: string;
   creator: string;
+  /**
+   * The watermark the decision was taken as of.
+   *
+   * **Not unique.** It is the watermark of a whole `radar consider` run, so
+   * every decision in that batch carries the same value. Anything keyed on it
+   * alone — a React key, a cursor — collapses a batch into one row.
+   */
   decided_at: number;
+  /** When the token launched, so an age can be shown without a second read. */
+  launch_slot: number;
   conclusion: string;
   reasons: string[];
   coordination: string | null;
@@ -224,6 +235,65 @@ export interface DecisionRecord {
   kernel_reasons: string[];
   notional_micro_usd: number | null;
   exit_capacity_micro_usd: number | null;
+  /**
+   * Which rule decided, and which version of it.
+   *
+   * On the wire all along and never rendered. A decision taken under thresholds
+   * that have since moved must not be silently compared with one taken under
+   * today's — the store records these precisely so that comparison can be
+   * refused, and an interface that hides them makes it again.
+   */
+  strategy: string;
+  strategy_version: string;
+  /** What the round trip was assumed to cost when this was judged. */
+  assumed_round_trip_bps: number;
+  /**
+   * The price the decision was sized against, scaled by `PRICE_SCALE`.
+   *
+   * Null when no exit was probed, which is every refusal that never reached the
+   * paid tier's quote. Null is not zero: a decision with no entry price cannot
+   * be scored at all.
+   */
+  entry_price: number | null;
+}
+
+/** A page of the decision record, newest first. */
+export interface DecisionPage {
+  as_of: number;
+  decisions: DecisionRecord[];
+  /**
+   * The cursor for the following page, or null at the end.
+   *
+   * Distinct from an empty `decisions` list, which also happens when a filter
+   * matches nothing.
+   */
+  next: string | null;
+  /**
+   * How many decisions matched the filter in total, across every page.
+   *
+   * Counted before the cursor is applied, so it describes the filter rather
+   * than the page — it is what lets a reader see that a reason accounts for
+   * four thousand refusals rather than the fifty in front of them.
+   */
+  matched: number;
+}
+
+/** What to ask the decision record for. */
+export interface DecisionQuery {
+  after?: string | undefined;
+  reason?: string | undefined;
+  conclusion?: "proposed" | "passed" | undefined;
+  limit?: number | undefined;
+}
+
+function decisionSearch(query: DecisionQuery): string {
+  const params = new URLSearchParams();
+  if (query.after) params.set("after", query.after);
+  if (query.reason) params.set("reason", query.reason);
+  if (query.conclusion) params.set("conclusion", query.conclusion);
+  if (query.limit !== undefined) params.set("limit", String(query.limit));
+  const search = params.toString();
+  return search ? `?${search}` : "";
 }
 
 /** Everything recorded about one mint. */

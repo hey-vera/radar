@@ -19,7 +19,15 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { ROUTES, isMintLike, navFor, tokenPath } from "./routes";
+import {
+  ROUTES,
+  decisionsPath,
+  isMintLike,
+  navFor,
+  parseFilters,
+  tokenPath,
+  type Filters,
+} from "./routes";
 
 const ACCESS_RS = resolve(
   __dirname,
@@ -158,5 +166,60 @@ describe("isMintLike", () => {
       isMintLike("https://solscan.io/token/So11111111111111111111111111111111111111112"),
     ).toBe(false);
     expect(isMintLike("mint So11111111111111111111111111111111111111112")).toBe(false);
+  });
+});
+
+describe("filters in the address bar", () => {
+  it("round-trips through the path and back", () => {
+    // `parseFilters` and `decisionsPath` are inverses, and a pair that drifts
+    // apart produces a link nobody can follow back to what they were reading.
+    const cases: Filters[] = [
+      { reason: null, conclusion: null },
+      { reason: "CapacityBelowFloor", conclusion: null },
+      { reason: null, conclusion: "proposed" },
+      { reason: "NoRoute", conclusion: "passed" },
+    ];
+    for (const filters of cases) {
+      const path = decisionsPath(filters);
+      const search = path.includes("?") ? path.slice(path.indexOf("?")) : "";
+      expect(parseFilters(search), path).toEqual(filters);
+    }
+  });
+
+  it("drops an unrecognised conclusion instead of coercing it", () => {
+    // The wrong version that looks right. Coerced to "proposed", the page would
+    // show a filtered record while the control said something else -- a screen
+    // lying about what it is showing.
+    expect(parseFilters("?conclusion=authorised").conclusion).toBeNull();
+    expect(parseFilters("?conclusion=PROPOSED").conclusion).toBeNull();
+    expect(parseFilters("?conclusion=").conclusion).toBeNull();
+  });
+
+  it("drops an empty reason rather than filtering on the empty string", () => {
+    // `?reason=` is a stray parameter, not a request for decisions whose reason
+    // is "". Filtering on it would show an empty record and blame the store.
+    expect(parseFilters("?reason=").reason).toBeNull();
+    expect(parseFilters("?reason=%20%20").reason).toBeNull();
+  });
+
+  it("reads a search string with or without its leading question mark", () => {
+    // wouter's `useSearch` has returned both forms across versions, and the
+    // difference is silent: with the `?` kept, the first key is named "?reason"
+    // and every filter stops applying.
+    expect(parseFilters("?reason=NoRoute").reason).toBe("NoRoute");
+    expect(parseFilters("reason=NoRoute").reason).toBe("NoRoute");
+  });
+
+  it("ignores parameters it does not know", () => {
+    expect(parseFilters("?sort=gainers&reason=NoRoute")).toEqual({
+      reason: "NoRoute",
+      conclusion: null,
+    });
+  });
+
+  it("encodes a reason that would otherwise break the query string", () => {
+    const path = decisionsPath({ reason: "a&b=c", conclusion: null });
+    expect(path).not.toContain("b=c&");
+    expect(parseFilters(path.slice(path.indexOf("?"))).reason).toBe("a&b=c");
   });
 });

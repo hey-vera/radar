@@ -119,3 +119,59 @@ export function isMintLike(value: string): boolean {
     BASE58.test(trimmed)
   );
 }
+
+/** What the decision record is being filtered to. */
+export interface Filters {
+  /** Only decisions carrying this reason. */
+  reason: string | null;
+  /** Only proposals, or only tokens passed over. */
+  conclusion: "proposed" | "passed" | null;
+}
+
+/** Nothing filtered. */
+export const NO_FILTERS: Filters = { reason: null, conclusion: null };
+
+/**
+ * Reads the filters out of a URL query string.
+ *
+ * Pure, and separated from the screen for the reason `honesty.ts` gives about
+ * everything else in this interface: it has a wrong version that looks right.
+ * An unrecognised `conclusion` silently treated as `"proposed"` would show a
+ * reader a filtered record while the control said otherwise — a page lying about
+ * what it is showing, which is this repository's whole subject.
+ *
+ * So an unrecognised value is **dropped**, not coerced. The filter it names does
+ * not apply, the reader sees the unfiltered record, and nothing claims a filter
+ * that is not in force.
+ *
+ * An empty `reason` is dropped for the same reason: `?reason=` is not a request
+ * for decisions whose reason is the empty string.
+ */
+export function parseFilters(search: string): Filters {
+  const params = new URLSearchParams(
+    search.startsWith("?") ? search.slice(1) : search,
+  );
+
+  const reason = params.get("reason")?.trim();
+  const conclusion = params.get("conclusion")?.trim();
+
+  return {
+    reason: reason ? reason : null,
+    conclusion:
+      conclusion === "proposed" || conclusion === "passed" ? conclusion : null,
+  };
+}
+
+/**
+ * The address of the decision record under a set of filters.
+ *
+ * The inverse of [`parseFilters`], and `routes.test.ts` holds them to being
+ * exactly that. A pair that drifts apart produces a link nobody can follow back.
+ */
+export function decisionsPath(filters: Filters): string {
+  const params = new URLSearchParams();
+  if (filters.reason) params.set("reason", filters.reason);
+  if (filters.conclusion) params.set("conclusion", filters.conclusion);
+  const search = params.toString();
+  return search ? `/?${search}` : "/";
+}

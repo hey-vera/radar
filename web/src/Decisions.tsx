@@ -10,21 +10,19 @@
 //! So the widest number on the page is what was recorded and the narrowest is
 //! what was authorised, and under the shipped policy the last one is zero.
 //!
-//! # What this screen is not, yet
+//! # The funnel is the header, not the page
 //!
-//! The plan for this interface makes the primary surface a **live record of
-//! individual decisions**, each with its reason list, filterable by reason. That
-//! is the screen no competitor can build, because no competitor records reason
-//! lists.
-//!
-//! It is not here because the endpoint for it is not: `/v1/funnel` returns
-//! aggregates, and a per-decision feed needs a paginated route with a cursor.
-//! What is here is the aggregate the server can already answer, which is the
-//! header of that screen rather than a different one.
+//! The aggregate barely moves: ~960 decisions a day fall into the same handful
+//! of reason buckets, so a reader coming back tomorrow learns nothing from it
+//! they did not know today. What changes is *which* tokens were refused and
+//! *why*, and that is [`Feed`] below it.
 
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError, subscribe, type Funnel } from "./api";
+import { Feed } from "./Feed";
+import { Link } from "wouter";
+import { decisionsPath } from "./routes";
 
 /** What the page is doing right now. */
 type Load<T> =
@@ -92,6 +90,10 @@ export function Decisions() {
       )}
 
       {load.state === "ready" && <FunnelView funnel={load.value} />}
+
+      {/* The record itself. The funnel above is its header: an aggregate that
+          barely moves, over a list whose contents change hourly. */}
+      <Feed />
     </>
   );
 }
@@ -149,14 +151,23 @@ function FunnelView({ funnel }: { funnel: Funnel }) {
           </h2>
           <ul className="divide-y divide-[var(--color-line)] rounded-md border border-[var(--color-line)]">
             {funnel.reasons.map((reason) => (
-              <li
-                key={reason.reason}
-                className="flex items-baseline justify-between px-4 py-2 text-sm"
-              >
-                <span>{reason.reason}</span>
-                <span className="tabular-nums text-[var(--color-dim)]">
-                  {reason.count.toLocaleString()}
-                </span>
+              <li key={reason.reason}>
+                {/* The whole row is the link. "Show me the four thousand
+                    refusals behind this number" is the cheapest and most
+                    valuable interaction in the product, and it is a question
+                    about Radar's rules rather than about a price. */}
+                <Link
+                  href={decisionsPath({
+                    reason: reason.reason,
+                    conclusion: null,
+                  })}
+                  className="flex items-baseline justify-between px-4 py-2 text-sm hover:bg-[var(--color-surface)]"
+                >
+                  <span>{reason.reason}</span>
+                  <span className="tabular-nums text-[var(--color-dim)]">
+                    {reason.count.toLocaleString()}
+                  </span>
+                </Link>
               </li>
             ))}
           </ul>

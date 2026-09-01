@@ -420,8 +420,20 @@ async fn funnel(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     };
-    // The shipped policy, asked rather than assumed.
-    let closed = radar_risk::Policy::CLOSED.is_closed();
+    // The policy this build decides with.
+    //
+    // This read `Policy::CLOSED.is_closed()` under a comment claiming it was
+    // "asked rather than assumed". It asked a constant named `CLOSED` whether
+    // it was closed, so it answered `true` unconditionally — including on the
+    // day somebody opened the real policy in `radar consider`, which held its
+    // own separate copy. The interface's strongest safety claim could not move
+    // with the thing it described, and it failed towards reassurance.
+    //
+    // `Policy::SHIPPED` is the constant the decider uses. One constant cannot
+    // diverge from itself. It still says nothing about the signer's own policy
+    // (ADR 0008), which lives in another process and is documented as out of
+    // scope on the field itself.
+    let closed = radar_risk::Policy::SHIPPED.is_closed();
     Json(api::funnel(&decisions, launches, watermark.get(), closed)).into_response()
 }
 

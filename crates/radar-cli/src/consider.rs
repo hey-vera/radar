@@ -691,7 +691,12 @@ fn verdicts(
 
     // The shipped policy. Building the trading lane deploys no capital; only
     // changing this does, and changing it is a decision with an owner.
-    let policy = Policy::CLOSED;
+    //
+    // `Policy::SHIPPED` rather than `Policy::CLOSED`, and the difference is not
+    // cosmetic: `radar-serve`'s funnel reports the same constant, so opening the
+    // policy here cannot leave the interface telling a customer that nothing can
+    // trade. It used to read `CLOSED` on its own.
+    let policy = Policy::SHIPPED;
     // Rebuilt from what was recorded rather than assumed empty. It *is* empty
     // today, because nothing has ever traded -- but `flat()` would keep saying
     // so on the day something does, and a position limit measured against a

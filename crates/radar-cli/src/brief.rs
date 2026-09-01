@@ -679,13 +679,35 @@ fn probe_serving(url: &str) -> ServingProbe {
 /// brief should never have to remember whether capital is armed, and a line that
 /// appears only on change is a line whose absence means two different things.
 fn trading_lane() -> Check {
+    // Derived, not asserted. This read `Policy::CLOSED` and hardcoded both
+    // `Status::Ok` and the words "no proposal can become an authorization" — so
+    // it answered "nothing can trade" whatever the decider had been changed to.
+    // `brief` is the thing that wakes somebody up, which makes it the worst
+    // place in the system for a line that cannot stop reassuring.
+    //
+    // `Policy::SHIPPED` is the constant `consider` decides with, so this line
+    // moves when that does.
+    let policy = radar_risk::Policy::SHIPPED;
+    if policy.is_closed() {
+        return Check::new(
+            Status::Ok,
+            "trading",
+            format!(
+                "autonomy {:?}, max position {} — no proposal can become an authorization",
+                policy.autonomy, policy.max_position
+            ),
+        );
+    }
+    // Not `Fail`: an armed lane may be exactly what the operator intended, and
+    // an alarm that fires on an intended state is one that gets silenced. It is
+    // still the largest state change this command can report and must never be
+    // printed as routine.
     Check::new(
-        Status::Ok,
+        Status::Warn,
         "trading",
         format!(
-            "autonomy {:?}, max position {} — no proposal can become an authorization",
-            radar_risk::Policy::CLOSED.autonomy,
-            radar_risk::Policy::CLOSED.max_position
+            "CAPITAL IS ARMED — autonomy {:?}, max position {}. The signer holds its              own policy (ADR 0008) and it is not readable from here",
+            policy.autonomy, policy.max_position
         ),
     )
 }

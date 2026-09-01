@@ -53,10 +53,26 @@ pub struct Funnel {
     pub stages: Vec<Stage>,
     /// Why candidates were passed over, most common first.
     pub reasons: Vec<ReasonCount>,
-    /// Whether the shipped policy could authorise anything at all.
+    /// Whether the policy this build **decides** with could authorise anything.
     ///
     /// The single most important fact on the page, and the one a raw refusal
     /// list buries under six other reasons.
+    ///
+    /// # What it does not cover, stated because the field reads stronger than
+    /// # it is
+    ///
+    /// This is `radar_risk::Policy::SHIPPED` — the constant `radar consider`
+    /// judges against. It is **not** a guarantee that nothing can be signed.
+    /// [ADR 0008](https://github.com/hey-vera/radar/blob/main/docs/adr/0008-the-signer-holds-its-own-policy.md)
+    /// put a second policy in `radar-signer`, loaded from `RADAR_SIGNER_POLICY`
+    /// at start, and this process cannot read it. The signer clamps against its
+    /// own copy unconditionally, so it can refuse what this policy permits —
+    /// never the reverse.
+    ///
+    /// So `true` means *the decider authorises nothing*, which is the honest
+    /// claim. Rendering it as "nothing can be authorised, ever, anywhere" is a
+    /// claim about a file in another process, and LEARNINGS 23 records what
+    /// happens when a boundary is described as covering more than it does.
     pub policy_closed: bool,
 }
 

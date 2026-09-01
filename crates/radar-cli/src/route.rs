@@ -46,12 +46,7 @@ use radar_types::Address;
 /// A message for the operator. Every failure here is informative rather than
 /// fatal to anything: nothing has been signed or sent.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let flag = |name: &str| {
-        args.iter()
-            .position(|a| a == name)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
+    let flag = |name: &str| crate::flag(args, name);
 
     let mint: Address = flag("--mint")
         .ok_or("--mint is required")?

@@ -95,7 +95,14 @@ fn read_all(reader: &Reader) -> Result<Vec<Event>, String> {
     Ok(all)
 }
 
-fn flag(args: &[String], name: &str) -> Option<String> {
+/// The value following `name`, if it is there.
+///
+/// Shared rather than reimplemented per command. `radar route` carried its own
+/// copy for one commit and `just mutants` showed neither was tested: turning the
+/// `+ 1` into a `- 1` left every test passing, and the consequence is a flag
+/// silently taking the *previous* argument's value -- `--mint X --wallet Y`
+/// reading the mint as `--mint`.
+pub(crate) fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
         .position(|a| a == name)
         .and_then(|i| args.get(i + 1))
@@ -670,6 +677,42 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_flag_takes_the_value_after_it_and_not_the_one_before() {
+        // `just mutants` turned the `+ 1` into a `- 1` and every test passed,
+        // because nothing exercised this at all. The consequence is not a crash:
+        // it is `--mint X --wallet Y` quietly reading the mint as `--mint`, and
+        // then routing into a token that does not exist.
+        let args: Vec<String> = ["radar", "route", "--mint", "M", "--wallet", "W"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+
+        assert_eq!(flag(&args, "--mint").as_deref(), Some("M"));
+        assert_eq!(flag(&args, "--wallet").as_deref(), Some("W"));
+    }
+
+    #[test]
+    fn a_flag_that_is_not_there_is_absent_rather_than_the_first_argument() {
+        let args: Vec<String> = ["radar", "route", "--mint", "M"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(flag(&args, "--wallet"), None);
+        assert_eq!(flag(&args, "--store"), None);
+    }
+
+    #[test]
+    fn a_trailing_flag_with_no_value_is_absent_rather_than_a_panic() {
+        // The last argument being a flag name is what a mistyped command line
+        // looks like, and an index past the end must read as "not given".
+        let args: Vec<String> = ["radar", "route", "--mint"]
+            .iter()
+            .map(|s| (*s).to_owned())
+            .collect();
+        assert_eq!(flag(&args, "--mint"), None);
+    }
     fn argv(parts: &[&str]) -> Vec<String> {
         parts.iter().map(|p| (*p).to_owned()).collect()
     }

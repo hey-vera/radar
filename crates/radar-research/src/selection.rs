@@ -57,6 +57,7 @@
 use std::collections::BTreeMap;
 
 use radar_store::{Conclusion, Decision, Outcome};
+use radar_types::{Address, Slot};
 use serde::Serialize;
 
 /// The population median held-to-end return, in basis points, as research 0009
@@ -244,6 +245,9 @@ impl Report {
 /// read gross and net.
 #[must_use]
 pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> Report {
+    // Indexed once. Scanning the table per decision is four billion comparisons
+    // against the live store and was measured at sixty seconds.
+    let priced = LastPriced::of(outcomes);
     let mut proposed = Cohort {
         decisions: 0,
         scored: 0,
@@ -262,7 +266,7 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
         // Only an observation taken *after* the decision says anything about
         // what followed it. An earlier one describes a market the decision had
         // not seen.
-        let Some(bps) = scored_return(decision, outcomes) else {
+        let Some(bps) = scored_return(decision, &priced) else {
             continue;
         };
         cohort.scored += 1;
@@ -308,6 +312,8 @@ pub fn evaluate(decisions: &[Decision], outcomes: &[Outcome], cost_bps: u64) -> 
 /// [`0008`]: ../../docs/research/0008-the-launch-block-gives-the-bundle-away.md
 #[must_use]
 pub fn by_screening(decisions: &[Decision], outcomes: &[Outcome]) -> (Cohort, Cohort) {
+    // Indexed once, as `evaluate` does and for the same reason.
+    let priced = LastPriced::of(outcomes);
     let empty = || Cohort {
         decisions: 0,
         scored: 0,
@@ -328,7 +334,7 @@ pub fn by_screening(decisions: &[Decision], outcomes: &[Outcome]) -> (Cohort, Co
             &mut unscreened
         };
         cohort.decisions += 1;
-        if let Some(bps) = scored_return(decision, outcomes) {
+        if let Some(bps) = scored_return(decision, &priced) {
             cohort.scored += 1;
             cohort.returns_bps.push(bps);
         }
@@ -363,13 +369,15 @@ pub fn by_screening(decisions: &[Decision], outcomes: &[Outcome]) -> (Cohort, Co
 /// only for X do", and the second is a much smaller and stranger population.
 #[must_use]
 pub fn by_reason(decisions: &[Decision], outcomes: &[Outcome]) -> BTreeMap<String, Cohort> {
+    // Indexed once, as `evaluate` does and for the same reason.
+    let priced = LastPriced::of(outcomes);
     let mut groups: BTreeMap<String, Cohort> = BTreeMap::new();
 
     for decision in decisions {
         if matches!(decision.conclusion, Conclusion::Proposed) {
             continue;
         }
-        let scored = scored_return(decision, outcomes);
+        let scored = scored_return(decision, &priced);
         for reason in &decision.reasons {
             let cohort = groups.entry(reason.clone()).or_insert_with(|| Cohort {
                 decisions: 0,
@@ -390,21 +398,94 @@ pub fn by_reason(decisions: &[Decision], outcomes: &[Outcome]) -> BTreeMap<Strin
     groups
 }
 
+/// The last priced observation of every mint, by mint.
+///
+/// # Why this exists
+///
+/// [`scored_return`] used to scan the whole outcome table for every decision.
+/// Against the live store — 4,374 decisions and ~900,000 outcomes — that is four
+/// billion comparisons, and it was measured at **sixty seconds** for one call to
+/// [`evaluate`]. `/v1/scoreboard` is a customer-facing route, so that is not a
+/// slow report: it is a minute of CPU per request, on a shared box, reachable by
+/// anyone the customer lane admits.
+///
+/// Built once, it is a single pass and then a lookup per decision.
+///
+/// # Why the *last* observation is enough
+///
+/// [`scored_return`] wants the greatest `measured_at` **among observations after
+/// the decision**. Sorting a mint's priced observations by `measured_at` and
+/// keeping only the greatest is sufficient, and the argument is short: the
+/// greatest overall is the greatest of any subset it belongs to. If it is after
+/// the decision it is the answer; if it is not, then nothing is, because nothing
+/// is later than the maximum.
+///
+/// So the index holds one entry per mint and the look-ahead rule is still
+/// applied per decision, at the point of use. It is **not** applied here, and
+/// that separation matters: an index that pre-filtered by one decision's
+/// watermark would be wrong for every other decision on the same mint.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct LastPriced(BTreeMap<Address, (Slot, u64)>);
+
+impl LastPriced {
+    /// Indexes the outcome table.
+    #[must_use]
+    pub fn of(outcomes: &[Outcome]) -> Self {
+        let mut index: BTreeMap<Address, (Slot, u64)> = BTreeMap::new();
+        for outcome in outcomes {
+            // A measurement with no price says nothing about what a position
+            // was worth. Rule 9: absent is not zero, and an unpriced
+            // observation must not displace a priced earlier one.
+            let Some(price) = outcome.last_price else {
+                continue;
+            };
+            index
+                .entry(outcome.mint)
+                .and_modify(|held| {
+                    if outcome.measured_at > held.0 {
+                        *held = (outcome.measured_at, price);
+                    }
+                })
+                .or_insert((outcome.measured_at, price));
+        }
+        Self(index)
+    }
+
+    /// The last price observed for `mint` **strictly after** `after`.
+    ///
+    /// `None` when the mint was never priced, or when everything priced about it
+    /// predates the moment asked about. The second case is the look-ahead rule
+    /// and it is the reason this takes a slot at all: an observation the decision
+    /// had not seen describes a market it did not act in.
+    #[must_use]
+    pub fn after(&self, mint: &Address, after: Slot) -> Option<u64> {
+        let (measured_at, price) = self.0.get(mint)?;
+        (*measured_at > after).then_some(*price)
+    }
+
+    /// How many mints were priced at all.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether nothing was priced.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
 /// The return a decision earned, if it can be scored at all.
 ///
 /// Factored out of [`evaluate`] so the two cannot drift: a breakdown that scored
 /// decisions differently from the headline would produce groups that do not
 /// reconcile with the cohort they came from, and the discrepancy would look like
 /// a finding.
-fn scored_return(decision: &Decision, outcomes: &[Outcome]) -> Option<i64> {
+fn scored_return(decision: &Decision, priced: &LastPriced) -> Option<i64> {
     // Only an observation taken *after* the decision says anything about what
     // followed it. An earlier one describes a market the decision had not seen.
-    let later = outcomes
-        .iter()
-        .filter(|o| o.mint == decision.mint && o.measured_at > decision.decided_at)
-        .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
-        .max_by_key(|(at, _)| *at)
-        .map(|(_, price)| price)?;
+    let later = priced.after(&decision.mint, decision.decided_at)?;
     decision.return_bps(later)
 }
 
@@ -954,5 +1035,121 @@ mod tests {
         assert_eq!(cohort.percentile(1.0), Some(100));
         assert_eq!(cohort.percentile(0.0), Some(-100));
         assert_eq!(cohort.median(), Some(0));
+    }
+
+    fn priced_at(mint: u8, measured_at: u64, price: Option<u64>) -> Outcome {
+        Outcome {
+            mint: Address::new([mint; 32]),
+            measured_at: Slot(measured_at),
+            launch_slot: Slot(1),
+            first_transfer_slot: None,
+            last_transfer_slot: None,
+            transfers: 0,
+            unique_senders: 0,
+            unique_receivers: 0,
+            graduated_at: None,
+            first_price: None,
+            last_price: price,
+            peak_price: None,
+            trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
+            vwap: None,
+            fills: 0,
+        }
+    }
+
+    #[test]
+    fn the_index_keeps_the_latest_priced_observation_not_the_last_one_seen() {
+        // The store returns rows in file order, not time order. An index that
+        // keeps whichever came last in iteration order scores a decision against
+        // an older price, and nothing about the result looks wrong.
+        let table = vec![
+            priced_at(1, 30_000, Some(300)),
+            priced_at(1, 10_000, Some(100)),
+            priced_at(1, 20_000, Some(200)),
+        ];
+        let index = LastPriced::of(&table);
+        assert_eq!(index.after(&Address::new([1u8; 32]), Slot(0)), Some(300));
+    }
+
+    #[test]
+    fn an_unpriced_observation_never_displaces_a_priced_one() {
+        // Rule 9. A later measurement with no price says nothing about what a
+        // position was worth, and letting it win would turn a scoreable decision
+        // into an unscoreable one -- silently, and only for the tokens that
+        // stopped trading, which is a selected sample.
+        let table = vec![priced_at(1, 10_000, Some(100)), priced_at(1, 30_000, None)];
+        let index = LastPriced::of(&table);
+        assert_eq!(index.after(&Address::new([1u8; 32]), Slot(0)), Some(100));
+    }
+
+    #[test]
+    fn an_observation_before_the_moment_asked_about_is_refused() {
+        // The look-ahead rule, which is the whole reason `after` takes a slot.
+        // An observation the decision had not seen describes a market it did not
+        // act in.
+        let index = LastPriced::of(&[priced_at(1, 10_000, Some(100))]);
+        let mint = Address::new([1u8; 32]);
+
+        assert_eq!(index.after(&mint, Slot(9_999)), Some(100));
+        // Strictly after: the same slot is not after it.
+        assert_eq!(index.after(&mint, Slot(10_000)), None);
+        assert_eq!(index.after(&mint, Slot(10_001)), None);
+    }
+
+    #[test]
+    fn a_mint_nobody_priced_has_no_answer_rather_than_a_zero() {
+        let index = LastPriced::of(&[priced_at(1, 10_000, None)]);
+        assert_eq!(index.after(&Address::new([1u8; 32]), Slot(0)), None);
+        assert_eq!(index.after(&Address::new([2u8; 32]), Slot(0)), None);
+        assert!(index.is_empty(), "an unpriced mint is not in the index");
+    }
+
+    #[test]
+    fn mints_do_not_borrow_each_others_prices() {
+        // The index is keyed by mint, and the obvious way to break it is to key
+        // it by anything else.
+        let table = vec![
+            priced_at(1, 10_000, Some(100)),
+            priced_at(2, 30_000, Some(999)),
+        ];
+        let index = LastPriced::of(&table);
+        assert_eq!(index.after(&Address::new([1u8; 32]), Slot(0)), Some(100));
+        assert_eq!(index.after(&Address::new([2u8; 32]), Slot(0)), Some(999));
+        assert_eq!(index.len(), 2);
+    }
+
+    #[test]
+    fn the_index_agrees_with_the_scan_it_replaced() {
+        // The property that matters most: this was a rewrite of a correct
+        // function for speed, so it has to produce the same answers. The scan is
+        // reproduced here rather than referenced, so that deleting the original
+        // cannot make this test vacuous.
+        let table: Vec<Outcome> = (0..40u64)
+            .map(|i| {
+                let mint = u8::try_from(i % 5).expect("small");
+                let price = (i % 7 != 0).then_some(100 + i * 3);
+                priced_at(mint, 10_000 + i * 137, price)
+            })
+            .collect();
+        let index = LastPriced::of(&table);
+
+        for mint_byte in 0..6u8 {
+            let mint = Address::new([mint_byte; 32]);
+            for at in [0u64, 10_000, 12_000, 14_000, 16_000, 99_999] {
+                let scanned = table
+                    .iter()
+                    .filter(|o| o.mint == mint && o.measured_at > Slot(at))
+                    .filter_map(|o| o.last_price.map(|p| (o.measured_at, p)))
+                    .max_by_key(|(m, _)| *m)
+                    .map(|(_, p)| p);
+                assert_eq!(
+                    index.after(&mint, Slot(at)),
+                    scanned,
+                    "mint {mint_byte} at {at}"
+                );
+            }
+        }
     }
 }

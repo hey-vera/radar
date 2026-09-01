@@ -628,16 +628,16 @@ pub fn returns(
     as_of: u64,
     round_trip_bps: u64,
 ) -> Returns {
-    // The last price observed for each mint. A decision is scored against what
-    // the outcome pass last saw, which is the same instrument the scoreboard
-    // uses -- and the same one 0016 warns is not the instrument the entry came
-    // from.
-    let mut last: BTreeMap<String, u64> = BTreeMap::new();
-    for outcome in outcomes {
-        if let Some(price) = outcome.last_price {
-            last.insert(outcome.mint.to_string(), price);
-        }
-    }
+    // `radar_research`'s index, not a second one built here.
+    //
+    // The first version of this function built its own map keyed on the mint and
+    // kept whichever priced outcome came **last in iteration order** -- not the
+    // one with the greatest `measured_at` -- and it never applied the rule that
+    // only an observation taken *after* the decision says anything about what
+    // followed it. That is look-ahead: a decision scored against a market it had
+    // not seen. The scoreboard next door had always applied it, which is exactly
+    // why there should have been one implementation rather than two.
+    let priced = radar_research::selection::LastPriced::of(outcomes);
 
     let mut buckets: Vec<Bucket> = RETURN_BUCKETS
         .iter()
@@ -653,9 +653,9 @@ pub fn returns(
     let mut unscored = 0usize;
 
     for decision in decisions {
-        let bps = last
-            .get(&decision.mint.to_string())
-            .and_then(|price| decision.return_bps(*price));
+        let bps = priced
+            .after(&decision.mint, decision.decided_at)
+            .and_then(|price| decision.return_bps(price));
         let Some(bps) = bps else {
             unscored += 1;
             continue;
@@ -1355,10 +1355,17 @@ mod tests {
         assert_eq!(got.round_trip_bps, 850);
     }
 
+    /// An outcome measured *after* the decisions these tests use.
+    ///
+    /// The original fixture measured at slot 10,000, which is the same slot
+    /// `decision` is taken at -- so every one of these scored only because the
+    /// look-ahead rule was missing. It is `20_000` now, and
+    /// `an_observation_the_decision_could_not_have_seen_does_not_score_it`
+    /// covers the other side.
     fn outcome(mint: u8, last_price: Option<u64>) -> radar_store::Outcome {
         radar_store::Outcome {
             mint: Address::new([mint; 32]),
-            measured_at: Slot(10_000),
+            measured_at: Slot(20_000),
             launch_slot: Slot(4_000),
             first_transfer_slot: None,
             last_transfer_slot: None,
@@ -1416,6 +1423,55 @@ mod tests {
         assert_eq!(got.unscored, 1);
         assert_eq!(got.scored, 0);
         assert_eq!(got.exactly_zero, 0);
+    }
+
+    #[test]
+    fn an_observation_the_decision_could_not_have_seen_does_not_score_it() {
+        // Rule 3 in this aggregate. An outcome measured *before* the decision
+        // describes a market the decision had not acted in, and scoring against
+        // it is look-ahead -- which is the defect the first version of this
+        // function shipped with, because it built its own index and forgot the
+        // rule the scoreboard next door had always applied.
+        let all = vec![priced(1, 100)];
+
+        let before = radar_store::Outcome {
+            measured_at: Slot(9_000),
+            ..outcome(1, Some(500))
+        };
+        let got = returns(&all, &[before], 1, 850);
+        assert_eq!(got.unscored, 1, "an earlier observation cannot score it");
+        assert_eq!(got.scored, 0);
+
+        // The same price, observed after, does score it.
+        let after = radar_store::Outcome {
+            measured_at: Slot(11_000),
+            ..outcome(1, Some(500))
+        };
+        let got = returns(&all, &[after], 1, 850);
+        assert_eq!(got.scored, 1);
+    }
+
+    #[test]
+    fn the_latest_priced_observation_wins_regardless_of_its_position_in_the_table() {
+        // The other half of the same bug. The first version kept whichever
+        // priced outcome came *last in iteration order*, which is not the one
+        // with the greatest `measured_at` -- the store returns rows in file
+        // order, not time order.
+        let all = vec![priced(1, 100)];
+        let table = vec![
+            radar_store::Outcome {
+                measured_at: Slot(30_000),
+                ..outcome(1, Some(300))
+            },
+            radar_store::Outcome {
+                measured_at: Slot(11_000),
+                ..outcome(1, Some(100))
+            },
+        ];
+        // 300 against an entry of 100 is +20,000 bps; 100 would be exactly zero.
+        let got = returns(&all, &table, 1, 850);
+        assert_eq!(got.exactly_zero, 0, "the later observation is the one used");
+        assert_eq!(got.scored, 1);
     }
 
     #[test]

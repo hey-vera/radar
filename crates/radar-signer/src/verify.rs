@@ -870,6 +870,33 @@ mod tests {
     }
 
     #[test]
+    fn an_authorisation_exactly_at_the_policy_ceiling_is_allowed() {
+        // The boundary, swept. `just mutants` turned `>` into `>=` here and
+        // every test still passed, meaning nothing exercised an authorisation
+        // equal to the policy's ceiling.
+        //
+        // Exclusive would refuse an authorisation precisely at the operator's
+        // limit, which reads as an unexplained failure at exactly the round
+        // number an operator is most likely to configure.
+        let at_the_limit = Policy {
+            max_position: MicroUsd(50_000_000),
+            ..policy()
+        };
+        let mut auth = authorization();
+        auth.max_notional = MicroUsd(50_000_000);
+        assert!(
+            check_under(&honest(), &auth, &at_the_limit, Slot(1_000)).is_ok(),
+            "exactly the policy ceiling is inside the policy"
+        );
+
+        auth.max_notional = MicroUsd(50_000_001);
+        assert!(
+            check_under(&honest(), &auth, &at_the_limit, Slot(1_000)).is_err(),
+            "one micro-dollar past it is not"
+        );
+    }
+
+    #[test]
     fn a_closed_policy_signs_nothing_whatever_the_caller_claims() {
         // `Policy::CLOSED` enforced *at the key*, rather than only in the
         // process that decides.

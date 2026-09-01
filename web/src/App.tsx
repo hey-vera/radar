@@ -1,239 +1,145 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The funnel: what Radar decided, and where it stopped.
+//! The shell: which page is showing, and how you get to another one.
 //!
-//! The honest headline of this product is a **refusal count**, not a P&L curve.
-//! Research 0009 measured the population Radar selects from at a median of
-//! −13.4% before costs, with fewer than one token in ten finishing above an 850
-//! bps round trip. An interface implying easy profit would be lying; one that
-//! makes *why we refused* legible is the actual product.
+//! # Why there is a router now
 //!
-//! So the widest number on the page is what was recorded and the narrowest is
-//! what was authorised, and under the shipped policy the last one is zero.
+//! There was a `useState` here, and a comment saying a router goes in "when the
+//! first screen needs a URL that means something, not before". Three do.
+//!
+//! A token page is the obvious one — a decision about a mint is the thing anyone
+//! would send to somebody else, and it was unlinkable. The other two are less
+//! obvious and matter more: with one state variable, a refresh silently returned
+//! the reader to the funnel, and the back button left the application entirely.
+//! Both read as the page losing your place.
+//!
+//! `wouter` rather than TanStack Router: 2 kB against 45. Its three transitive
+//! dependencies are `mitt`, `regexparam` and `use-sync-external-store`, all
+//! tiny. The plan for this work said "zero dependencies", which was wrong —
+//! checked, and corrected here rather than left to be found later.
+//!
+//! # The seam this leaves
+//!
+//! `AUDIENCE` below is a constant, and that is the honest shape of what the
+//! interface currently knows: nothing authenticates a customer, Cloudflare
+//! Access gates the whole site, so every reader really is an operator. A lookup
+//! would be a guess wearing the shape of a fact. It is the single place that
+//! changes when the customer lane switches on.
 
-import { useCallback, useEffect, useState } from "react";
+import { Link, Route, Switch, useRoute } from "wouter";
 
 import { Agent } from "./Agent";
+import { Decisions } from "./Decisions";
 import { Health } from "./Health";
 import { Scoreboard } from "./Scoreboard";
-import { TokenLookup } from "./Token";
-import { api, ApiError, subscribe, type Funnel } from "./api";
+import { Token, TokenLookup } from "./Token";
+import { navFor, type Audience } from "./routes";
 
-/** What the page is doing right now. */
-type Load<T> =
-  | { state: "loading" }
-  | { state: "ready"; value: T }
-  | { state: "failed"; status: number; detail: string };
-
-function useFunnel(): [Load<Funnel>, boolean] {
-  const [load, setLoad] = useState<Load<Funnel>>({ state: "loading" });
-  // Whether the change stream is following the store. `/v1/events` is an
-  // operator route, so a customer session will be refused there -- and a refused
-  // `EventSource` retries silently forever. Without this the page would keep
-  // rendering its first fetch and look like a store where nothing had happened.
-  const [stale, setStale] = useState(false);
-
-  const refresh = useCallback(() => {
-    const controller = new AbortController();
-    api
-      .funnel(controller.signal)
-      .then((value) => setLoad({ state: "ready", value }))
-      .catch((error: unknown) => {
-        if (controller.signal.aborted) return;
-        const { status, detail } =
-          error instanceof ApiError
-            ? error
-            : { status: 0, detail: String(error) };
-        setLoad({ state: "failed", status, detail });
-      });
-    return () => controller.abort();
-  }, []);
-
-  useEffect(() => {
-    const cancel = refresh();
-    // Re-fetch when the store moves rather than on a timer. The stream says
-    // *that* something changed; what changed is this fetch.
-    const stop = subscribe(refresh, setStale);
-    return () => {
-      cancel?.();
-      stop();
-    };
-  }, [refresh]);
-
-  return [load, stale];
-}
-
-/// The five screens, in the order the product argues for itself: what was
-/// refused, then what one token's evidence looks like, then what the selection
-/// actually returned, then whether the instance is working, then the assistant.
-const SCREENS = [
-  "Funnel",
-  "Token",
-  "Scoreboard",
-  "Health",
-  "Assistant",
-] as const;
-
-type Screen = (typeof SCREENS)[number];
+/**
+ * Who the interface believes it is talking to.
+ *
+ * A constant, deliberately. Cloudflare Access gates the whole site to one
+ * operator and no customer authenticator is configured, so `"operator"` is not
+ * an assumption — it is the only thing a reader can currently be.
+ *
+ * When `RADAR_PRIVY_APP_ID` is set this becomes an answer derived from the
+ * verified session, and `Instance` stops appearing for customers.
+ */
+const AUDIENCE: Audience = "operator";
 
 export function App() {
-  const [load, stale] = useFunnel();
-  // Deliberately not a router. The plan argued for TanStack Router on the
-  // grounds that a drill-down needs shareable, typed search params -- and it
-  // will, once a screen takes a filter. Today none does, so a router would be
-  // 45KB of dependency buying a `useState`. It goes in when the first screen
-  // needs a URL that means something, not before.
-  const [screen, setScreen] = useState<Screen>("Funnel");
-
   return (
-    <main className="mx-auto max-w-3xl px-6 py-12">
+    <div className="mx-auto max-w-6xl px-6 py-10">
       <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Radar</h1>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          <Link href="/" className="hover:text-[var(--color-dim)]">
+            Radar
+          </Link>
+        </h1>
         <p className="mt-1 text-sm text-[var(--color-dim)]">
           Solana research intelligence. A record of what was refused, and why.
         </p>
       </header>
 
-      <nav className="mb-8 flex flex-wrap gap-1 border-b border-[var(--color-line)]">
-        {SCREENS.map((name) => (
-          <button
-            key={name}
-            type="button"
-            onClick={() => setScreen(name)}
-            aria-current={screen === name ? "page" : undefined}
-            className={`-mb-px border-b-2 px-3 py-2 text-sm ${
-              screen === name
-                ? "border-[var(--color-good)] text-[var(--color-text)]"
-                : "border-transparent text-[var(--color-dim)] hover:text-[var(--color-text)]"
-            }`}
-          >
-            {name}
-          </button>
-        ))}
-      </nav>
+      <Nav />
 
-      {screen === "Token" && <TokenLookup />}
-      {screen === "Scoreboard" && <Scoreboard />}
-      {screen === "Health" && <Health />}
-      {screen === "Assistant" && <Agent alwaysShow />}
-
-      {screen === "Funnel" && (
-        <>
-
-      {stale && (
-        <Placeholder tone="warn">
-          Not following the store. The figures below are from the last successful
-          read and may be older than they look — this is not a report that
-          nothing has changed.
-        </Placeholder>
-      )}
-
-      {load.state === "loading" && <Placeholder>Reading the store…</Placeholder>}
-
-      {load.state === "failed" && (
-        <Placeholder tone="warn">
-          {load.status === 503
-            ? "The store has recorded nothing yet. That is a fresh instance, not a fault."
-            : `Could not read the funnel — ${load.detail}`}
-        </Placeholder>
-      )}
-
-      {load.state === "ready" && <FunnelView funnel={load.value} />}
-        </>
-      )}
-    </main>
+      <main>
+        <Switch>
+          <Route path="/" component={Decisions} />
+          <Route path="/evidence" component={Scoreboard} />
+          <Route path="/ask">
+            <Agent alwaysShow />
+          </Route>
+          <Route path="/instance" component={Health} />
+          <Route path="/token/:mint" component={TokenPage} />
+          <Route>
+            <NotFound />
+          </Route>
+        </Switch>
+      </main>
+    </div>
   );
 }
 
-function FunnelView({ funnel }: { funnel: Funnel }) {
-  const widest = Math.max(...funnel.stages.map((s) => s.count), 1);
-
+function Nav() {
+  const pages = navFor(AUDIENCE);
   return (
-    <>
-      {funnel.policy_closed && (
-        <p className="mb-8 rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
-          <strong className="text-[var(--color-refuse)]">Policy closed.</strong>{" "}
-          The policy Radar decides with authorises nothing, whatever a token
-          looks like — so every refusal below the last stage is that one fact,
-          not a finding about a token.{" "}
-          <span className="text-[var(--color-dim)]">
-            This describes the deciding policy. It is not a claim about the
-            signer, which holds its own policy in another process and can refuse
-            what this one permits.
-          </span>
-        </p>
-      )}
-
-      <ol className="space-y-4">
-        {funnel.stages.map((stage) => (
-          <li key={stage.name}>
-            <div className="flex items-baseline justify-between gap-4">
-              <span className="text-sm font-medium">{stage.name}</span>
-              <span className="text-lg tabular-nums">
-                {stage.count.toLocaleString()}
-              </span>
-            </div>
-            <div
-              className="mt-1 h-1.5 rounded-full bg-[var(--color-line)]"
-              role="presentation"
-            >
-              <div
-                className="h-full rounded-full bg-[var(--color-good)]"
-                style={{
-                  width: `${Math.max((stage.count / widest) * 100, stage.count > 0 ? 1 : 0)}%`,
-                }}
-              />
-            </div>
-            <p className="mt-1 text-xs leading-relaxed text-[var(--color-dim)]">
-              {stage.detail}
-            </p>
-          </li>
-        ))}
-      </ol>
-
-      {funnel.reasons.length > 0 && (
-        <section className="mt-10">
-          <h2 className="mb-3 text-sm font-medium uppercase tracking-wide text-[var(--color-dim)]">
-            Why candidates were passed over
-          </h2>
-          <ul className="divide-y divide-[var(--color-line)] rounded-md border border-[var(--color-line)]">
-            {funnel.reasons.map((reason) => (
-              <li
-                key={reason.reason}
-                className="flex items-baseline justify-between px-4 py-2 text-sm"
-              >
-                <span>{reason.reason}</span>
-                <span className="tabular-nums text-[var(--color-dim)]">
-                  {reason.count.toLocaleString()}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
-
-      <p className="mt-10 text-xs text-[var(--color-dim)]">
-        As of slot {funnel.as_of.toLocaleString()}.
-      </p>
-    </>
+    <nav className="mb-8 flex flex-wrap gap-1 border-b border-[var(--color-line)]">
+      {pages.map((page) => (
+        <NavLink key={page.path} href={page.path} label={page.label} />
+      ))}
+    </nav>
   );
 }
 
-function Placeholder({
-  children,
-  tone = "dim",
-}: {
-  children: React.ReactNode;
-  tone?: "dim" | "warn";
-}) {
+function NavLink({ href, label }: { href: string; label: string }) {
+  const [active] = useRoute(href);
   return (
-    <p
-      className={
-        tone === "warn"
-          ? "rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm text-[var(--color-warn)]"
-          : "text-sm text-[var(--color-dim)]"
-      }
+    <Link
+      href={href}
+      // A real anchor, not a button. It was a `<button>` carrying
+      // `aria-current`, which is correct markup for something that is not a link
+      // and wrong for something that is: a reader could not open it in a new
+      // tab, copy its address, or see where it led before clicking.
+      aria-current={active ? "page" : undefined}
+      className={`-mb-px border-b-2 px-3 py-2 text-sm ${
+        active
+          ? "border-[var(--color-good)] text-[var(--color-text)]"
+          : "border-transparent text-[var(--color-dim)] hover:text-[var(--color-text)]"
+      }`}
     >
-      {children}
-    </p>
+      {label}
+    </Link>
+  );
+}
+
+/// One token's evidence, plus the box that got you here.
+///
+/// The lookup stays on the page rather than being replaced by its result: the
+/// common action after reading one token is looking up another, and a form that
+/// vanishes on submit turns that into a navigation.
+function TokenPage({ params }: { params: { mint: string } }) {
+  const mint = decodeURIComponent(params.mint);
+  return (
+    <div className="space-y-6">
+      <TokenLookup initial={mint} />
+      <Token mint={mint} />
+    </div>
+  );
+}
+
+function NotFound() {
+  return (
+    <div className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
+      <p>
+        <strong className="text-[var(--color-warn)]">No such page.</strong> That
+        is a fact about this address, not about the store.
+      </p>
+      <p className="mt-2 text-[var(--color-dim)]">
+        <Link href="/" className="underline">
+          Back to the decision record
+        </Link>
+        .
+      </p>
+    </div>
   );
 }

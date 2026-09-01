@@ -12,9 +12,11 @@
 //! interface previously threw away.
 
 import { useCallback, useEffect, useState } from "react";
+import { useLocation } from "wouter";
 import { ApiError, research, type DecisionRecord, type TokenEvidence } from "./api";
-import { POLICY_ARTIFACTS } from "./honesty";
+import { Address, ReasonList } from "./Figures";
 import { PricePath } from "./PricePath";
+import { isMintLike, tokenPath } from "./routes";
 
 export function Token({ mint }: { mint: string }) {
   const [evidence, setEvidence] = useState<TokenEvidence | null>(null);
@@ -43,9 +45,10 @@ export function Token({ mint }: { mint: string }) {
 
   return (
     <div className="space-y-6">
-      <p className="break-all font-mono text-xs text-[var(--color-dim)]">
-        {evidence.mint}
-      </p>
+      {/* Middle-truncated with the whole value one click away. Rendered whole
+          with `break-all`, a 44-character base58 address wraps to two lines and
+          turns the header into a paragraph. */}
+      <Address value={evidence.mint} />
 
       {nothing && (
         <p className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] px-4 py-3 text-sm">
@@ -70,8 +73,6 @@ export function Token({ mint }: { mint: string }) {
 
 function DecisionCard({ decision }: { decision: DecisionRecord }) {
   const kernelReasons = decision.kernel_reasons ?? [];
-  const artifacts = kernelReasons.filter((r) => POLICY_ARTIFACTS.has(r));
-  const findings = kernelReasons.filter((r) => !POLICY_ARTIFACTS.has(r));
 
   return (
     <div className="rounded-md border border-[var(--color-line)] bg-[var(--color-surface)] p-4">
@@ -88,31 +89,13 @@ function DecisionCard({ decision }: { decision: DecisionRecord }) {
         </p>
       )}
 
-      {artifacts.length > 0 && (
-        <p className="mt-3 text-sm">
-          <strong className="text-[var(--color-refuse)]">Policy closed.</strong>{" "}
-          <span className="text-[var(--color-dim)]">
-            {artifacts.length} of the kernel's refusals are that one fact — every
-            limit is zero, so every comparison against zero fails. They are not{" "}
-            {artifacts.length} findings about this token.
-          </span>
-        </p>
-      )}
-
-      {findings.length > 0 && (
-        <div className="mt-3">
-          <p className="text-xs uppercase tracking-wide text-[var(--color-dim)]">
-            Findings about this token
-          </p>
-          <ul className="mt-1 space-y-0.5 text-sm">
-            {findings.map((reason) => (
-              <li key={reason} className="text-[var(--color-warn)]">
-                {reason}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* Three ways, not two. The kernel distinguishes a fact about the token
+          from a fact about the evidence, and the interface used to render both
+          as one undifferentiated list of findings. "Radar will never touch
+          this" and "Radar could not tell yet" are different answers. */}
+      <div className="mt-3">
+        <ReasonList reasons={kernelReasons} />
+      </div>
 
       <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
         <Evidence
@@ -247,40 +230,71 @@ function Measurements({ evidence }: { evidence: TokenEvidence }) {
   );
 }
 
-/// A box for pasting a mint, so the screen is reachable without a router.
-export function TokenLookup() {
-  const [typed, setTyped] = useState("");
-  const [mint, setMint] = useState<string | null>(null);
+/// A box for pasting a mint.
+///
+/// It navigates rather than holding the result in state, which is the whole
+/// reason the router went in: a looked-up token is the thing a reader sends to
+/// somebody else, and it was previously unaddressable.
+///
+/// `initial` seeds it from the URL so the box shows what is being displayed
+/// rather than sitting empty above it.
+export function TokenLookup({ initial = "" }: { initial?: string }) {
+  const [typed, setTyped] = useState(initial);
+  const [, navigate] = useLocation();
+
+  // Follows the address bar. Without this, using the back button to reach a
+  // different token would leave the previous mint in the box -- the form
+  // disagreeing with the page under it.
+  useEffect(() => setTyped(initial), [initial]);
+
+  const trimmed = typed.trim();
+  // Syntactic only, and it decides what to *say*, never what to trust. Its job
+  // is to tell a typo apart from a lookup that found nothing, because those need
+  // different words: "that is not an address" and "Radar never observed this
+  // token" are different facts and only one of them is about the token.
+  const looksLikeMint = isMintLike(trimmed);
+  const showTypoHint = trimmed.length > 0 && !looksLikeMint;
+
   const submit = useCallback(
     (event: React.FormEvent) => {
       event.preventDefault();
-      const trimmed = typed.trim();
-      if (trimmed) setMint(trimmed);
+      if (looksLikeMint) navigate(tokenPath(trimmed));
     },
-    [typed],
+    [looksLikeMint, navigate, trimmed],
   );
 
   return (
     <div>
       <form onSubmit={submit} className="flex gap-2">
+        <label htmlFor="mint" className="sr-only">
+          Mint address
+        </label>
         <input
+          id="mint"
           value={typed}
           onChange={(e) => setTyped(e.target.value)}
           placeholder="Paste a mint address"
-          className="min-w-0 flex-1 rounded-md border border-[var(--color-line)] bg-[var(--color-ink)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--color-dim)]"
+          spellCheck={false}
+          autoComplete="off"
+          aria-invalid={showTypoHint}
+          aria-describedby={showTypoHint ? "mint-hint" : undefined}
+          className="min-w-0 flex-1 rounded-md border border-[var(--color-edge)] bg-[var(--color-ink)] px-3 py-2 font-mono text-xs outline-none focus:border-[var(--color-dim)]"
         />
         <button
           type="submit"
-          disabled={!typed.trim()}
-          className="shrink-0 rounded-md border border-[var(--color-line)] px-3 py-2 text-sm hover:border-[var(--color-dim)] disabled:opacity-50"
+          disabled={!looksLikeMint}
+          className="shrink-0 rounded-md border border-[var(--color-edge)] px-3 py-2 text-sm hover:border-[var(--color-dim)] disabled:opacity-50"
         >
           Look up
         </button>
       </form>
-      {mint && (
-        <div className="mt-4">
-          <Token mint={mint} />
-        </div>
+      {showTypoHint && (
+        <p id="mint-hint" className="mt-2 text-xs text-[var(--color-warn)]">
+          That is not a Solana address — they are 32 to 44 base58 characters, and
+          base58 has no <code>0</code>, <code>O</code>, <code>I</code> or{" "}
+          <code>l</code>. Nothing was looked up, so this is not a statement about
+          any token.
+        </p>
       )}
     </div>
   );

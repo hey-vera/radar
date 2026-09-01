@@ -37,6 +37,22 @@ pub use radar_decode::pumpfun::PROGRAM_ID;
 /// colliding with an ordinary hash of the same bytes.
 const MARKER: &[u8] = b"ProgramDerivedAddress";
 
+/// The associated-token-account program.
+///
+/// Every one of these constants is *checked* by a test that derives an address
+/// with it and compares against mainnet, so a transcription error fails here
+/// rather than on chain.
+pub const ATA_PROGRAM: Address = Address::new([
+    0x8c, 0x97, 0x25, 0x8f, 0x4e, 0x24, 0x89, 0xf1, 0xbb, 0x3d, 0x10, 0x29, 0x14, 0x8e, 0x0d, 0x83,
+    0x0b, 0x5a, 0x13, 0x99, 0xda, 0xff, 0x10, 0x84, 0x04, 0x8e, 0x7b, 0xd8, 0xdb, 0xe9, 0xf8, 0x59,
+]);
+
+/// The fee program pump.fun's instructions carry.
+pub const FEE_PROGRAM: Address = Address::new([
+    0x0c, 0x35, 0xff, 0xa9, 0x05, 0x5a, 0x8e, 0x56, 0x8d, 0xa8, 0xf7, 0xbc, 0x07, 0x56, 0x15, 0x27,
+    0x4c, 0xf1, 0xc9, 0x2c, 0xa4, 0x1f, 0x40, 0x00, 0x9c, 0x51, 0x6a, 0xa4, 0x14, 0xc2, 0x7c, 0x70,
+]);
+
 /// Whether a 32-byte value is a point on the ed25519 curve.
 ///
 /// A PDA is precisely an address that is **not**, because that is what
@@ -112,6 +128,35 @@ pub fn user_volume_accumulator(user: &Address) -> Option<Address> {
     find(&[b"user_volume_accumulator", user.as_bytes()], &PROGRAM_ID).map(|(a, _)| a)
 }
 
+/// A holder's associated token account for a mint.
+///
+/// `["owner", token_program, mint]` under the ATA program — and the token
+/// program is a **seed**, not a constant. Captures show both SPL Token and
+/// Token-2022 on this venue, so deriving with the wrong one yields an address
+/// the program will not accept.
+#[must_use]
+pub fn associated_token_account(
+    owner: &Address,
+    mint: &Address,
+    token_program: &Address,
+) -> Option<Address> {
+    find(
+        &[owner.as_bytes(), token_program.as_bytes(), mint.as_bytes()],
+        &ATA_PROGRAM,
+    )
+    .map(|(a, _)| a)
+}
+
+/// The fee configuration, which lives under the **fee** program rather than
+/// pump.fun's.
+///
+/// The seed is pump.fun's program id, which is the part that is easy to get
+/// wrong: it is a PDA of one program keyed by another.
+#[must_use]
+pub fn fee_config() -> Option<Address> {
+    find(&[b"fee_config", PROGRAM_ID.as_bytes()], &FEE_PROGRAM).map(|(a, _)| a)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +223,98 @@ mod tests {
         let (_, mint_bump) =
             find(&[b"bonding-curve", addr(MINT).as_bytes()], &PROGRAM_ID).expect("a derivation");
         assert!(mint_bump < 255, "got {mint_bump}");
+    }
+
+    /// The rest of the buy layout, observed in the same transaction.
+    const OBSERVED_ASSOCIATED_BONDING_CURVE: &str = "9TJmRk1oLNYzSWfLJZmUf7ZuUfHwdATs45xjA91kQioX";
+    const OBSERVED_USER: &str = "5Kuix3HiXh7adsdcybmr5N5coLBi2mv7exGMLvoPSKjM";
+    const OBSERVED_USER_ATA: &str = "4To2g3f93LVuZmDMVu6ow1nWKJ58wZxXsEfhyDXrBF3X";
+    const OBSERVED_CREATOR: &str = "A833PVpQZrK4HUbAW19g4wCvQtGGNgUSEqEa2jsWQCQP";
+    const OBSERVED_CREATOR_VAULT: &str = "CnJeYMf13M2AKZSkjMtKFsAB7zRPtYCbUdZvgzdbsDGe";
+    const OBSERVED_GLOBAL_VOLUME: &str = "Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y";
+    const OBSERVED_USER_VOLUME: &str = "3315RuJqJ3uza7LYUdkcKQNzV6GfiTNot9jQg2YESQmj";
+    const OBSERVED_FEE_CONFIG: &str = "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt";
+    const SPL_TOKEN: &str = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
+
+    #[test]
+    fn both_token_accounts_derive_as_associated_token_accounts() {
+        // The curve's own token account and the trader's. Both are ordinary
+        // ATAs, which is worth pinning: they look like pump.fun PDAs in the
+        // account list and are not.
+        let spl = addr(SPL_TOKEN);
+        assert_eq!(
+            associated_token_account(&addr(OBSERVED_BONDING_CURVE), &addr(MINT), &spl)
+                .expect("a derivation"),
+            addr(OBSERVED_ASSOCIATED_BONDING_CURVE)
+        );
+        assert_eq!(
+            associated_token_account(&addr(OBSERVED_USER), &addr(MINT), &spl)
+                .expect("a derivation"),
+            addr(OBSERVED_USER_ATA)
+        );
+    }
+
+    #[test]
+    fn the_token_program_is_a_seed_and_changes_the_address() {
+        // Captures show both SPL Token and Token-2022 on this venue. Deriving
+        // with the wrong one yields a valid-looking address the program will
+        // not accept -- and the mistake is invisible until a transaction fails.
+        let t22 = addr("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+        let with_t22 = associated_token_account(&addr(OBSERVED_USER), &addr(MINT), &t22)
+            .expect("a derivation");
+        assert_ne!(with_t22, addr(OBSERVED_USER_ATA));
+    }
+
+    #[test]
+    fn the_creator_vault_derives_from_the_creator_in_the_curve_account() {
+        // The creator is not in the instruction's account list -- it is read out
+        // of the bonding curve account. So building a buy needs the curve
+        // fetched first, which is a real ordering constraint on the executor
+        // rather than an implementation detail.
+        assert_eq!(
+            creator_vault(&addr(OBSERVED_CREATOR)).expect("a derivation"),
+            addr(OBSERVED_CREATOR_VAULT)
+        );
+    }
+
+    #[test]
+    fn both_volume_accumulators_match_mainnet() {
+        assert_eq!(
+            global_volume_accumulator().expect("a derivation"),
+            addr(OBSERVED_GLOBAL_VOLUME)
+        );
+        assert_eq!(
+            user_volume_accumulator(&addr(OBSERVED_USER)).expect("a derivation"),
+            addr(OBSERVED_USER_VOLUME)
+        );
+    }
+
+    #[test]
+    fn the_fee_config_is_a_pda_of_one_program_keyed_by_another() {
+        // Under the *fee* program, seeded with pump.fun's id. Deriving it under
+        // pump.fun -- the obvious guess -- gives a different address.
+        assert_eq!(
+            fee_config().expect("a derivation"),
+            addr(OBSERVED_FEE_CONFIG)
+        );
+
+        let wrong = find(&[b"fee_config", PROGRAM_ID.as_bytes()], &PROGRAM_ID)
+            .expect("a derivation")
+            .0;
+        assert_ne!(wrong, addr(OBSERVED_FEE_CONFIG));
+    }
+
+    #[test]
+    fn the_program_constants_are_the_ones_mainnet_uses() {
+        // Transcribed byte arrays, checked rather than trusted.
+        assert_eq!(
+            ATA_PROGRAM,
+            addr("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+        );
+        assert_eq!(
+            FEE_PROGRAM,
+            addr("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ")
+        );
     }
 
     #[test]

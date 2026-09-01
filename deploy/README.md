@@ -411,9 +411,20 @@ admission check between "this token is genuine" and "this identity is one of
 ours" — and anyone can sign up to a Privy application. Any verified identity for
 that app reaches `/v1/funnel`, `/v1/scoreboard` and `/v1/tokens/*`.
 
-The harm is bounded: those are Radar's own research record, and `/v1/chat` is not
-mounted because no model provider is configured. `/v1/customer/wallet` returns
-the caller's *own* wallet, from their own verified DID, so it leaks nothing.
+**Nothing has actually been exposed**, and that is worth checking rather than
+assuming. The application has no registered users:
+
+```bash
+ssh guardian-vps-tail 'set -a; . /etc/radar/radar.env; set +a
+  curl -s -u "$RADAR_PRIVY_APP_ID:$RADAR_PRIVY_APP_SECRET"     -H "privy-app-id: $RADAR_PRIVY_APP_ID"     https://auth.privy.io/api/v1/users | head -c 200'
+```
+
+On 2026-09-01 that returned zero. The door is unlocked and nobody holds a key.
+
+The harm if somebody did is also bounded: those routes are Radar's own research
+record, `/v1/chat` is not mounted because no model provider is configured, and
+`/v1/customer/wallet` returns the caller's *own* wallet from their own verified
+DID, so it leaks nothing about anyone else.
 
 It is still not what anybody chose, and the fix is below.
 
@@ -439,17 +450,29 @@ host; check before installing anywhere else:
 ssh guardian-vps-tail 'grep -c RADAR_STATE_DIR /etc/radar/radar.env'
 ```
 
-### Finding your own DID
+### Finding your own DID — and why it has to come second
 
 The allowlist matches the `sub` of a Privy access token, because there is no
-email in one. Two ways to get it:
+email in one. **The identity does not exist until you have logged in once**, so
+the order is: deploy closed, log in, read the DID, then allowlist it. Setting the
+allowlist first means guessing a string that has not been issued.
 
-- **The Privy dashboard.** Users → your account. It is the `did:privy:…` string.
+Once you have logged in through the interface, the identity is at Privy and can
+be read back:
+
+```bash
+ssh guardian-vps-tail 'set -a; . /etc/radar/radar.env; set +a
+  curl -s -u "$RADAR_PRIVY_APP_ID:$RADAR_PRIVY_APP_SECRET"     -H "privy-app-id: $RADAR_PRIVY_APP_ID"     https://auth.privy.io/api/v1/users' |
+  grep -oE '"id":"did:privy:[^"]+"'
+```
+
+Two other routes to the same string, for when that one is inconvenient:
+
+- **The Privy dashboard.** Users → your account.
 - **From a refusal.** An identity that is not admitted is told its own DID in the
-  403 body. Note that this will not work for you while you hold a Cloudflare
-  Access cookie: the guard falls through to Access, Access passes, and you are
-  served instead of refused. Use a browser with no Access session, or take it
-  from the dashboard.
+  403 body. This will *not* work for you while you hold a Cloudflare Access
+  cookie: the guard falls through to Access, Access passes, and you are served
+  rather than refused. Use a browser with no Access session.
 
 ### Setting them
 
@@ -464,8 +487,16 @@ ssh -t guardian-vps-tail 'sudo -e /etc/radar/radar.env'
 Add:
 
 ```
-RADAR_CUSTOMER_ACCESS=allowlist:did:privy:<your did>
+RADAR_CUSTOMER_ACCESS=closed
 RADAR_CUSTOMER_SALT=<the base64 from above>
+```
+
+`closed` first, on purpose. It is the state the instance should be in while you
+are deploying, and it is what makes the login below safe to do before the
+allowlist exists. Once you have your DID, change the one line:
+
+```
+RADAR_CUSTOMER_ACCESS=allowlist:did:privy:<your did>
 ```
 
 Leave `RADAR_CHAT_PER_CUSTOMER_DAILY` out until a model provider is configured —

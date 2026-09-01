@@ -81,7 +81,21 @@ the fixture.
 
 **What it does not.** No production crate depends on `radar-exec`; the
 composition reaches it through a dev-dependency, so the shipped dependency graph
-is unchanged. Nothing has been signed, sent, or filled. Every cost and failure
+is unchanged. Nothing has been signed, sent, or filled.
+
+**As of 2026-09-01 the pipeline's traits have real implementations**, which they
+did not before: `Routing` and `Sending` were satisfied only by stubs inside
+`pipeline.rs`'s own test module, while `route::Router` and `submit::Submitter` —
+which talk to Jupiter and to an RPC node — sat beside them unconnected. So the
+executor could be composed only against a fixture, which is LEARNINGS 10's shape
+exactly. `Router` and `Submitter` now implement the traits, and
+[`the_pipeline_has_real_implementations.rs`](crates/radar-exec/tests/the_pipeline_has_real_implementations.rs)
+checks the trait methods delegate to the real ones rather than being present and
+inert.
+
+**There is still no production caller.** Nothing invokes the pipeline, for the
+local wallet or a customer's. Writing one is opening the trading path, and it is
+a decision about money rather than a wiring task. Every cost and failure
 rate in it is supplied by the test rather than measured, and the real signer —
 a separate process that re-decodes what this side built — is not in the loop.
 

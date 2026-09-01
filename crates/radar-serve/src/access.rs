@@ -576,6 +576,7 @@ pub fn audience_of(path: &str) -> Audience {
         || path == "/v1/funnel"
         || path == "/v1/scoreboard"
         || path.starts_with("/v1/tokens/")
+        || path == "/v1/customer/wallet"
         || path == "/v1/chat";
     if customer {
         return Audience::Customer;
@@ -1089,7 +1090,7 @@ mod tests {
             );
         }
 
-        for path in ["/", "/v1/funnel", "/v1/tokens/abc"] {
+        for path in ["/", "/v1/funnel", "/v1/tokens/abc", "/v1/customer/wallet"] {
             let audience = audience_of(path);
             assert!(audience.accepts_customer(), "{path} is product");
             assert!(

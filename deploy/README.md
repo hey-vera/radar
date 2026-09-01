@@ -185,6 +185,30 @@ With Access enforced those are `200` and `403`. Through the browser, signed in,
 the interface loads as before. If `/health` is not `200`, the unit did not start
 — read `journalctl -u radar-serve -n 20`, which will name the missing variable.
 
+### Reading customers' wallets
+
+`RADAR_PRIVY_APP_ID` and `RADAR_PRIVY_APP_SECRET` are both required for
+`radar-serve` to read a customer's wallet address. Either one alone is refused:
+an id with no secret is a half-finished deployment, and reporting it as
+"unconfigured" would hide the mistake behind a message about a feature nobody
+turned on.
+
+This credential authenticates Radar as an **application**. It authorises no
+signature — that needs the authorization key, which is in the signer's
+environment and nowhere else.
+
+Without it, `radar-serve` starts and says so:
+
+```
+  wallets    : off (no RADAR_PRIVY_APP_SECRET; wallets cannot be read)
+```
+
+That line is printed separately from the `customers` line on purpose. The two can
+disagree, and the disagreement is the interesting state: an instance that
+verifies customer tokens but cannot read wallets will sign people in and then
+fail every lookup, which an operator should see at start rather than from a
+support message.
+
 ### Wallet ownership, which is a setting and not code
 
 When customer wallets are created, the **customer must be the owner** and Radar

@@ -96,6 +96,7 @@ fn router(keys: Keys) -> axum::Router {
         }),
         customer_keys: KeyCache::preloaded(keys),
         linker: radar_serve::link::Linker::new(),
+        privy: None,
     }))
 }
 
@@ -162,4 +163,56 @@ async fn a_forged_customer_token_opens_nothing() {
             "{path} accepted a token signed by an unpublished key"
         );
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_wallet_route_refuses_a_request_carrying_no_customer_identity() {
+    // An operator can reach `/v1/customer/wallet` -- `Audience::Customer`
+    // accepts operator identity, because debugging a customer's problem requires
+    // it. But an operator is not a customer, and there is no DID on that
+    // request.
+    //
+    // The handler must refuse rather than guess. The two ways it could guess are
+    // both catastrophic: reading a DID from the query string would let anyone
+    // read anyone's wallet, and defaulting to some "current" customer would be
+    // worse. So the only source is the extension the guard inserts after a
+    // successful verification, and its absence is a refusal.
+    //
+    // `Mode::Off` here opens the operator lane deliberately: it is the state in
+    // which the request definitely reaches the handler, which is the state this
+    // test is about.
+    let (_, keys) = valid_token();
+    let mut registry = Registry::new();
+    registry.register(CreatorHistory);
+    let router = app(Arc::new(AppState {
+        registry,
+        store: Reader::open(std::env::temp_dir().join("radar-wallet-route-test")),
+        x402: None,
+        chat: None,
+        access: radar_serve::access::Mode::Off,
+        keys: radar_serve::access::KeyCache::new(),
+        customer: Mode::Enforce(Config {
+            app_id: APP.to_owned(),
+        }),
+        customer_keys: KeyCache::preloaded(keys),
+        linker: radar_serve::link::Linker::new(),
+        privy: None,
+    }));
+
+    let status = router
+        .oneshot(
+            Request::builder()
+                .uri("/v1/customer/wallet")
+                .body(Body::empty())
+                .expect("a well-formed request"),
+        )
+        .await
+        .expect("the router answers")
+        .status();
+
+    assert_ne!(
+        status,
+        StatusCode::OK,
+        "a request with no verified customer must not receive a wallet"
+    );
 }

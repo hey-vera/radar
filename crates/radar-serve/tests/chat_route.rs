@@ -29,6 +29,7 @@ fn unconfigured() -> axum::Router {
         keys: radar_serve::access::KeyCache::new(),
         customer: radar_serve::customer::Mode::Off,
         customer_keys: radar_serve::customer::KeyCache::new(),
+        privy: None,
         linker: radar_serve::link::Linker::new(),
     }))
 }

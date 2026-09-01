@@ -22,6 +22,7 @@ pub mod ledger;
 pub mod link;
 pub mod mcp;
 mod ops;
+pub mod privy;
 pub mod x402;
 
 use core::convert::Infallible;
@@ -71,6 +72,13 @@ pub struct AppState {
     /// authenticator a customer route requires operator identity, which is
     /// strictly more restrictive than it will be.
     pub customer: customer::Mode,
+    /// How customers' wallets are read, when this instance has a credential.
+    ///
+    /// `None` is the shipped state and means wallet lookup is unavailable --
+    /// **not** that customers have no wallets. Rule 8: those two are
+    /// indistinguishable to a caller that collapses them, and only one is safe
+    /// to act on.
+    pub privy: Option<privy::Client>,
     /// Privy's published signing keys, fetched on demand.
     ///
     /// Separate from the operator's cache: different issuers on different
@@ -97,6 +105,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
+        .route("/v1/customer/wallet", get(customer_wallet))
         .route("/v1/events", get(events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
@@ -144,6 +153,64 @@ pub fn app(state: Arc<AppState>) -> Router {
 /// currently requires the same operator check, because no customer
 /// authenticator exists and an audience with nothing behind it must fall to the
 /// strictest available rather than the loosest (rule 8).
+/// The signed-in customer's Solana wallet.
+///
+/// # Why this reads Privy on every request
+///
+/// [ADR 0006](https://github.com/hey-vera/radar/blob/main/docs/adr/0006-radar-records-only-what-it-cannot-recover.md).
+/// Privy is authoritative for the address, and a stale cached one is an address
+/// Radar might show a customer as their deposit destination after they no longer
+/// control it.
+///
+/// # What it deliberately does not do
+///
+/// It does not create a wallet, and it does not ask for a signer grant. Both are
+/// the customer's actions, taken in their own session against Privy — a server
+/// that could grant itself a signer is not a bounded signer.
+async fn customer_wallet(
+    State(state): State<Arc<AppState>>,
+    request: axum::extract::Request,
+) -> Response {
+    // The identity the guard verified, and the only source of a DID here. A DID
+    // taken from a path or a query would let any caller read any customer's
+    // wallet, which is the whole of the authorisation on this route.
+    let Some(customer) = request.extensions().get::<customer::Customer>().cloned() else {
+        return chat::refuse(
+            StatusCode::FORBIDDEN,
+            "no verified customer on this request",
+        );
+    };
+
+    let Some(client) = state.privy.as_ref() else {
+        // Rule 8, and the distinction matters to whoever reads it: this instance
+        // cannot look wallets up, which is not the same as this customer having
+        // no wallet.
+        return chat::refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this instance has no Privy application credential configured",
+        );
+    };
+
+    match tokio::task::block_in_place(|| client.wallet_for(&customer.did)) {
+        Ok(wallet) => Json(serde_json::json!({
+            "address": wallet.address,
+            // Reported rather than acted on. The frontend needs it to know
+            // whether to show the customer a grant prompt, and nothing here
+            // treats it as permission -- that check belongs where money moves.
+            "delegated": wallet.delegated,
+        }))
+        .into_response(),
+        Err(privy::Unavailable::NoWallet) => Json(serde_json::json!({
+            // A real answer: a customer who just signed up has no wallet yet,
+            // and the frontend needs to tell that apart from a failure.
+            "address": serde_json::Value::Null,
+            "delegated": false,
+        }))
+        .into_response(),
+        Err(why) => chat::refuse(StatusCode::BAD_GATEWAY, &why.to_string()),
+    }
+}
+
 async fn guard(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,
@@ -165,7 +232,16 @@ async fn guard(
             let keys = state.customer_keys.get(config)?;
             customer::verify(&token, &keys, config, now_unix())
         });
-        if verified.is_ok() {
+        if let Ok(customer) = verified {
+            // The verified identity travels in the request, so a handler never
+            // re-parses a token. Two parses of one token are two chances to
+            // disagree about who is calling, and the handler's copy would be the
+            // one nothing checked a signature on.
+            //
+            // Inserted only after a successful verification, so an extension
+            // being present *is* the proof rather than something to re-check.
+            let mut request = request;
+            request.extensions_mut().insert(customer);
             return next.run(request).await;
         }
         // A customer token that does not verify falls through to the operator

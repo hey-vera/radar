@@ -695,6 +695,29 @@ mod tests {
     }
 
     #[test]
+    fn the_embedded_interface_directory_is_tracked() {
+        // `radar-serve` embeds `web/dist` with `rust-embed`, and the derive
+        // generates no `get` method when the folder does not exist -- so a
+        // checkout without it fails to compile, with an error naming a missing
+        // *method* rather than a missing directory. `embed.rs` is written on the
+        // assumption that an **empty** dist is normal; an **absent** one is not.
+        //
+        // The contents are build output and correctly ignored. The directory is
+        // tracked through one empty file, and that file is easy to lose:
+        // `emptyOutDir: true` deletes it on every build, so anyone who builds and
+        // commits with `git add -A` stages the deletion. That happened, and it
+        // turned five CI jobs red while every local build stayed green -- because
+        // locally the directory was full.
+        //
+        // `vite.config.ts` recreates it after each build. This is the check that
+        // the recreation is still working.
+        assert!(
+            known_files().contains("web/dist/.gitkeep"),
+            "web/dist/.gitkeep is not tracked, so a fresh checkout has no              web/dist and radar-serve will not compile"
+        );
+    }
+
+    #[test]
     fn only_radar_risk_names_the_closed_policy_in_code() {
         // The rule: `Policy::CLOSED` is a value, and every other crate must go
         // through `Policy::SHIPPED` -- the constant the decider uses -- so that

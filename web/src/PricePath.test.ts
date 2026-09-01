@@ -7,7 +7,7 @@
 //! nobody reads.
 
 import { describe, expect, it } from "vitest";
-import { drawable, rangeOf, x, y, type Point } from "./PricePath";
+import { drawable, hasWindowBand, rangeOf, type Point, x, y } from "./PricePath";
 import type { Measurement } from "./api";
 
 function measurement(over: Partial<Measurement>): Measurement {
@@ -19,6 +19,9 @@ function measurement(over: Partial<Measurement>): Measurement {
     last_price: 100,
     peak_price: 100,
     trough_price: 100,
+    window_peak_price: null,
+    window_trough_price: null,
+    vwap: null,
     graduated_at: null,
     held_to_end_bps: null,
     ...over,
@@ -62,6 +65,8 @@ describe("rangeOf", () => {
     peak,
     trough,
     last,
+    windowPeak: null,
+    windowTrough: null,
   });
 
   it("covers the envelope, not just the line", () => {
@@ -111,5 +116,40 @@ describe("x", () => {
   it("does not divide by zero on a single point", () => {
     expect(x(0, 1, 640)).toBe(0);
     expect(Number.isFinite(x(0, 1, 640))).toBe(true);
+  });
+});
+
+describe("hasWindowBand", () => {
+  const point = (windowPeak: number | null, windowTrough: number | null): Point => ({
+    at: 1,
+    last: 100,
+    peak: 200,
+    trough: 50,
+    windowPeak,
+    windowTrough,
+  });
+
+  it("is true only when every point carries the pair", () => {
+    expect(hasWindowBand([point(120, 90), point(130, 95)])).toBe(true);
+  });
+
+  it("is false when any point is missing it", () => {
+    // The column is null on every row written before it existed, so a store
+    // mid-migration has some points with it and some without. A band across
+    // that gap would interpolate between "measured" and "not measured", which
+    // is rule 9 rendered as a shape.
+    expect(hasWindowBand([point(120, 90), point(null, null)])).toBe(false);
+  });
+
+  it("is false for half a pair", () => {
+    // A window peak against a launch-folded trough is two different
+    // measurements presented as one range.
+    expect(hasWindowBand([point(120, null)])).toBe(false);
+    expect(hasWindowBand([point(null, 90)])).toBe(false);
+  });
+
+  it("is false for no points at all", () => {
+    // `every` on an empty array is true, which would draw a band over nothing.
+    expect(hasWindowBand([])).toBe(false);
   });
 });

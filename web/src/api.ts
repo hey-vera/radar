@@ -210,6 +210,21 @@ export interface Measurement {
   last_price: number | null;
   peak_price: number | null;
   trough_price: number | null;
+  /**
+   * The highest fill price within the most recent price window.
+   *
+   * `peak_price` is folded from launch and can only widen, so it says nothing
+   * about *when* the peak happened — which is why 0020 could not answer whether
+   * an exit rule helps. This is the same measurement without the fold.
+   *
+   * **The window overlaps**: six hours, read hourly, so a peak set five hours
+   * ago appears in six consecutive measurements. It is a bounded recent
+   * lookback, not the movement since the last checkpoint. Null on most rows,
+   * which were written before the column existed.
+   */
+  window_peak_price: number | null;
+  window_trough_price: number | null;
+  vwap: number | null;
   graduated_at: number | null;
   held_to_end_bps: number | null;
 }

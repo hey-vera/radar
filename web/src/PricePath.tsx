@@ -16,6 +16,24 @@
 //! band behind it is the running envelope, labelled as such. A reader can see
 //! how far the token ever went without being told it went there recently.
 //!
+//! # What changed, and what did not
+//!
+//! The store now records `window_peak_price` and `window_trough_price` — the
+//! same extremes **without** the fold from launch — added precisely because
+//! research 0020 could not answer whether an exit rule helps: counting only new
+//! all-time extremes left 96% of price paths looking motionless.
+//!
+//! So there is now a second, tighter band that means something the launch-folded
+//! one cannot: where the price has been *recently*. The argument above is
+//! unchanged for the outer band, and it is still not a candlestick — the window
+//! is six hours read hourly, so it overlaps by five, and a peak set five hours
+//! ago appears in six consecutive measurements. It is a bounded recent lookback,
+//! not the movement since the last checkpoint, and the caption says so.
+//!
+//! It is `null` on every row written before the column existed, which is most of
+//! the store. Absent, the band is simply not drawn — never collapsed onto the
+//! line, which would claim the price had not moved.
+//!
 //! # Why no charting library
 //!
 //! The workspace's dependency posture is that every dependency is one more thing
@@ -31,6 +49,9 @@ export interface Point {
   last: number;
   peak: number;
   trough: number;
+  /** The recent window's extremes, where the store recorded them. */
+  windowPeak: number | null;
+  windowTrough: number | null;
 }
 
 /** The smallest number of points that can make a line. */
@@ -59,8 +80,37 @@ export function drawable(measurements: readonly Measurement[]): Point[] {
       last: m.last_price,
       peak: m.peak_price,
       trough: m.trough_price,
+      // Kept as a pair or not at all. Half a band is not a band, and a
+      // window peak drawn against a launch-folded trough would be two
+      // different measurements presented as one range.
+      windowPeak:
+        m.window_peak_price !== null && m.window_trough_price !== null
+          ? m.window_peak_price
+          : null,
+      windowTrough:
+        m.window_peak_price !== null && m.window_trough_price !== null
+          ? m.window_trough_price
+          : null,
     }))
     .sort((a, b) => a.at - b.at);
+}
+
+/**
+ * Whether every point carries a recent-window range.
+ *
+ * All or nothing, deliberately. The column is `null` on every row written before
+ * it existed, so a store mid-migration has some points with it and some without
+ * — and a band drawn across that gap would interpolate between "measured" and
+ * "not measured", which is rule 9 rendered as a shape.
+ *
+ * Drawing it only when the whole series has it means the band is either a claim
+ * about every checkpoint or absent.
+ */
+export function hasWindowBand(points: readonly Point[]): boolean {
+  return (
+    points.length > 0 &&
+    points.every((p) => p.windowPeak !== null && p.windowTrough !== null)
+  );
 }
 
 /** The vertical range the chart must cover. */
@@ -137,6 +187,16 @@ export function PricePath({ measurements }: { measurements: readonly Measurement
     .reverse();
   const envelope = `M ${top.join(" L ")} L ${bottom.join(" L ")} Z`;
 
+  // The recent-window band, drawn only when every point has one.
+  const windowed = hasWindowBand(points);
+  const windowTop = points.map(
+    (p, i) => `${at(i)}${y(p.windowPeak ?? p.last, range, HEIGHT)}`,
+  );
+  const windowBottom = points
+    .map((p, i) => `${at(i)}${y(p.windowTrough ?? p.last, range, HEIGHT)}`)
+    .reverse();
+  const recent = `M ${windowTop.join(" L ")} L ${windowBottom.join(" L ")} Z`;
+
   return (
     <figure className="space-y-2">
       <svg
@@ -147,6 +207,9 @@ export function PricePath({ measurements }: { measurements: readonly Measurement
         preserveAspectRatio="none"
       >
         <path d={envelope} fill="var(--color-line)" opacity="0.5" />
+        {windowed && (
+          <path d={recent} fill="var(--color-edge)" opacity="0.55" />
+        )}
         <polyline
           points={line}
           fill="none"
@@ -155,12 +218,28 @@ export function PricePath({ measurements }: { measurements: readonly Measurement
           vectorEffect="non-scaling-stroke"
         />
       </svg>
-      <figcaption className="text-xs text-[var(--color-dim)]">
-        The line is the last observed price at each checkpoint. The band is the
-        highest and lowest price seen <strong>since launch</strong> — a running
-        total, not the range of each interval, so it can only widen. It is drawn
-        this way because the store records it this way, and a candlestick here
-        would claim every interval reached those levels.
+      <figcaption className="text-xs leading-relaxed text-[var(--color-dim)]">
+        The line is the last observed price at each checkpoint. The outer band is
+        the highest and lowest price seen <strong>since launch</strong> — a
+        running total, not the range of each interval, so it can only widen.
+        {windowed ? (
+          <>
+            {" "}
+            The inner band is the <strong>recent</strong> range: the extremes of
+            a six-hour window, read hourly, so consecutive windows overlap by
+            five hours and a move shows in six of them. It is a bounded lookback,
+            not the movement since the last checkpoint.
+          </>
+        ) : (
+          <>
+            {" "}
+            No recent-window range is drawn: the store did not record one for
+            every checkpoint here, and a band across that gap would interpolate
+            between measured and not measured.
+          </>
+        )}{" "}
+        Neither is a candlestick, which would claim every interval reached its
+        levels.
       </figcaption>
     </figure>
   );

@@ -178,6 +178,25 @@ pub struct Measurement {
     pub peak_price: Option<u64>,
     /// The lowest.
     pub trough_price: Option<u64>,
+    /// The highest fill price **within the most recent price window**.
+    ///
+    /// Exposed because [`peak_price`](Self::peak_price) is folded from launch
+    /// and so can only widen -- it says nothing about *when* the peak happened,
+    /// which is precisely why research 0020 could not answer whether an exit
+    /// rule helps. This is the same measurement without the fold.
+    ///
+    /// **The window overlaps.** It is six hours and the pass runs hourly, so a
+    /// peak set five hours ago appears in six consecutive measurements. It is a
+    /// bounded recent lookback, not the movement since the previous checkpoint,
+    /// and reading it as the latter overstates how fresh a move is.
+    ///
+    /// `None` on every row written before the column existed, which is most of
+    /// the store.
+    pub window_peak_price: Option<u64>,
+    /// The lowest fill price within the most recent price window. Same caveats.
+    pub window_trough_price: Option<u64>,
+    /// Volume-weighted average price across every observed fill.
+    pub vwap: Option<u64>,
     /// Whether the token graduated, and when.
     pub graduated_at: Option<u64>,
     /// Return from first to last, in basis points, where both are known.
@@ -211,6 +230,9 @@ pub fn token_evidence(
             last_price: o.last_price,
             peak_price: o.peak_price,
             trough_price: o.trough_price,
+            window_peak_price: o.window_peak_price,
+            window_trough_price: o.window_trough_price,
+            vwap: o.vwap,
             graduated_at: o.graduated_at.map(radar_types::Slot::get),
             held_to_end_bps: o.held_to_end_gain_bps(),
         })

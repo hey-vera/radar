@@ -113,11 +113,66 @@ token rides the same curve" is true of the *formula* rather than of the reserves
   which is the same instrument on both sides — an improvement on the quote ladder
   0016 warned about, and still not a trade.
 
+## Addendum, same day — the budget is not the lever, and this note first implied it was
+
+The section below originally opened by asking for `max_impact_bps` to be argued
+or raised. Worked through, that is the wrong conclusion from the right finding,
+and the arithmetic says so plainly.
+
+**Round-trip cost rises monotonically with size**, because impact is linear in
+size while the fee component is roughly flat in basis points above $20:
+
+```
+   size   impact rt   fees rt    total
+     $3          10       250      260 bps
+  $6.21          21       250      271 bps
+    $20          67       456      523 bps
+    $60         200       456      656 bps
+   $200         667       450    1,117 bps
+   $512       1,707       450    2,157 bps
+```
+
+So the venue *supporting* $512 is not an argument for taking $512. The current
+sizing — a fifth of the 1% figure, about 20 bps of impact — is the **cheapest**
+row in that table, and it was not a mistake.
+
+**What size is right is a function of the edge, not of the venue.** Profit is
+`s · (r − a − b·s)` for an edge rate `r`, fee rate `a` and impact slope `b`,
+which is maximised at:
+
+```
+s* = (r − a) / 2b
+```
+
+With `a ≈ 456` bps and `b` from a 30 SOL curve:
+
+| edge | optimal size |
+|---|---|
+| 0 bps | **do not trade** |
+| 100 bps | **do not trade** |
+| 300 bps | **do not trade** |
+| 850 bps | $59 |
+| 2,000 bps | $232 |
+
+[`0017`](0017-a-control-that-could-have-been-traded.md) measures the edge at
+**0 bps**. So the optimal size is not small — it is *negative*, and the shipped
+`Policy::CLOSED` is the arithmetically correct position.
+
+**The useful thing this produces is a bar rather than a setting.** Any strategy —
+including a model-driven one — has to clear roughly **456 bps of expected edge
+before a single trade is worth making**, and roughly 850 before a position of
+even $59 is. That is a number to measure a strategy against, and it is a more
+honest target than "be good at trading".
+
+`max_impact_bps` should therefore be left at 1% and revisited **only** once
+something measures an edge above that bar. Raising it first would spend money
+faster in the direction 0017 says there is nothing to be gained in.
+
 ## What should follow
 
-1. **Argue `max_impact_bps`, or measure it.** It is 1%, it decides the position
-   size, and the position size decides which of 0019's cost bands the trade lands
-   in. It should be a number with a reason.
+1. ~~**Argue `max_impact_bps`.**~~ Superseded by the addendum above: it is not the
+   binding constraint and should not move until an edge is measured. Capacity was
+   never the reason this does not work.
 2. **Price the exit off the curve rather than off a quote ladder.**
    [ADR 0009](../adr/0009-radar-builds-its-own-pump-fun-swaps.md) has to read the
    bonding curve account to build an instruction; once it does, `radar-sim` can

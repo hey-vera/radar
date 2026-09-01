@@ -389,6 +389,109 @@ Both were verified by running them — the second by breaking the CLI on purpose
 and confirming `radar brief` exits non-zero. A check confirmed only where it
 passes is not confirmed.
 
+## Before the deploy that lands the customer lane
+
+**Read this one before installing.** The instance already has
+`RADAR_PRIVY_APP_ID` set, and that is the setting that switches customer
+authentication on. It has been on.
+
+### What that means today, on the running binary
+
+The guard tries a **customer** token first and falls back to Cloudflare Access:
+
+```rust
+if audience.accepts_customer()
+    && let Some(config) = state.customer.config()      // Privy configured
+    && let Some(token) = customer::token_from(headers) // a bearer token
+{ ... return next.run(request).await; }                // served, before Access
+```
+
+So Access is the fallback, not the gate. On the deployed binary there is no
+admission check between "this token is genuine" and "this identity is one of
+ours" — and anyone can sign up to a Privy application. Any verified identity for
+that app reaches `/v1/funnel`, `/v1/scoreboard` and `/v1/tokens/*`.
+
+The harm is bounded: those are Radar's own research record, and `/v1/chat` is not
+mounted because no model provider is configured. `/v1/customer/wallet` returns
+the caller's *own* wallet, from their own verified DID, so it leaks nothing.
+
+It is still not what anybody chose, and the fix is below.
+
+### The three settings, and what each does when unset
+
+None of them stops the binary starting. Each fails **closed**, which means an
+instance that installs the new binary without them is *more* restrictive than
+before, not less — a customer will be refused rather than admitted. That is the
+right direction to be wrong in, and it is why the order here is install first,
+configure second, rather than the other way round.
+
+| setting | unset means |
+|---|---|
+| `RADAR_CUSTOMER_ACCESS` | **nobody** may reach the product as a customer |
+| `RADAR_CUSTOMER_SALT` | customers cannot be metered, so nothing is spent on them |
+| `RADAR_CHAT_PER_CUSTOMER_DAILY` | no customer may spend the model budget |
+
+`RADAR_STATE_DIR` is now read at start for the share meter as well as the model
+ledger, and the binary **will not start without it**. It is already set on this
+host; check before installing anywhere else:
+
+```bash
+ssh guardian-vps-tail 'grep -c RADAR_STATE_DIR /etc/radar/radar.env'
+```
+
+### Finding your own DID
+
+The allowlist matches the `sub` of a Privy access token, because there is no
+email in one. Two ways to get it:
+
+- **The Privy dashboard.** Users → your account. It is the `did:privy:…` string.
+- **From a refusal.** An identity that is not admitted is told its own DID in the
+  403 body. Note that this will not work for you while you hold a Cloudflare
+  Access cookie: the guard falls through to Access, Access passes, and you are
+  served instead of refused. Use a browser with no Access session, or take it
+  from the dashboard.
+
+### Setting them
+
+Edit on the host — these are secrets and belong in the env file, not in a shell
+history or a commit:
+
+```bash
+ssh guardian-vps-tail 'head -c 48 /dev/urandom | base64'   # the salt, generated on the box
+ssh -t guardian-vps-tail 'sudo -e /etc/radar/radar.env'
+```
+
+Add:
+
+```
+RADAR_CUSTOMER_ACCESS=allowlist:did:privy:<your did>
+RADAR_CUSTOMER_SALT=<the base64 from above>
+```
+
+Leave `RADAR_CHAT_PER_CUSTOMER_DAILY` out until a model provider is configured —
+the chat route is not mounted without one, so a limit on it would be a setting
+with nothing to limit.
+
+Then restart and confirm the instance says what it is doing. The start-up banner
+reports both:
+
+```bash
+ssh guardian-vps-tail 'sudo systemctl restart radar-serve && sleep 2 &&
+  journalctl -u radar-serve -n 20 --no-pager | grep -E "admission|chat share|customers"'
+```
+
+Expected:
+
+```
+  admission  : allowlist of 1
+  chat share : closed — no customer may spend the model budget (set RADAR_CHAT_PER_CUSTOMER_DAILY)
+  customers  : enforcing for application cmthhk…
+```
+
+A line reading `admission  : closed — no customer may reach the product` means
+the variable did not take, and **a line reading `open` means the product is
+public**. Both are worth reading rather than assuming.
+
 ## Every deploy after that
 
 **Run these from a workstation that can reach `guardian-vps-tail`, not from the

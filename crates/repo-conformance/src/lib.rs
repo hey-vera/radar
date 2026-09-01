@@ -306,8 +306,16 @@ pub fn code_references(source: &str, needle: &str) -> Vec<usize> {
 pub fn crate_sources(excluding: &str) -> Vec<String> {
     known_files()
         .into_iter()
-        .filter(|f| f.starts_with("crates/") && f.ends_with(".rs"))
-        .filter(|f| f.contains("/src/"))
+        .filter(|f| f.starts_with("crates/") && f.contains("/src/"))
+        .filter(|f| {
+            // `Path::extension` rather than `ends_with(".rs")`: the string form
+            // is a case-sensitive comparison, and this repository is developed
+            // on a case-insensitive filesystem where `.RS` would be the same
+            // file and would silently escape the rule.
+            Path::new(f)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("rs"))
+        })
         .filter(|f| !f.starts_with(excluding))
         .collect()
 }
@@ -727,8 +735,7 @@ mod tests {
             .into_iter()
             .filter(|file| {
                 std::fs::read_to_string(root().join(file))
-                    .map(|t| !code_references(&t, "Policy::SHIPPED").is_empty())
-                    .unwrap_or(false)
+                    .is_ok_and(|t| !code_references(&t, "Policy::SHIPPED").is_empty())
             })
             .collect();
         assert!(

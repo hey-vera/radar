@@ -35,6 +35,27 @@ export function median(returns: number[]): number | null {
   return Math.round(((sorted[mid - 1] ?? 0) + (sorted[mid] ?? 0)) / 2);
 }
 
+/// A gross return with the round trip taken off.
+///
+/// One subtraction, named and tested, because the screen it serves spent its
+/// whole life claiming to have done it and had not. `Cohort::returns_bps` is
+/// documented `Gross`; the scoreboard rendered that median under a footnote
+/// reading "Returns are net of an assumed 850 bps round trip". The most-read
+/// number on the page overstated itself by the entire round trip, in the
+/// flattering direction, and no test could catch it because the arithmetic
+/// existed nowhere.
+///
+/// It stays a function rather than an inline `a - b` for exactly that reason: a
+/// claim the interface makes about a number should be somewhere a test can
+/// reach.
+///
+/// **Signed, and deliberately not clamped.** A return that does not cover its
+/// costs is negative, and flooring it at zero would turn every losing trade
+/// into a break-even one.
+export function netOfCost(grossBps: number, costBps: number): number {
+  return grossBps - costBps;
+}
+
 /// How many of a distribution cleared the assumed round-trip cost.
 ///
 /// **Strictly above.** A round trip that returned exactly its cost cleared

@@ -34,7 +34,7 @@
 
 import { useEffect, useState } from "react";
 import { ApiError, research, type Cohort, type Scoreboard as Board } from "./api";
-import { clearedCost, median, pct } from "./honesty";
+import { clearedCost, median, netOfCost, pct } from "./honesty";
 
 /** Below this many scored proposals, no comparison is reported at all. */
 const MIN_COHORT = 30;
@@ -180,7 +180,7 @@ function Distribution({
             <Row
               label={`median return, net of ${costBps} bps`}
               // The figure the page used to claim it was already showing.
-              value={gross === null ? "—" : pct(gross - costBps)}
+              value={gross === null ? "—" : pct(netOfCost(gross, costBps))}
             />
             <Row
               label={`cleared ${costBps} bps`}
@@ -228,7 +228,7 @@ function NotAControl({ cohort, costBps }: { cohort: Cohort; costBps: number }) {
         />
         <Figure
           label={`median, net of ${costBps} bps`}
-          value={gross === null ? "—" : pct(gross - costBps)}
+          value={gross === null ? "—" : pct(netOfCost(gross, costBps))}
         />
       </dl>
     </section>

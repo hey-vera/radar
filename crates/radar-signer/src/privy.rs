@@ -27,7 +27,7 @@
 //! tables: the guarantee is *every account it authorises is one it read in the
 //! bytes it signed*, and any method that signs what it is handed destroys it.
 
-use radar_risk::Authorization;
+use radar_risk::{Authorization, Policy};
 use radar_types::{Address, Slot};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -188,6 +188,7 @@ pub fn authorise(
     authorization: &Authorization,
     signing_wallet: &Address,
     allowlist: &Allowlist,
+    policy: &Policy,
     now: Slot,
 ) -> Result<String, NotAuthorised> {
     // Read out of the body that will be sent. Not passed in alongside it: a
@@ -198,9 +199,17 @@ pub fn authorise(
         NotAuthorised::NotBase64("the transaction is not valid base64".to_owned())
     })?;
 
-    crate::verify::check(authorization, &bytes, signing_wallet, allowlist, now).map_err(
-        |rejections| NotAuthorised::Refused(rejections.iter().map(Rejection::to_string).collect()),
-    )?;
+    crate::verify::check(
+        authorization,
+        &bytes,
+        signing_wallet,
+        allowlist,
+        policy,
+        now,
+    )
+    .map_err(|rejections| {
+        NotAuthorised::Refused(rejections.iter().map(Rejection::to_string).collect())
+    })?;
 
     let payload = request.payload()?;
     let signature = key

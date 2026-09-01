@@ -33,12 +33,49 @@ impl Signer {
         Self::start_with(key_file, programs, None)
     }
 
+    /// Starts with a policy file the test supplies.
+    ///
+    /// Separate from [`Self::start_with`] because most tests want a policy wide
+    /// enough to be out of the way, and the ones about the policy want to choose
+    /// it. A single helper with a permissive default would make it too easy to
+    /// write a test that passes because the clamp never engaged.
+    fn start_under(
+        key_file: &std::path::Path,
+        programs: &str,
+        policy_file: Option<&std::path::Path>,
+    ) -> Self {
+        Self::spawn(key_file, programs, None, policy_file)
+    }
+
     /// Starts the binary, optionally with a Privy authorization key.
+    ///
+    /// Writes a permissive policy beside the key, because ADR 0008 makes a
+    /// policy mandatory and these tests are about other things. The clamp has
+    /// its own tests, which supply their own.
     fn start_with(key_file: &std::path::Path, programs: &str, privy: Option<&str>) -> Self {
+        let permissive = key_file.with_file_name("policy.json");
+        std::fs::write(
+            &permissive,
+            serde_json::to_string(&open_policy()).expect("serialises"),
+        )
+        .expect("write");
+        Self::spawn(key_file, programs, privy, Some(&permissive))
+    }
+
+    fn spawn(
+        key_file: &std::path::Path,
+        programs: &str,
+        privy: Option<&str>,
+        policy_file: Option<&std::path::Path>,
+    ) -> Self {
         let mut command = Command::new(env!("CARGO_BIN_EXE_radar-signer"));
         command
             .env("RADAR_SIGNER_KEY", key_file)
             .env("RADAR_SIGNER_PROGRAMS", programs);
+        match policy_file {
+            Some(path) => command.env("RADAR_SIGNER_POLICY", path),
+            None => command.env_remove("RADAR_SIGNER_POLICY"),
+        };
         // Removed rather than left unset, so a variable in the developer's own
         // environment cannot make the no-key test pass.
         match privy {
@@ -77,6 +114,24 @@ impl Drop for Signer {
         drop(self.child.stdin.take());
         let _ = self.child.wait();
     }
+}
+
+/// A policy wide enough not to be what a test is about.
+fn open_policy() -> radar_risk::Policy {
+    radar_risk::Policy {
+        autonomy: radar_risk::Autonomy::Capped,
+        max_position: radar_types::MicroUsd(1_000_000_000),
+        max_canary: radar_types::MicroUsd(1_000_000_000),
+        max_input_staleness: radar_types::SlotDelta(100_000),
+        ..radar_risk::Policy::CLOSED
+    }
+}
+
+/// Writes a policy file and returns its path.
+fn policy_file(dir: &std::path::Path, policy: &radar_risk::Policy) -> std::path::PathBuf {
+    let path = dir.join("policy.json");
+    std::fs::write(&path, serde_json::to_string(policy).expect("serialises")).expect("write");
+    path
 }
 
 /// Writes a Solana keypair file and returns its path.
@@ -368,6 +423,64 @@ fn privy_request(transaction: &str) -> serde_json::Value {
         "wallet": b58(&wallet()),
         "now_slot": 1_000u64,
     })
+}
+
+#[test]
+fn a_signer_with_no_policy_refuses_everything() {
+    // Rule 8, and ADR 0008's whole premise.
+    //
+    // Before this, the signer had no opinion about whether Radar was permitted
+    // to trade at all: the only ceilings it enforced were the ones written on
+    // the authorisation it was handed, by the caller. An operator who never
+    // configured a policy got a signer that signed whatever the caller said was
+    // approved.
+    //
+    // Absent must mean refuse, not "accept the caller's judgement".
+    let scratch = Scratch::new("no-policy");
+    let mut signer = Signer::start_under(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        None,
+    );
+
+    let answer = signer.ask(&request(&honest(), &MINT, 1_000));
+    assert_eq!(
+        answer["outcome"], "refused",
+        "a signer with no policy must refuse: {answer}"
+    );
+}
+
+#[test]
+fn a_closed_policy_refuses_a_transaction_the_caller_says_is_authorised() {
+    // `Policy::CLOSED` enforced at the key rather than only at the decision.
+    //
+    // The request is well formed and entirely within its own stated bounds.
+    // What refuses it is the file this process loaded, which the caller does
+    // not control -- and that is the difference the ADR is about.
+    let scratch = Scratch::new("closed-policy");
+    let closed = policy_file(&scratch.0, &radar_risk::Policy::CLOSED);
+    let mut signer = Signer::start_under(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        Some(&closed),
+    );
+
+    let answer = signer.ask(&request(&honest(), &MINT, 1_000));
+    assert_eq!(answer["outcome"], "refused", "{answer}");
+
+    // And the same signer under an open policy signs it, or the refusal above
+    // says nothing about the policy.
+    let open = policy_file(&scratch.0, &open_policy());
+    let mut permitted = Signer::start_under(
+        &key_file(&scratch.0),
+        &format!("{},{}", b58(&DEX), b58(&SYSTEM)),
+        Some(&open),
+    );
+    let allowed = permitted.ask(&request(&honest(), &MINT, 1_000));
+    assert_eq!(
+        allowed["outcome"], "signed",
+        "the same request under an open policy must sign: {allowed}"
+    );
 }
 
 #[test]

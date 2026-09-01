@@ -185,6 +185,30 @@ With Access enforced those are `200` and `403`. Through the browser, signed in,
 the interface loads as before. If `/health` is not `200`, the unit did not start
 — read `journalctl -u radar-serve -n 20`, which will name the missing variable.
 
+### The signer's own policy
+
+`RADAR_SIGNER_POLICY` points at a JSON `Policy` file, and the signer **refuses
+to start without it**.
+
+That is [ADR 0008](../docs/adr/0008-the-signer-holds-its-own-policy.md). The
+signer does not verify that an `Authorization` came from the kernel — there is no
+MAC on it, and its nonce is checked against nothing — so an authorisation's
+bounds are the caller's *claim* about what was approved. This file is the only
+ceiling in that process that a caller does not write.
+
+Its contents are an operator decision about money, which is why it is a file and
+not a constant. `Policy::CLOSED` is the correct starting value and refuses
+everything:
+
+```json
+{"autonomy":"observe","max_position":0,"max_deployed":0,"max_per_creator":0,
+ "max_daily_loss":0,"max_round_trip_cost_bps":0,"max_canary":0,
+ "max_input_staleness":0,"max_consecutive_failures":0}
+```
+
+Changing `autonomy` away from `observe` is a decision about deploying capital.
+Make it deliberately, and not as a side effect of getting something to work.
+
 ### The signer's customer key
 
 `RADAR_PRIVY_AUTHORIZATION_KEY` belongs to the **signer's** environment and

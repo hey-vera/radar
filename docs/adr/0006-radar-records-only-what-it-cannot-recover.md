@@ -127,3 +127,73 @@ A measured latency cost on a customer-facing path that a cache cannot fix, or a
 Privy rate limit that makes per-request lookup impractical. Both are measurable,
 and neither is currently measured — so the honest position is that this is
 decided on the structural argument and is open to being overturned by a number.
+
+---
+
+## Amendment, 2026-09-01 — the per-customer model spend is a second such thing
+
+The decision stands unchanged. What changes is the count: **two** things pass
+this ADR's test, not one.
+
+### The reading that was wrong
+
+A per-customer question meter for `/v1/chat` was first built **in memory**, on
+the grounds that this ADR permits Radar exactly one durable customer artefact and
+the signature meter was already it.
+
+That read the arithmetic rather than the rule. The rule is in the title —
+*records only the customer state it **cannot recover*** — and the table above has
+one decisive column, `recoverable?`. Five rows answer yes and are not kept; one
+answers no and is. **"Exactly one" was a count of what passed the test in August,
+not a ceiling on what may.**
+
+### Why the chat meter passes the same test
+
+| state | where it already lives | recoverable? |
+|---|---|---|
+| **model spend on a customer's behalf** | nowhere durable | **no** |
+
+Privy does not know it. Stripe will not know it — it bills for access, not for
+consumption. The chain has never heard of it. Radar spent the money, and Radar is
+the only party that could ever say how much of it went to whom.
+
+That is the same row as the signature meter, for the same reason.
+
+### What the in-memory version actually cost
+
+Two things, and the second is the one that would have been discovered late.
+
+**A restart handed the allowance back.** Deploys are routine and the unit is
+configured `Restart=always`, so in practice a customer's daily ceiling was reset
+several times a day — and under a crash loop, per crash. That is precisely the
+failure [`LEARNINGS`](../../LEARNINGS.md) entries 1 and 9 record, and precisely
+what `RADAR_STATE_DIR` was made mandatory to stop for the global budget. Building
+a second meter beside it that forgot was repeating a fixed mistake in a new
+costume.
+
+**It was about to become a billing fact.** Once a subscription decides who may
+ask, what a customer consumed is something Radar has to be able to stand behind
+in a dispute. A figure that resets on deploy is not one, and this would have been
+noticed by a customer rather than by a test.
+
+### What this does not open
+
+It is **not** a general licence to record customer state, and the test is
+unchanged: *can this be read back from a more authoritative owner?* If yes, Radar
+does not keep it. Identity, wallet, grant, deposits and positions all still
+answer yes, and none of them may be mirrored on the strength of this amendment.
+
+Two consequences follow, and both are already implemented:
+
+- The record is keyed by the **salted hash** of the DID, exactly as the signature
+  meter is, for the reason given above: the threat is every future copy of the
+  store, not the live path.
+- The daily rollover rule is the same. A record from an earlier day is not
+  carried forward, because restoring one would refuse every customer until
+  midnight — the same defect pointing the other way.
+
+One deliberate asymmetry with rule 8, stated because it is a departure: an
+**unreadable** record starts empty rather than refusing. A corrupt file must not
+lock a paying customer out of a product while the global budget still bounds what
+can be spent. Losing a day's counts costs fairness for a day; refusing on a
+missing file costs the product.

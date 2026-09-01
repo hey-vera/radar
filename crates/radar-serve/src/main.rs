@@ -121,6 +121,11 @@ fn customer_lane() -> Result<
     let env = |k: &str| std::env::var(k).ok();
     let admission = radar_serve::admission::Admission::from_vars(&env)?;
     let allowance = radar_serve::share::Allowance::from_vars(&env)?;
+    // The same state directory the model ledger uses, and mandatory for the same
+    // reason: a meter that cannot record what it spent cannot enforce a ceiling
+    // across a restart, and deploys are routine.
+    let shares_store = radar_serve::ledger::Store::open(&env)
+        .map_err(|why| format!("the chat share meter needs a state directory: {why}"))?;
     // The salt customer identifiers are hashed with before anything long lived
     // records them. Empty when unset, which `Subject::derive` refuses -- so an
     // unsalted instance cannot meter a customer and therefore will not spend on
@@ -129,7 +134,15 @@ fn customer_lane() -> Result<
     let salt = env("RADAR_CUSTOMER_SALT")
         .map(String::into_bytes)
         .unwrap_or_default();
-    Ok((admission, radar_serve::share::Shares::new(allowance), salt))
+    Ok((
+        admission,
+        radar_serve::share::Shares::restored(
+            allowance,
+            shares_store,
+            radar_serve::chat::today_utc(),
+        ),
+        salt,
+    ))
 }
 
 #[tokio::main]

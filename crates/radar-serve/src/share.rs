@@ -13,35 +13,45 @@
 //! and the first one to open a loop spends the whole day for everybody. Nothing
 //! in the system would report it as anything other than a spent budget.
 //!
-//! # Why this is in memory, which is a real weakening and is stated as one
+//! # Why this is durable, and why the first version was not
 //!
+//! The first version of this kept the counts in memory, arguing that
 //! [ADR 0006](https://github.com/hey-vera/radar/blob/main/docs/adr/0006-radar-records-only-what-it-cannot-recover.md)
-//! decides that Radar persists **exactly one** thing about a customer: the
-//! signature meter, because the per-customer signature count decides whether
-//! Privy's pricing stays acceptable and cannot be taken retroactively. A second
-//! durable per-customer artefact is an amendment to that ADR, not a patch, and
-//! this does not need to be durable to do its job.
+//! lets Radar persist **exactly one** thing about a customer and this was not
+//! it. That read the ADR's arithmetic instead of its rule.
 //!
-//! So a restart resets these counters, and it is worth being exact about what
-//! that does and does not cost:
+//! The rule is in its title: *records only the customer state it **cannot
+//! recover***. Its table has one decisive column, "recoverable?", and the one
+//! row answering **no** is the one that gets written down. "Exactly one" was a
+//! count of what passed that test in August, not a ceiling.
 //!
-//! - It **cannot** increase total spend. The global budget is durable through
-//!   [`ledger`](crate::ledger) and still binds; that was fixed for exactly this
-//!   reason and [`the_budget_survives_a_restart`] holds it.
-//! - It **can** let one customer take a larger share across a restart.
+//! A per-customer question count is recoverable from nobody. Privy does not know
+//! it, Stripe does not know it, the chain does not know it. Radar spent the
+//! money. It is the same row as the signature meter, and ADR 0006's amendment of
+//! 2026-09-01 says so.
 //!
-//! That is a fairness weakening rather than a spending one, which is materially
-//! smaller than the failure [`LEARNINGS`] entries 1 and 9 record — where a
-//! restart handed out a fresh *budget*. If it ever matters, the fix is an
-//! amendment to ADR 0006 and a second column on the meter that already exists.
+//! Two things the in-memory version got wrong in practice:
 //!
-//! [`the_budget_survives_a_restart`]: https://github.com/hey-vera/radar/blob/main/crates/radar-serve/tests/the_budget_survives_a_restart.rs
+//! - **A restart handed back the allowance.** Deploys are routine, and under
+//!   `Restart=always` a crash loop returns it per crash. That is
+//!   [`LEARNINGS`] entries 1 and 9 in a new costume, which is exactly what
+//!   `RADAR_STATE_DIR` was made mandatory to stop.
+//! - **It will become a billing fact.** Once a subscription decides who may ask,
+//!   what a customer consumed is something Radar has to be able to stand behind,
+//!   and a figure that resets on deploy is not one.
+//!
 //! [`LEARNINGS`]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use radar_customer::{Subject, SubjectError};
+use serde::{Deserialize, Serialize};
+
+use crate::ledger;
+
+/// The record the counts are written under.
+pub const RECORD: &str = "chat-shares";
 
 /// The variable that configures the per-customer ceiling.
 pub const VAR: &str = "RADAR_CHAT_PER_CUSTOMER_DAILY";
@@ -118,31 +128,69 @@ pub enum Refused {
     NoSubject(SubjectError),
 }
 
-/// Per-customer question counts for the current day.
+/// What survives a restart.
 ///
-/// Keyed by a salted hash of the DID rather than the DID, matching
-/// [`radar_customer::Subject`]'s reasoning: this map is in memory and short
-/// lived, but a heap dump is a copy like any other and there is no reason for it
-/// to carry a customer list.
+/// A day and a set of counts, keyed by a salted hash of the DID rather than the
+/// DID itself — [`radar_customer::Subject`]'s reasoning applies here exactly:
+/// the file outlives the request by years and will be copied, and a copy that
+/// holds counts cannot be joined against anything, while one holding DIDs can.
+#[derive(Clone, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]
+pub struct State {
+    /// The accounting day these counts cover.
+    pub day: u64,
+    /// Questions asked per subject, that day.
+    pub counts: BTreeMap<Subject, u32>,
+}
+
+/// Per-customer question counts, persisted.
 #[derive(Debug)]
 pub struct Shares {
     allowance: Allowance,
+    /// Where the counts are written. `None` only in tests, which say so.
+    store: Option<ledger::Store>,
     inner: Mutex<State>,
 }
 
-#[derive(Debug, Default)]
-struct State {
-    day: u64,
-    counts: HashMap<Subject, u32>,
-}
-
 impl Shares {
-    /// A meter with this allowance.
+    /// A meter that forgets on restart.
+    ///
+    /// **For tests.** Production uses [`Self::restored`], because a meter that
+    /// forgets is one a deploy resets — and deploys are routine.
     #[must_use]
     pub fn new(allowance: Allowance) -> Self {
         Self {
             allowance,
+            store: None,
             inner: Mutex::new(State::default()),
+        }
+    }
+
+    /// A meter that reads back what it wrote.
+    ///
+    /// A record from an earlier day is **not** carried forward: the allowance is
+    /// daily, so yesterday's consumption has no claim on today's, and restoring
+    /// it would refuse everyone until midnight — a different bug wearing this
+    /// one's clothes. The same rule [`radar_customer::Meter::restore`] follows.
+    ///
+    /// An unreadable record starts empty rather than refusing. That is the one
+    /// place here the safe direction is *permissive*, and it is deliberate: the
+    /// alternative is that a corrupt file locks every customer out of a product
+    /// they are paying for, while the **global** budget still bounds what can be
+    /// spent. Losing a day's counts costs fairness for a day; refusing on a
+    /// missing file costs the product.
+    #[must_use]
+    pub fn restored(allowance: Allowance, store: ledger::Store, today: u64) -> Self {
+        let state = store
+            .read::<State>(RECORD)
+            .filter(|saved| saved.day == today)
+            .unwrap_or_default();
+        Self {
+            allowance,
+            store: Some(store),
+            inner: Mutex::new(State {
+                day: today,
+                counts: state.counts,
+            }),
         }
     }
 
@@ -206,7 +254,26 @@ impl Shares {
             });
         }
         *used = used.saturating_add(1);
-        Ok(*used)
+        let count = *used;
+
+        // Written while the lock is held and **before** the caller is told yes,
+        // for the reason the model ledger gives: a process that dies between the
+        // increment and the write cannot know whether the question was asked, and
+        // assuming it was not hands the allowance back.
+        //
+        // A failed write does not refuse. The count in memory is still correct
+        // for this process, the global budget still bounds the spend, and
+        // refusing a paying customer because a disk is full is the wrong failure
+        // -- but it is logged, because a meter that silently stops being durable
+        // is one that looks fine until a restart.
+        if let Some(store) = self.store.as_ref()
+            && let Err(why) = store.write(RECORD, &*state)
+        {
+            eprintln!(
+                "radar-serve: the chat share meter could not be written ({why}); a restart will forget today's counts"
+            );
+        }
+        Ok(count)
     }
 }
 

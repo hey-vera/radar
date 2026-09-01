@@ -296,7 +296,7 @@ pub fn today_utc() -> u64 {
 }
 
 /// A refusal with a reason a person can act on.
-fn refuse(status: StatusCode, why: &str) -> Response {
+pub(crate) fn refuse(status: StatusCode, why: &str) -> Response {
     (status, Json(json!({ "error": why }))).into_response()
 }
 

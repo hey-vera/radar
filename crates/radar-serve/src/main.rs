@@ -127,6 +127,17 @@ async fn main() -> ExitCode {
         }
     };
 
+    // Optional, and its absence is reported rather than fatal. An instance
+    // without a Privy credential cannot look wallets up, which is not the same
+    // as its customers having no wallets -- and it must not stop the operator
+    // surface, which is what this process is mostly for today.
+    let privy = radar_serve::privy::Credentials::from_vars(&|k| std::env::var(k).ok()).ok();
+    let privy_note = privy.as_ref().map_or_else(
+        || "off (no RADAR_PRIVY_APP_SECRET; wallets cannot be read)".to_owned(),
+        |c| format!("on for application {}", c.app_id()),
+    );
+    let privy = privy.map(radar_serve::privy::Client::new);
+
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
     let state = Arc::new(AppState {
@@ -138,6 +149,7 @@ async fn main() -> ExitCode {
         keys: access::KeyCache::new(),
         customer: customer.clone(),
         customer_keys: customer::KeyCache::new(),
+        privy,
         linker: radar_serve::link::Linker::new(),
     });
 
@@ -172,6 +184,12 @@ async fn main() -> ExitCode {
             customer::Mode::Off => "off — customer routes require operator identity".to_owned(),
         }
     );
+    // Separate from the line above, because the two can disagree and the
+    // disagreement is the interesting state: an instance that verifies customer
+    // tokens but cannot read their wallets will sign people in and then fail
+    // every wallet lookup, and an operator should see that at start rather than
+    // from a support message.
+    println!("  wallets    : {privy_note}");
     println!("  agent      : {agent_note}");
     println!("  listening  : http://{bind}");
 

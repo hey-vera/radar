@@ -513,22 +513,64 @@ scp dist/radar-serve dist/radar dist/radar-backfill guardian-vps-tail:/tmp/
 Check the commit line before shipping. `gh run download` takes the most recent
 *completed* run, which during a merge is often the previous one.
 
+### The three binaries do not live in the same place
+
+Checked 2026-09-01, and an earlier version of this section had it wrong in the
+way this file exists to prevent — it installed all three to `~/bin` and then
+`sha256sum`'d `~/bin`, which "verifies" a `radar-serve` that nothing runs.
+
+Ask rather than assume:
+
+```bash
+ssh guardian-vps-tail 'grep -h ExecStart /etc/systemd/system/radar-*.service'
+```
+
+| binary | where its unit runs it from | sudo? |
+|---|---|---|
+| `radar-backfill` | `/home/guardian/bin/` (`radar-follow.service`) | no |
+| `radar` | `/home/guardian/bin/` (used by `radar-brief.sh`) | no |
+| `radar-serve` | **`/usr/local/bin/`**, root-owned | **yes** |
+
 Install by writing beside the target and renaming, rather than over it. A running
 process holds its inode, so a rename never disturbs one mid-write, and the
-running binary keeps working until it is restarted:
+running binary keeps working until it is restarted.
+
+The two that need no privileges:
 
 ```bash
 ssh guardian-vps-tail '
   set -e
-  for b in radar radar-backfill radar-serve; do
+  for b in radar radar-backfill; do
     install -m755 /tmp/$b ~/bin/$b.new && mv -f ~/bin/$b.new ~/bin/$b
   done
-  sha256sum ~/bin/radar ~/bin/radar-backfill ~/bin/radar-serve'
+  sha256sum ~/bin/radar ~/bin/radar-backfill'
 ```
 
-**Compare that output against `BUILD-INFO.txt`.** Verifying the download proves
-the artifact arrived; only this proves the artifact is what got installed, and
-the two came apart in exactly the way described above.
+And the one that does. `guardian` has full sudo but **no NOPASSWD entry for
+radar**, so this needs an interactive session and cannot be run unattended:
+
+```bash
+ssh -t guardian-vps-tail '
+  set -e
+  sudo install -m755 /tmp/radar-serve /usr/local/bin/radar-serve.new &&
+  sudo mv -f /usr/local/bin/radar-serve.new /usr/local/bin/radar-serve &&
+  sha256sum /usr/local/bin/radar-serve'
+```
+
+**Compare all three against `BUILD-INFO.txt`.** Verifying the download proves the
+artifact arrived; only this proves the artifact is what got installed, and the
+two came apart in exactly the way described above.
+
+The quickest way to catch the mistake this section used to cause:
+
+```bash
+ssh guardian-vps-tail 'readlink /proc/$(pgrep -x radar-serve)/exe'
+```
+
+It prints the path, and `(deleted)` after it when the running process is holding
+a binary that has since been replaced — which is a deploy that landed and has not
+been restarted. If it prints a path under `/home/guardian/bin`, the unit is not
+running what you just installed.
 
 Then restart, and ask the service what it thinks it is running:
 

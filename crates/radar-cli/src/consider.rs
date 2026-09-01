@@ -739,11 +739,27 @@ fn verdicts(
         }
         by_mint.insert(proposal.mint, verdict);
     }
-    println!(
-        "
-Radar ships with Policy::CLOSED, which refuses everything. Nothing above
-         was acted on, and nothing will be until that policy is changed deliberately."
-    );
+    // Derived from the policy this run actually judged against. It printed
+    // "Radar ships with Policy::CLOSED, which refuses everything" as a literal,
+    // so it said so whatever the policy was -- the fourth place that could not
+    // stop reassuring, and the one a `repo-conformance` check found rather than
+    // a reader.
+    if policy.is_closed() {
+        println!(
+            "
+Radar ships with a policy that refuses everything. Nothing above was acted
+         on, and nothing will be until that policy is changed deliberately."
+        );
+    } else {
+        println!(
+            "
+CAPITAL IS ARMED: autonomy {:?}, max position {}. What is above was judged
+         against a policy that can authorise. The signer holds its own policy
+         (ADR 0008) and clamps against it unconditionally; it is not readable
+         from here, so this is not a statement that anything was signed.",
+            policy.autonomy, policy.max_position
+        );
+    }
     by_mint
 }
 

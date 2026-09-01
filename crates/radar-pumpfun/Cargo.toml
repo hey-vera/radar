@@ -17,6 +17,7 @@ workspace = true
 radar-decode.workspace = true
 radar-types.workspace = true
 sha2 = "0.10"
+thiserror.workspace = true
 # Only to ask whether a 32-byte value is a point on the ed25519 curve, which is
 # what makes an address a program-derived one. No key is held, generated or used
 # in this crate.
@@ -26,4 +27,10 @@ ed25519-dalek = { workspace = true }
 # Test-only, to read the mainnet account captures the fee model is asserted
 # against. The crate itself parses bytes and needs no JSON.
 serde_json.workspace = true
+# Test-only, and the direction matters: the *builder* depends on the signer to
+# be checked by it, never the reverse. Rule 1 is that nothing shortens the path
+# from a proposal to a signature, and a signer that imported a transaction
+# builder would be a signer that could construct what it signs.
+radar-risk.workspace = true
+radar-signer.workspace = true
 

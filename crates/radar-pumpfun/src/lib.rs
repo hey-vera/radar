@@ -32,7 +32,9 @@ pub mod curve;
 pub mod fees;
 pub mod instruction;
 pub mod pda;
+pub mod transaction;
 
 pub use curve::{BondingCurve, Fill};
 pub use fees::{FeeConfig, Fees};
 pub use instruction::Trade;
+pub use transaction::{AccountMeta, Instruction, Unbuildable};

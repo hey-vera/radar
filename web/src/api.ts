@@ -339,6 +339,35 @@ export interface Capacity {
   round_trip_bps: number;
 }
 
+/** One bucket of the return distribution. */
+export interface Bucket {
+  /** Inclusive floor in bps. Null is open-ended downward. */
+  floor: number | null;
+  /** Exclusive ceiling in bps. Null is open-ended upward. */
+  ceiling: number | null;
+  scored: number;
+}
+
+/** What the selection returned, as a distribution rather than a median. */
+export interface Returns {
+  as_of: number;
+  /** The distribution, **excluding** the exact zeroes. */
+  buckets: Bucket[];
+  /**
+   * How many scored decisions returned exactly zero.
+   *
+   * Its own figure, never a bucket. 24-43% of this population ends exactly
+   * where it started, so drawn as a bar it would be the tallest thing on the
+   * chart and read as a finding about the market — when it is a fact about a
+   * venue where most tokens trade a handful of times and stop.
+   */
+  exactly_zero: number;
+  scored: number;
+  /** Decisions with no entry price or no later observation. Never flat. */
+  unscored: number;
+  round_trip_bps: number;
+}
+
 /** Radar's selection against its own refusals. */
 export interface Scoreboard {
   decisions: number;
@@ -376,4 +405,6 @@ export const research = {
   health: (signal?: AbortSignal) => get<Health>("/health", signal),
   capacity: (signal?: AbortSignal) =>
     get<Capacity>("/v1/evidence/capacity", signal),
+  returns: (signal?: AbortSignal) =>
+    get<Returns>("/v1/evidence/returns", signal),
 };

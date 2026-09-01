@@ -511,6 +511,142 @@ pub fn capacity(decisions: &[Decision], as_of: u64, round_trip_bps: u64) -> Capa
     }
 }
 
+/// The return buckets, in basis points.
+///
+/// Wide, and deliberately so. A histogram of memecoin returns with fine buckets
+/// is a spike at zero and a long flat nothing; these are chosen so the shape a
+/// reader needs — most of the mass is below break-even — is visible at a glance.
+///
+/// The floor is open-ended downward because a token can go to nothing, and the
+/// ceiling is open-ended upward because one occasionally does not.
+const RETURN_BUCKETS: &[(Option<i64>, Option<i64>)] = &[
+    (None, Some(-5_000)),
+    (Some(-5_000), Some(-2_000)),
+    (Some(-2_000), Some(-850)),
+    (Some(-850), Some(0)),
+    // Zero is its own bucket and not a boundary. See `exactly_zero`.
+    (Some(1), Some(850)),
+    (Some(850), Some(2_000)),
+    (Some(2_000), None),
+];
+
+/// One bucket of the return distribution.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Bucket {
+    /// Inclusive floor in bps. `None` is open-ended downward.
+    pub floor: Option<i64>,
+    /// Exclusive ceiling in bps. `None` is open-ended upward.
+    pub ceiling: Option<i64>,
+    /// How many scored decisions landed here.
+    pub scored: usize,
+}
+
+/// What the selection actually returned, as a distribution rather than a median.
+///
+/// # Why a median is not enough, and is the thing to resist
+///
+/// Research 0017's central caveat: **24–43% of both cohorts return exactly
+/// zero**. A median over a point mass that large is a report about the point
+/// mass, not about the market — and a bare median of 0 must not be read as "the
+/// two cohorts performed identically".
+///
+/// A histogram is the only rendering that shows that, which is why this endpoint
+/// exists at all when `/v1/scoreboard` already reports a median.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Returns {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// The distribution, excluding the exact zeroes.
+    pub buckets: Vec<Bucket>,
+    /// How many scored decisions returned **exactly** zero.
+    ///
+    /// Its own figure rather than a bucket, because it is the caveat rather than
+    /// a feature of the distribution. A quarter to two-fifths of this population
+    /// ends exactly where it started — most tokens here trade a handful of times
+    /// and stop — and a bucket that quietly absorbed them would hide the one
+    /// thing 0017 says carries the whole result.
+    pub exactly_zero: usize,
+    /// Scored decisions in total, including the zeroes.
+    pub scored: usize,
+    /// Decisions that could not be scored at all.
+    ///
+    /// A decision with no entry price cannot be scored, and that is every
+    /// refusal that never reached the exit probe. Counted, never treated as a
+    /// return of nothing.
+    pub unscored: usize,
+    /// What a round trip is assumed to cost, per ten thousand.
+    pub round_trip_bps: u64,
+}
+
+/// Builds the return distribution from decisions and their outcomes.
+///
+/// Pure. The bucketing is the part with a wrong version that looks right, and it
+/// needs no store.
+///
+/// **Gross.** Nothing here is net of the round trip; the figure is carried so a
+/// caller can draw the line rather than move the data under it.
+#[must_use]
+pub fn returns(
+    decisions: &[Decision],
+    outcomes: &[radar_store::Outcome],
+    as_of: u64,
+    round_trip_bps: u64,
+) -> Returns {
+    // The last price observed for each mint. A decision is scored against what
+    // the outcome pass last saw, which is the same instrument the scoreboard
+    // uses -- and the same one 0016 warns is not the instrument the entry came
+    // from.
+    let mut last: BTreeMap<String, u64> = BTreeMap::new();
+    for outcome in outcomes {
+        if let Some(price) = outcome.last_price {
+            last.insert(outcome.mint.to_string(), price);
+        }
+    }
+
+    let mut buckets: Vec<Bucket> = RETURN_BUCKETS
+        .iter()
+        .map(|&(floor, ceiling)| Bucket {
+            floor,
+            ceiling,
+            scored: 0,
+        })
+        .collect();
+
+    let mut exactly_zero = 0usize;
+    let mut scored = 0usize;
+    let mut unscored = 0usize;
+
+    for decision in decisions {
+        let bps = last
+            .get(&decision.mint.to_string())
+            .and_then(|price| decision.return_bps(*price));
+        let Some(bps) = bps else {
+            unscored += 1;
+            continue;
+        };
+        scored += 1;
+        if bps == 0 {
+            exactly_zero += 1;
+            continue;
+        }
+        if let Some(bucket) = buckets
+            .iter_mut()
+            .find(|b| b.floor.is_none_or(|f| bps >= f) && b.ceiling.is_none_or(|c| bps < c))
+        {
+            bucket.scored += 1;
+        }
+    }
+
+    Returns {
+        as_of,
+        buckets,
+        exactly_zero,
+        scored,
+        unscored,
+        round_trip_bps,
+    }
+}
+
 /// How many rows each table holds, for the health screen.
 #[derive(Clone, PartialEq, Eq, Debug, Serialize, Default)]
 pub struct StoreCounts {
@@ -1092,5 +1228,123 @@ mod tests {
         assert_eq!(got.unmeasured, 0);
         assert_eq!(got.as_of, 7);
         assert_eq!(got.round_trip_bps, 850);
+    }
+
+    fn outcome(mint: u8, last_price: Option<u64>) -> radar_store::Outcome {
+        radar_store::Outcome {
+            mint: Address::new([mint; 32]),
+            measured_at: Slot(10_000),
+            launch_slot: Slot(4_000),
+            first_transfer_slot: None,
+            last_transfer_slot: None,
+            transfers: 0,
+            unique_senders: 0,
+            unique_receivers: 0,
+            graduated_at: None,
+            first_price: None,
+            last_price,
+            peak_price: None,
+            trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
+            vwap: None,
+            fills: 0,
+        }
+    }
+
+    /// A decision priced at `entry`, so a later price produces a known return.
+    fn priced(mint: u8, entry: u64) -> Decision {
+        Decision {
+            entry_price: Some(entry),
+            ..decision(mint, true, &[], false)
+        }
+    }
+
+    #[test]
+    fn an_exact_zero_is_its_own_figure_and_not_a_bucket() {
+        // 0017's central caveat. A quarter to two-fifths of this population ends
+        // exactly where it started, and a bucket that absorbed them would hide
+        // the one thing the note says carries the whole result -- a median over
+        // that point mass is a report about the point mass.
+        let all = vec![priced(1, 100), priced(2, 100), priced(3, 100)];
+        let seen = vec![
+            outcome(1, Some(100)), // 0 bps
+            outcome(2, Some(100)), // 0 bps
+            outcome(3, Some(50)),  // -5000 bps
+        ];
+        let got = returns(&all, &seen, 1, 850);
+
+        assert_eq!(got.exactly_zero, 2);
+        assert_eq!(got.scored, 3);
+        let binned: usize = got.buckets.iter().map(|b| b.scored).sum();
+        assert_eq!(binned, 1, "the zeroes are not in any bucket");
+    }
+
+    #[test]
+    fn a_decision_with_no_entry_price_is_unscored_rather_than_flat() {
+        // A decision that never reached the exit probe has no entry, so it
+        // cannot be scored. Reporting it as zero would fold "not measurable"
+        // into "broke even" -- which is the whole population's median dressed up
+        // as a result.
+        let all = vec![decision(1, false, &["CapacityBelowFloor"], false)];
+        let got = returns(&all, &[outcome(1, Some(100))], 1, 850);
+        assert_eq!(got.unscored, 1);
+        assert_eq!(got.scored, 0);
+        assert_eq!(got.exactly_zero, 0);
+    }
+
+    #[test]
+    fn a_decision_whose_token_was_never_priced_is_unscored_too() {
+        // Both halves are required. An entry with no exit is as unscoreable as
+        // an exit with no entry, and only one of them is obvious.
+        let got = returns(&[priced(1, 100)], &[outcome(1, None)], 1, 850);
+        assert_eq!(got.unscored, 1);
+        assert_eq!(got.scored, 0);
+    }
+
+    #[test]
+    fn every_scored_return_lands_in_exactly_one_bucket() {
+        // The totals are the check, as with the capacity bands: inclusive on
+        // both sides double-counts, exclusive on both drops a value, and both
+        // draw a histogram that looks entirely normal.
+        //
+        // Entry 100, so a last price of `p` is `(p - 100) * 100` bps.
+        let prices = [1u64, 20, 50, 80, 95, 101, 110, 130, 200, 500];
+        let all: Vec<Decision> = (1..=10u8).map(|m| priced(m, 100)).collect();
+        let seen: Vec<radar_store::Outcome> = prices
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mint = u8::try_from(i + 1).expect("small");
+                outcome(mint, Some(p))
+            })
+            .collect();
+
+        let got = returns(&all, &seen, 1, 850);
+        let binned: usize = got.buckets.iter().map(|b| b.scored).sum();
+        assert_eq!(binned + got.exactly_zero, got.scored);
+        assert_eq!(got.scored, 10);
+    }
+
+    #[test]
+    fn the_deepest_loss_and_the_largest_gain_are_both_open_ended() {
+        // A token can go to nothing, and occasionally one does not. A bounded
+        // bucket at either end silently drops the rows that matter most.
+        let all = vec![priced(1, 1_000_000), priced(2, 1)];
+        let seen = vec![outcome(1, Some(1)), outcome(2, Some(1_000_000))];
+        let got = returns(&all, &seen, 1, 850);
+
+        assert_eq!(got.buckets.first().expect("a floor bucket").scored, 1);
+        assert_eq!(got.buckets.last().expect("a ceiling bucket").scored, 1);
+        assert_eq!(got.scored, 2);
+    }
+
+    #[test]
+    fn an_empty_store_still_reports_the_return_buckets() {
+        let got = returns(&[], &[], 7, 850);
+        assert_eq!(got.buckets.len(), RETURN_BUCKETS.len());
+        assert_eq!(got.scored, 0);
+        assert_eq!(got.exactly_zero, 0);
+        assert_eq!(got.as_of, 7);
     }
 }

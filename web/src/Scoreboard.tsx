@@ -36,6 +36,7 @@ import { useEffect, useState } from "react";
 import { ApiError, research, type Cohort, type Scoreboard as Board } from "./api";
 import { CapacityWall } from "./CapacityWall";
 import { CostCurve } from "./CostCurve";
+import { ReturnDistribution } from "./ReturnDistribution";
 import { clearedCost, median, netOfCost, pct } from "./honesty";
 
 /** Below this many scored proposals, no comparison is reported at all. */
@@ -99,6 +100,7 @@ export function Scoreboard() {
             cohort={board.proposed}
             costBps={board.cost_bps}
           />
+          <ReturnDistribution />
           <NotAControl cohort={board.refused} costBps={board.cost_bps} />
         </>
       ) : (

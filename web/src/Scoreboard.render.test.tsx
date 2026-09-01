@@ -37,6 +37,15 @@ const board: Board = {
 };
 
 /** An empty capacity wall, so the child component on this screen can render. */
+const emptyReturns = {
+  as_of: 441_734_987,
+  buckets: [],
+  exactly_zero: 0,
+  scored: 0,
+  unscored: 0,
+  round_trip_bps: 850,
+};
+
 const emptyWall = {
   as_of: 441_734_987,
   bands: [],
@@ -65,7 +74,13 @@ function serve(body: Board) {
         status: 200,
         statusText: "OK",
         json: () =>
-          Promise.resolve(String(url).includes("/capacity") ? emptyWall : body),
+          Promise.resolve(
+            String(url).includes("/capacity")
+              ? emptyWall
+              : String(url).includes("/returns")
+                ? emptyReturns
+                : body,
+          ),
       }),
     ),
   );

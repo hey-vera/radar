@@ -125,6 +125,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/funnel", get(funnel))
         .route("/v1/decisions", get(decisions))
         .route("/v1/evidence/capacity", get(capacity))
+        .route("/v1/evidence/returns", get(returns))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
@@ -547,6 +548,37 @@ async fn capacity(State(state): State<Arc<AppState>>) -> Response {
     };
     Json(api::capacity(
         &decisions,
+        watermark.get(),
+        api::ASSUMED_COST_BPS,
+    ))
+    .into_response()
+}
+
+/// What the selection returned, as a distribution rather than a median.
+///
+/// The median is already on `/v1/scoreboard`. This exists because a median over
+/// this population is a report about a point mass: 24–43% of it returns exactly
+/// zero, which is research 0017's central caveat and the thing a single figure
+/// cannot show.
+async fn returns(State(state): State<Arc<AppState>>) -> Response {
+    let watermark = match watermark_of(&state) {
+        Ok(w) => w,
+        Err(e) => return e.into_response(),
+    };
+    let as_of = AsOf::at(watermark);
+    let (Ok(decisions), Ok(outcomes)) = (
+        state.store.read_decisions(as_of),
+        state.store.read_outcomes(as_of),
+    ) else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "cannot read the store" })),
+        )
+            .into_response();
+    };
+    Json(api::returns(
+        &decisions,
+        &outcomes,
         watermark.get(),
         api::ASSUMED_COST_BPS,
     ))

@@ -319,6 +319,27 @@ pub fn notional_to_lamports(notional: MicroUsd, sol_price: MicroUsd) -> u64 {
     u64::try_from(product / u128::from(sol_price.get())).unwrap_or(u64::MAX)
 }
 
+/// The router, as the pipeline sees it.
+///
+/// An adapter and nothing more — the signature already matches. It exists
+/// because until 2026-09-01 `Routing` had **no implementation outside a test
+/// stub**, so the pipeline could only ever be exercised against a fixture.
+///
+/// That is the gap [LEARNINGS](https://github.com/hey-vera/radar/blob/main/LEARNINGS.md)
+/// 10 is about: a lane whose every stage is tested against something the real
+/// one would never produce. `Router` builds a transaction from Jupiter; this
+/// makes the executor able to ask it for one.
+impl crate::pipeline::Routing for Router {
+    fn build_buy(
+        &self,
+        mint: &Address,
+        wallet: &Address,
+        size_lamports: u64,
+    ) -> Result<Route, RouteError> {
+        Self::build_buy(self, mint, wallet, size_lamports)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

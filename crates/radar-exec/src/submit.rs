@@ -228,6 +228,18 @@ struct SignatureStatus {
     confirmation_status: Option<String>,
 }
 
+/// The submitter, as the pipeline sees it.
+///
+/// The error is flattened to a string because [`Sending`](crate::pipeline::Sending)
+/// carries whatever the node said, verbatim, rather than a type this crate has
+/// pre-judged. A node's own words are what an operator needs at three in the
+/// morning; a category this code chose for it is not.
+impl crate::pipeline::Sending for Submitter {
+    fn send(&self, transaction: &str) -> Result<Signature, String> {
+        Self::send(self, transaction).map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

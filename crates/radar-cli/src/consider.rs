@@ -1245,4 +1245,47 @@ mod tests {
         // requests to somebody's free endpoint.
         assert!(default_cap() > 0 && default_cap() <= 100);
     }
+
+    #[test]
+    fn every_proposal_gets_a_verdict_under_the_shipped_policy() {
+        // `verdicts` returns the map the caller records from, and nothing
+        // asserted it was populated -- so replacing the whole body with an empty
+        // map passed the suite. That is the shape LEARNINGS 10 records: a
+        // function whose output nothing checks is a function that can stop
+        // working silently.
+        //
+        // The store is empty, which is fine and is the point: the kernel is pure
+        // (rule 2), so a verdict does not depend on there being history. What is
+        // asserted is that every proposal handed in comes back out with one.
+        let store = std::env::temp_dir().join("radar-verdicts-test");
+        let reader = Reader::open(&store);
+
+        let mints = [Address::new([1u8; 32]), Address::new([2u8; 32])];
+        let proposals: Vec<radar_risk::Proposal> = mints
+            .iter()
+            .map(|mint| radar_risk::Proposal {
+                mint: *mint,
+                creator: Address::new([9u8; 32]),
+                action: radar_risk::Action::Buy,
+                notional: radar_types::MicroUsd(5_000_000),
+                estimated_round_trip_cost: radar_types::MicroUsd(100_000),
+                oldest_input_slot: radar_types::Slot(999),
+                simulated_exit_capacity: Some(radar_types::MicroUsd(50_000_000)),
+            })
+            .collect();
+
+        let by_mint = verdicts(&proposals, radar_types::Slot(1_000), &reader);
+
+        assert_eq!(by_mint.len(), proposals.len(), "one verdict per proposal");
+        for mint in &mints {
+            let verdict = by_mint.get(mint).expect("a verdict for every mint");
+            // Under the shipped policy every one of them is refused, and saying
+            // so here is what keeps this test from passing on the day the policy
+            // is opened without anyone noticing this file.
+            assert!(
+                matches!(verdict, Verdict::Refused { .. }),
+                "the shipped policy authorises nothing: {verdict:?}"
+            );
+        }
+    }
 }

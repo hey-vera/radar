@@ -148,7 +148,16 @@ mutants base="origin/main":
         echo "no changes against {{ base }}; nothing to mutate."
         exit 0
     fi
-    {{ cargo }} mutants --in-diff "$diff_file"         --timeout 300 --minimum-test-timeout 60 -- --offline
+    # `--jobs 2` because this runs serially otherwise, and a branch that has
+    # accumulated commits accumulates mutants with them: an early branch here
+    # produced 28, and a forty-commit one produced 390, which took twenty-five
+    # minutes locally and never once finished in CI.
+    #
+    # Two rather than the runner's four cores. Each job builds the workspace, so
+    # the limit is memory rather than CPU, and a job that OOMs intermittently is
+    # worse than one that is merely slow -- it fails in a way that looks like a
+    # real finding.
+    {{ cargo }} mutants --in-diff "$diff_file" --jobs 2         --timeout 300 --minimum-test-timeout 60 -- --offline
 
 # Advisories, licences, and source provenance.
 cargo-deny:

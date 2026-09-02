@@ -548,4 +548,32 @@ mod tests {
         assert_eq!(curve.buy(found).expect("a fill").impact_bps, 100);
         assert_eq!(curve.buy(found + 1).expect("a fill").impact_bps, 101);
     }
+
+    #[test]
+    fn each_reserve_alone_makes_a_curve_untradeable() {
+        // Separately, not together. A curve with *both* reserves zeroed is
+        // refused under any reading of the guard, so a test that only does that
+        // leaves each half free -- which is what mutation testing found.
+        let base = live();
+
+        let no_tokens = BondingCurve {
+            virtual_token_reserves: 0,
+            ..base
+        };
+        assert!(!no_tokens.is_tradeable(), "no tokens is no trade");
+        assert_eq!(no_tokens.sell(1_000), None);
+        assert_eq!(no_tokens.buy(1_000), None);
+
+        let no_sol = BondingCurve {
+            virtual_sol_reserves: 0,
+            ..base
+        };
+        assert!(!no_sol.is_tradeable(), "no lamports is no trade");
+        assert_eq!(no_sol.sell(1_000), None);
+        assert_eq!(no_sol.buy(1_000), None);
+
+        // And the unmodified curve is tradeable, so the assertions above are
+        // about the reserves rather than about the fixture.
+        assert!(base.is_tradeable());
+    }
 }

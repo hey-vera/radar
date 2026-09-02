@@ -371,4 +371,131 @@ mod tests {
         compact_u16(16_384, &mut out);
         assert_eq!(out, vec![0x80, 0x80, 0x01]);
     }
+
+    #[test]
+    fn an_account_named_twice_keeps_the_signer_flag_too() {
+        // The sibling of the writable case. `entry.1 = entry.1 || meta.signer`
+        // and `entry.2 = entry.2 || meta.writable` are separate lines, and a
+        // test covering only one leaves the other free.
+        let payer = addr(1);
+        let other = addr(5);
+        let bytes = message(
+            &payer,
+            &[
+                ix(9, vec![AccountMeta::readonly(other)]),
+                ix(9, vec![AccountMeta::signer(other)]),
+            ],
+            &[0u8; 32],
+        )
+        .expect("builds");
+        // Two signers now: the payer and `other`.
+        assert_eq!(
+            bytes[0], 2,
+            "a signer seen first as a reader is still a signer"
+        );
+    }
+
+    #[test]
+    fn the_signature_count_is_one_per_distinct_signer() {
+        // Guards the `1 +` that counts the payer. Under `-` this is zero and
+        // under `*` it stays one, and both produce a message the runtime would
+        // reject for a reason that says nothing about the bug.
+        let payer = addr(1);
+        let cosigner = addr(2);
+
+        let alone = message(
+            &payer,
+            &[ix(9, vec![AccountMeta::writable(addr(3))])],
+            &[0u8; 32],
+        )
+        .expect("builds");
+        assert_eq!(alone[0], 1, "just the payer");
+
+        let together = message(
+            &payer,
+            &[ix(9, vec![AccountMeta::signer(cosigner)])],
+            &[0u8; 32],
+        )
+        .expect("builds");
+        assert_eq!(together[0], 2, "the payer and one cosigner");
+
+        // And the transaction reserves exactly that many 64-byte slots.
+        let tx = transaction(
+            &payer,
+            &[ix(9, vec![AccountMeta::signer(cosigner)])],
+            &[0u8; 32],
+        )
+        .expect("builds");
+        assert_eq!(tx[0], 2);
+        assert!(tx[1..129].iter().all(|b| *b == 0), "two empty signatures");
+        // The message begins straight after them.
+        assert_eq!(tx[129], 2, "the message's own signature count");
+    }
+
+    #[test]
+    fn the_four_account_groups_are_partitioned_exactly() {
+        // The header's two counts are derived from the same predicate that
+        // orders the keys, so a filter comparing the wrong way round produces a
+        // header that disagrees with the table it describes.
+        let payer = addr(1);
+        let bytes = message(
+            &payer,
+            &[ix(
+                9,
+                vec![
+                    AccountMeta::signer(addr(2)),   // writable signer
+                    AccountMeta::writable(addr(3)), // writable non-signer
+                    AccountMeta::readonly(addr(4)), // readonly non-signer
+                ],
+            )],
+            &[0u8; 32],
+        )
+        .expect("builds");
+
+        let required = usize::from(bytes[0]);
+        let readonly_signed = usize::from(bytes[1]);
+        let readonly_unsigned = usize::from(bytes[2]);
+        let count = usize::from(bytes[3]);
+
+        assert_eq!(required, 2, "the payer and the writable signer");
+        assert_eq!(readonly_signed, 0, "no readonly signers here");
+        // addr(4) and the program are both readonly non-signers.
+        assert_eq!(readonly_unsigned, 2);
+        assert_eq!(count, 5, "payer, signer, writable, readonly, program");
+        // Every account is in exactly one group, and the writable non-signers
+        // are what is left over. Written as a subtraction rather than as
+        // `a + (b - a) == b`, which the first version of this test asserted and
+        // which is true of any three numbers.
+        let writable_unsigned = count - required - readonly_unsigned;
+        assert_eq!(writable_unsigned, 1, "just addr(3)");
+    }
+
+    #[test]
+    fn the_account_ceiling_is_where_a_one_byte_index_runs_out() {
+        // 255 accounts fit; 256 do not. A boundary written `>=` would refuse a
+        // buildable transaction and one written `==` would let 256 through and
+        // emit an index that wrapped -- which names the wrong account rather
+        // than failing.
+        let payer = addr(1);
+        let metas = |n: u16| {
+            (0..n)
+                .map(|i| {
+                    let mut bytes = [0u8; 32];
+                    bytes[0..2].copy_from_slice(&i.to_le_bytes());
+                    bytes[31] = 0x5A;
+                    AccountMeta::readonly(Address::new(bytes))
+                })
+                .collect::<Vec<_>>()
+        };
+        // 253 distinct + payer + program = 255.
+        let fits = message(&payer, &[ix(9, metas(253))], &[0u8; 32]);
+        assert!(fits.is_ok(), "255 accounts must build");
+
+        // One more tips it over.
+        let over = message(&payer, &[ix(9, metas(254))], &[0u8; 32]);
+        assert!(
+            matches!(over, Err(Unbuildable::TooManyAccounts { count: 256 })),
+            "256 accounts must be refused, got {over:?}"
+        );
+    }
 }

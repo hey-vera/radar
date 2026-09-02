@@ -332,3 +332,31 @@ fn a_schedule_claiming_more_rows_than_it_carries_is_refused() {
     bytes[41 + 24..41 + 24 + 4].copy_from_slice(&99u32.to_le_bytes());
     assert!(FeeConfig::parse(&bytes).is_err());
 }
+
+#[test]
+fn a_cut_before_the_tier_vector_reports_its_own_offsets_too() {
+    // The offsets *before* the loop: the flat fees and the row count. The
+    // earlier truncation test only ever reached offsets inside the loop body,
+    // so these two could be corrupted silently -- which is what a second round
+    // of mutation testing found.
+    use radar_pumpfun::curve::Malformed;
+    let full = synthetic(&[(0, 1, 2, 3)]);
+
+    // Header is 41 bytes; the flat fees need 24 more, so they end at 65.
+    match FeeConfig::parse(&full[..41 + 8]) {
+        Err(Malformed::TooShort { len, needed }) => {
+            assert_eq!(len, 41 + 8);
+            assert_eq!(needed, 65, "the flat fees the header could not reach");
+        }
+        other => panic!("expected a length refusal, got {other:?}"),
+    }
+
+    // Past the flat fees but inside the four-byte row count, which ends at 69.
+    match FeeConfig::parse(&full[..67]) {
+        Err(Malformed::TooShort { len, needed }) => {
+            assert_eq!(len, 67);
+            assert_eq!(needed, 69, "the row count that was cut in half");
+        }
+        other => panic!("expected a length refusal, got {other:?}"),
+    }
+}

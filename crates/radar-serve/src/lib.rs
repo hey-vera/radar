@@ -130,6 +130,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
+        .route("/v1/customer/config", get(customer_config))
         .route("/v1/customer/wallet", get(customer_wallet))
         .route("/v1/events", get(events))
         .route("/v1/customer/events", get(customer_events))
@@ -193,6 +194,34 @@ pub fn app(state: Arc<AppState>) -> Router {
 /// It does not create a wallet, and it does not ask for a signer grant. Both are
 /// the customer's actions, taken in their own session against Privy — a server
 /// that could grant itself a signer is not a bounded signer.
+/// Which Privy application the interface should authenticate against.
+///
+/// **Public, and it has to be**: this is what the frontend reads *before* a
+/// customer has any token at all, so gating it behind a customer token would
+/// make logging in require being logged in.
+///
+/// The app id is a public client identifier — it ships inside the JavaScript
+/// bundle of every Privy application there is, and holding one authorises
+/// nothing. What is emphatically not here is the app *secret*, which is the
+/// credential, lives only in the server's environment, and is what
+/// `state.privy` holds.
+///
+/// Nothing else is returned. A bootstrap endpoint that also reported store
+/// counts or instance health would be an operator surface wearing a public
+/// one's clothes, which is exactly the mistake `audience_of` exists to prevent.
+async fn customer_config(State(state): State<Arc<AppState>>) -> Response {
+    let Some(config) = state.customer.config() else {
+        // Rule 8. An instance with no customer authentication configured says
+        // so, rather than serving a page that will fail at the login button
+        // with something less legible.
+        return chat::refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this instance has no customer authentication configured",
+        );
+    };
+    Json(serde_json::json!({ "privy_app_id": config.app_id })).into_response()
+}
+
 async fn customer_wallet(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,

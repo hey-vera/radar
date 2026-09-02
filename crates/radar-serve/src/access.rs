@@ -563,7 +563,14 @@ impl Audience {
 /// `/x402-internal` would match it.
 #[must_use]
 pub fn audience_of(path: &str) -> Audience {
-    if path == "/health" || path.starts_with("/x402/") {
+    if path == "/health"
+        || path.starts_with("/x402/")
+        // The interface's login bootstrap. Public because it is read *before*
+        // the customer has a token, so requiring one would make logging in
+        // require being logged in. It returns a public client identifier and
+        // nothing else -- see `customer_config`.
+        || path == "/v1/customer/config"
+    {
         return Audience::Public;
     }
 
@@ -1044,6 +1051,9 @@ mod tests {
             // The watermark only. `/v1/events` stays Operator because its
             // payload is the operator's store counts.
             ("/v1/customer/events", Audience::Customer),
+            // Public, unlike everything else under `/v1/customer/`. It is the
+            // login bootstrap, read before a token exists.
+            ("/v1/customer/config", Audience::Public),
             (
                 "/v1/tokens/So11111111111111111111111111111111111111112",
                 Audience::Customer,
@@ -1204,5 +1214,23 @@ mod tests {
         // finds this test and its explanation before it finds a use of it.
         assert_eq!(UNTRUSTED_EMAIL_HEADER, "cf-access-authenticated-user-email");
         assert_eq!(ASSERTION_HEADER, "cf-access-jwt-assertion");
+    }
+
+    #[test]
+    fn the_login_bootstrap_is_public_but_its_siblings_are_not() {
+        // The one public route under `/v1/customer/`, and the exception is
+        // load-bearing: a frontend cannot send a customer token before it knows
+        // which application to get one from. Asserted next to its siblings so
+        // the exception cannot quietly widen into "anything under
+        // /v1/customer/ is public".
+        assert_eq!(audience_of("/v1/customer/config"), Audience::Public);
+        assert_eq!(audience_of("/v1/customer/wallet"), Audience::Customer);
+        assert_eq!(audience_of("/v1/customer/events"), Audience::Customer);
+        // And the prefix itself grants nothing.
+        assert_eq!(audience_of("/v1/customer/"), Audience::Operator);
+        assert_eq!(
+            audience_of("/v1/customer/config/secrets"),
+            Audience::Operator
+        );
     }
 }

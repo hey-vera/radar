@@ -16,9 +16,48 @@ One subject each.
 
 ## The one-sentence version
 
-**Radar is a Solana trading system that decides like a professional asset
-manager: it refuses far more often than it acts, it can prove why, and it will
-not risk money on an edge it has not measured.**
+**Radar is an evidence-driven autonomous trading system whose AI can reason and
+execute, but whose execution is constrained by measurable edge, explicit customer
+authorisation, and deterministic risk controls.**
+
+## What it is optimising for
+
+**More profit and less loss for the customer, over time and in the moment.**
+
+Both halves are load-bearing. "Over time" rules out a strategy that wins often
+and ruins you once. "In the moment" rules out one that is theoretically sound and
+unexecutable at the size and speed the venue actually offers — which is the trap
+`0018` found Radar already in, sizing positions the market could not absorb.
+
+## The AI is a source of edge, not only a risk to be contained
+
+This is the part most easily lost when writing down the safety rules, so it is
+stated first: **the AI is expected to find edge that the deterministic strategy
+does not.** It reasons over the signals, the launch structure, the creator
+history and the execution costs together, and the claim is that reasoning across
+them yields something none of them yields alone.
+
+That is the product. The constraints exist so the claim can be tested with real
+money without the failure mode being ruinous.
+
+**"Reason and execute" and "never authorise" are not in tension**, and the
+distinction is the whole design:
+
+| | Who |
+|---|---|
+| Decide what looks worth doing | **the AI** — reasoning over everything available |
+| Decide whether it is permitted | the deterministic risk kernel, purely |
+| Decide whether to sign it | the separate signer, re-reading the bytes |
+| Grant the authority at all | **the customer**, revocably |
+
+The AI drives. It does not also hold the brake, and it cannot remove it. See
+[AGENTS.md](AGENTS.md) rule 1 for why that boundary is not negotiable — an AI
+that could authorise its own trades is a system whose worst day is unbounded.
+
+**The AI is measured, not trusted.** Whatever it proposes is held to the same bar
+as everything else: roughly 456 bps of expected edge before a trade is worth
+making at all. An AI strategy that cannot clear it does not get to trade because
+it is an AI.
 
 ## Who it is for
 
@@ -93,9 +132,10 @@ Whirlpool do not have that ceiling, and route in a form the signer can already
 read. Broadening is worth doing *after* an edge exists, because venues make a
 working edge bigger and do not create one.
 
-**The AI.** The model proposes; it never authorises. That is not a limitation to
-engineer around — it is what makes an AI-driven trading product safe enough to
-hand a stranger's money to. See [AGENTS.md](AGENTS.md) rule 1.
+**The AI.** Today the strategy is deterministic rules. The next step is a model
+reasoning over the same evidence and proposing what the rules do not see — held
+to the same bar, and authorised the same way. Nothing about that path needs the
+boundary in rule 1 to move.
 
 ---
 

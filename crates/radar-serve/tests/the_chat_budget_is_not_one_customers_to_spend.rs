@@ -133,6 +133,7 @@ fn router(allowance: Allowance, keys: Keys) -> (axum::Router, Arc<AtomicBool>) {
         customer_keys: KeyCache::preloaded(keys),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        challenges: None,
     }));
     (router, reached)
 }

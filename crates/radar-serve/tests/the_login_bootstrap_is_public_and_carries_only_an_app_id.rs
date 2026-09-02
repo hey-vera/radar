@@ -50,6 +50,7 @@ fn router(customer: Mode) -> axum::Router {
         customer_keys: KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        challenges: None,
     }))
 }
 

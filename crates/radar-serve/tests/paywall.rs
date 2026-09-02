@@ -40,6 +40,7 @@ fn configured() -> axum::Router {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        challenges: None,
     }))
 }
 
@@ -61,6 +62,7 @@ fn unconfigured() -> axum::Router {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        challenges: None,
     }))
 }
 

@@ -214,6 +214,14 @@ async fn main() -> ExitCode {
         customer_keys: customer::KeyCache::new(),
         privy,
         linker: radar_serve::link::Linker::new(),
+        // The domain a sign-in is bound to. Unset means no customer sign-in,
+        // rather than a guess: a wrong domain here would have wallets sign a
+        // message naming a site this is not, and the signature would then be
+        // valid somewhere Radar does not control.
+        challenges: std::env::var("RADAR_CUSTOMER_DOMAIN")
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .map(radar_serve::challenges::Challenges::new),
     });
 
     println!("radar-serve v{}", env!("CARGO_PKG_VERSION"));

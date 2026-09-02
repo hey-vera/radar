@@ -570,6 +570,10 @@ pub fn audience_of(path: &str) -> Audience {
         // require being logged in. It returns a public client identifier and
         // nothing else -- see `customer_config`.
         || path == "/v1/customer/config"
+        // Sign-in itself. Public because this *is* the act of authenticating,
+        // so requiring authentication would be circular.
+        || path == "/v1/customer/siws/challenge"
+        || path == "/v1/customer/siws/verify"
     {
         return Audience::Public;
     }

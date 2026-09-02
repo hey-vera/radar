@@ -14,6 +14,7 @@
 pub mod access;
 pub mod admission;
 pub mod api;
+pub mod challenges;
 pub mod chat;
 pub mod customer;
 mod embed;
@@ -108,6 +109,12 @@ pub struct AppState {
     pub customer_salt: Vec<u8>,
     /// The one credential-linking flow that may be in progress.
     pub linker: link::Linker,
+    /// Outstanding sign-in challenges, or `None` when no customer domain is set.
+    ///
+    /// `None` is rule 8's shape: an instance that does not know its own domain
+    /// cannot bind a signature to itself, so it refuses to issue challenges
+    /// rather than issuing ones that would authenticate against any site.
+    pub challenges: Option<challenges::Challenges>,
 }
 
 /// Builds the router.
@@ -131,6 +138,8 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/store", get(store_counts))
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/config", get(customer_config))
+        .route("/v1/customer/siws/challenge", post(siws_challenge))
+        .route("/v1/customer/siws/verify", post(siws_verify))
         .route("/v1/customer/wallet", get(customer_wallet))
         .route("/v1/events", get(events))
         .route("/v1/customer/events", get(customer_events))
@@ -194,6 +203,129 @@ pub fn app(state: Arc<AppState>) -> Router {
 /// It does not create a wallet, and it does not ask for a signer grant. Both are
 /// the customer's actions, taken in their own session against Privy — a server
 /// that could grant itself a signer is not a bounded signer.
+/// Issues a challenge for a wallet to sign.
+///
+/// **Public, and unauthenticated by necessity** -- it runs before anyone has
+/// proved anything. That is why `Challenges` has a ceiling: the only caller is
+/// the whole internet.
+///
+/// The domain comes from the server, never from the request. A caller who could
+/// choose the domain could have a wallet sign a message naming somebody else's
+/// site, which is the replay this binds against.
+async fn siws_challenge(State(state): State<Arc<AppState>>) -> Response {
+    let Some(challenges) = state.challenges.as_ref() else {
+        // Rule 8: an instance with no customer domain configured cannot bind a
+        // signature to itself, so it does not pretend to.
+        return chat::refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this instance has no customer sign-in configured",
+        );
+    };
+    let nonce = radar_types::b64::encode_url(&random_nonce());
+    match challenges.issue(nonce, now_unix()) {
+        Ok(challenge) => Json(serde_json::json!({
+            "domain": challenge.domain,
+            "nonce": challenge.nonce,
+            "issued_at": challenge.issued_at,
+            // The exact text to sign, rendered by the server. The client must
+            // not build its own: two renderings of one message can drift, and
+            // the drift would look like a wallet bug rather than a mismatch.
+            "expires_in_seconds": radar_customer::siws::MAX_AGE_SECONDS,
+        }))
+        .into_response(),
+        Err(busy) => chat::refuse(StatusCode::SERVICE_UNAVAILABLE, &busy.to_string()),
+    }
+}
+
+/// What a wallet sends back.
+#[derive(serde::Deserialize)]
+struct SignInBody {
+    address: String,
+    message: String,
+    /// The signature, base64.
+    signature: String,
+}
+
+/// Verifies a signed challenge and issues a session.
+///
+/// Public for the same reason as the challenge: this *is* the act of
+/// authenticating, so requiring authentication would be circular.
+async fn siws_verify(State(state): State<Arc<AppState>>, Json(body): Json<SignInBody>) -> Response {
+    let Some(challenges) = state.challenges.as_ref() else {
+        return chat::refuse(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this instance has no customer sign-in configured",
+        );
+    };
+    let Ok(address) = body.address.parse::<radar_types::Address>() else {
+        return chat::refuse(StatusCode::BAD_REQUEST, "that is not a Solana address");
+    };
+    let Some(signature) = radar_types::b64::decode(&body.signature) else {
+        return chat::refuse(StatusCode::BAD_REQUEST, "the signature is not base64");
+    };
+
+    // The nonce is read out of the message the wallet signed, not from a
+    // separate field. A caller that could name one nonce and sign another would
+    // spend a challenge it never proved anything about.
+    let Some(nonce) = nonce_in(&body.message) else {
+        return chat::refuse(StatusCode::BAD_REQUEST, "the message carries no nonce");
+    };
+    let now = now_unix();
+    // Spent here, before verification, and deliberately: a signature that fails
+    // to verify still consumes the challenge it was offered against. Otherwise
+    // one issued nonce can be attacked repeatedly.
+    let Some(challenge) = challenges.spend(&nonce, now) else {
+        return chat::refuse(
+            StatusCode::UNAUTHORIZED,
+            "that challenge is unknown, spent, or expired",
+        );
+    };
+
+    let signin = radar_customer::siws::SignIn {
+        address,
+        message: body.message,
+        signature,
+    };
+    match radar_customer::siws::verify(&signin, &challenge, now) {
+        Ok(verified) => {
+            match radar_customer::session::issue(&verified, &state.customer_salt, now) {
+                Ok(token) => Json(serde_json::json!({
+                    "token": token,
+                    "address": verified.to_string(),
+                    "expires_in_seconds": radar_customer::session::LIFETIME_SECONDS,
+                }))
+                .into_response(),
+                Err(e) => chat::refuse(StatusCode::SERVICE_UNAVAILABLE, &e.to_string()),
+            }
+        }
+        Err(refused) => chat::refuse(StatusCode::UNAUTHORIZED, &refused.to_string()),
+    }
+}
+
+/// The nonce line of a signed message.
+///
+/// Read from the signed text rather than taken as a separate field, so the
+/// challenge that is spent is the one that was actually signed.
+fn nonce_in(message: &str) -> Option<String> {
+    message
+        .lines()
+        .find_map(|line| line.strip_prefix("Nonce: "))
+        .map(|n| n.trim().to_owned())
+        .filter(|n| !n.is_empty())
+}
+
+/// Thirty-two random bytes.
+fn random_nonce() -> [u8; 32] {
+    use ring::rand::SecureRandom as _;
+    let mut bytes = [0u8; 32];
+    // A failure here means the system random source is unavailable, which is not
+    // a condition to paper over with a weaker source.
+    ring::rand::SystemRandom::new()
+        .fill(&mut bytes)
+        .expect("the system random source");
+    bytes
+}
+
 /// Which Privy application the interface should authenticate against.
 ///
 /// **Public, and it has to be**: this is what the frontend reads *before* a
@@ -289,6 +421,32 @@ async fn guard(
         && let Some(config) = state.customer.config()
         && let Some(token) = customer::token_from(request.headers())
     {
+        // A wallet session first. Under ADR 0011's amendment this is the lane
+        // that ships, and a bearer token is one or the other -- the two formats
+        // cannot be confused, because a session token is two base64url parts
+        // separated by a dot with no header, and a JWT has three.
+        if let Ok(session) =
+            radar_customer::session::verify(&token, &state.customer_salt, now_unix())
+        {
+            // The address is the identity. It goes in the same `Customer` the
+            // Privy path produces, so admission, metering and every handler
+            // downstream work unchanged and there is one notion of "who is
+            // calling" rather than two that can disagree.
+            //
+            // The two namespaces cannot collide: a Privy subject is
+            // `did:privy:...` and this is base58.
+            let customer = customer::Customer {
+                did: session.address.to_string(),
+                session: session.expires_at.to_string(),
+            };
+            if state.admission.admits(&customer.did) {
+                let mut request = request;
+                request.extensions_mut().insert(customer);
+                return next.run(request).await;
+            }
+            not_admitted = Some(customer.did);
+        }
+
         let verified = tokio::task::block_in_place(|| {
             let keys = state.customer_keys.get(config)?;
             customer::verify(&token, &keys, config, now_unix())

@@ -198,12 +198,53 @@ pub fn stamp(
         .map_err(|e| NotStamped::SigningFailed(e.to_string()))?;
 
     // Turnkey's stamp is base64url of this JSON object, unpadded.
+    Ok(envelope(key, signature.as_ref()))
+}
+
+/// The only path prefix a read may be stamped for.
+///
+/// Turnkey separates reads (`/query/`) from state changes (`/submit/`), and
+/// that separation is what makes [`stamp_query`] safe to exist.
+pub const QUERY_PREFIX: &str = "/public/v1/query/";
+
+/// Stamps a **read**, which carries no transaction to check.
+///
+/// This is the one entry point that signs bytes without running
+/// [`crate::verify::check`], and it is narrow on purpose. A general
+/// "stamp these bytes" function is exactly what this module refuses to offer:
+/// it would let a caller stamp a signing request that nothing had checked,
+/// which is the whole failure [`stamp`] is shaped to prevent.
+///
+/// So the safety here is **structural, not advisory**. The path is an argument
+/// and anything outside [`QUERY_PREFIX`] is refused, so this function cannot be
+/// pointed at `/submit/` however it is called. Turnkey's own API is what makes
+/// that a real boundary rather than a naming convention: reads and state
+/// changes live under different prefixes.
+///
+/// # Errors
+///
+/// [`NotStamped::NoTransaction`] when the path is not a query — reusing that
+/// variant because the condition is the same one it always means: this request
+/// was not checked, so it is not stamped.
+pub fn stamp_query(key: &ApiKey, path: &str, body: &str) -> Result<String, NotStamped> {
+    if !path.starts_with(QUERY_PREFIX) {
+        return Err(NotStamped::NoTransaction);
+    }
+    let signature = key
+        .pair
+        .sign(&ring::rand::SystemRandom::new(), body.as_bytes())
+        .map_err(|e| NotStamped::SigningFailed(e.to_string()))?;
+    Ok(envelope(key, signature.as_ref()))
+}
+
+/// The base64url stamp envelope Turnkey expects.
+fn envelope(key: &ApiKey, signature: &[u8]) -> String {
     let stamp = serde_json::json!({
         "publicKey": key.public_key_hex,
         "scheme": SCHEME,
-        "signature": hex(signature.as_ref()),
+        "signature": hex(signature),
     });
-    Ok(radar_types::b64::encode_url(stamp.to_string().as_bytes()))
+    radar_types::b64::encode_url(stamp.to_string().as_bytes())
 }
 
 #[cfg(test)]
@@ -448,5 +489,49 @@ mod tests {
             ApiKey::parse(&radar_types::b64::encode(b"too short"), "02"),
             Err(NotStamped::KeyFailed(_))
         ));
+    }
+
+    #[test]
+    fn a_read_may_be_stamped_but_only_on_a_query_path() {
+        // The structural half of the guarantee. `stamp_query` is the only
+        // function here that signs without checking a transaction, so the thing
+        // that matters is that it cannot be aimed at a submission.
+        let api = key();
+        let body = r#"{"organizationId":"org"}"#;
+        assert!(stamp_query(&api, "/public/v1/query/whoami", body).is_ok());
+
+        for path in [
+            "/public/v1/submit/sign_transaction",
+            "/public/v1/submit/create_policy",
+            "/",
+            "",
+            // A query prefix that is not at the start must not pass either.
+            "/evil?next=/public/v1/query/whoami",
+        ] {
+            assert!(
+                matches!(
+                    stamp_query(&api, path, body),
+                    Err(NotStamped::NoTransaction)
+                ),
+                "a read stamp must be refused for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_read_stamp_and_a_checked_stamp_share_one_envelope() {
+        // Two producers of the same header would be two things that can drift,
+        // and a stamp Turnkey rejects fails as an authentication error rather
+        // than as the encoding bug it is.
+        let api = key();
+        let read = stamp_query(&api, "/public/v1/query/whoami", "{}").expect("a stamp");
+        let decoded = radar_types::b64::decode_url(&read).expect("base64url");
+        let value: serde_json::Value = serde_json::from_slice(&decoded).expect("JSON");
+        assert_eq!(value["scheme"], SCHEME);
+        assert_eq!(value["publicKey"], "02deadbeef");
+        assert!(
+            value["signature"].as_str().expect("hex").starts_with("30"),
+            "ASN.1 DER, the same as a checked stamp"
+        );
     }
 }

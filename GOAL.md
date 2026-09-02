@@ -108,6 +108,48 @@ In order. Nothing below is skippable, and nothing later is worth building first.
 4. **The record shows it worked** — realised, net of the round trip, against a
    control that could have been traded.
 
+## The public analyst — receipts in the reply
+
+**A Radar account on X that anyone can @-mention under a memecoin post, which
+answers with what Radar measured.** Not an opinion, not a rating: the evidence.
+
+> Six recipients in the launch block. The creator has twelve prior launches and
+> none graduated. Exit capacity at 1% impact is $31, against a 250 bps round
+> trip.
+
+Why this belongs in the goal rather than in a marketing plan: **it is the one
+product that works before an edge exists.** Radar can be genuinely useful and
+completely honest today, because "this launch was bundled" is a measured fact
+about a block, not a prediction about a price. And the flywheel is the strongest
+demonstration available of the thing that makes Radar different — everyone else
+gives opinions, Radar gives receipts.
+
+It is also the cheapest possible test of whether anyone wants what Radar knows.
+
+**What exists and what does not**, because "we mostly have this already" is the
+kind of assumption that turns a week into a quarter:
+
+| | |
+|---|---|
+| launch-block bundle detection | **exists** |
+| creator history, exit capacity, curve pricing | **exists** |
+| bundling detected *after* launch | partly — the detector is written, the rolling block source is not |
+| sniper counts, bot counts | **do not exist** |
+| any X or social data at all | **does not exist** |
+
+So the on-chain half is real and the social half is zero.
+
+**Three constraints, to be designed in rather than discovered:**
+
+- **It states only what was measured.** Never "this is a scam" — always the
+  count, the history, the number. Safer, and more differentiating.
+- **Mentions are untrusted input.** An account that reads replies and answers
+  with a model is a prompt-injection surface, and somebody will try it on day
+  one. [AGENTS.md](AGENTS.md) rule 4 is not optional here.
+- **It is public, automated, and about identifiable people's projects.** A wrong
+  accusation at scale is a different risk from a wrong number on a private
+  dashboard. What it may assert needs bounds before it posts anything.
+
 ## What Radar will not become
 
 Each of these is a decision, not an oversight.

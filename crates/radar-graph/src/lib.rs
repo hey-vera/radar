@@ -47,6 +47,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ongoing;
 pub mod prevalence;
 
 use radar_types::EvidenceTier;

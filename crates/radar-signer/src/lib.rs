@@ -21,6 +21,7 @@ pub mod canonical;
 pub mod key;
 pub mod privy;
 pub mod protocol;
+pub mod turnkey;
 pub mod tx;
 pub mod verify;
 

@@ -1453,6 +1453,7 @@ name = "radar-customer"
 version = "0.0.1"
 dependencies = [
  "blake3",
+ "ed25519-dalek",
  "radar-risk",
  "radar-types",
  "serde",

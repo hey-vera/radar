@@ -25,6 +25,8 @@
 
 mod grant;
 mod signatures;
+pub mod siws;
 
 pub use grant::{Bounds, Grant, NotGranted};
 pub use signatures::{Allowance, MIN_SALT_BYTES, Meter, Reading, Subject, SubjectError};
+pub use siws::{Challenge, SignIn};

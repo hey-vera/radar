@@ -11,6 +11,9 @@ authors.workspace = true
 
 [dependencies]
 blake3.workspace = true
+# Verifying that a customer owns the wallet they claim (`siws`). Verification
+# only: this crate holds no key and signs nothing.
+ed25519-dalek.workspace = true
 radar-risk.workspace = true
 radar-types.workspace = true
 serde.workspace = true

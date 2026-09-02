@@ -1,8 +1,7 @@
+This file stands at the end goal and vision of radar as a product, if things in this document are not proper they should be brought up by an AI model. If josh decides something different this file must be updated with what radar is actually supposed to be in simple terms.
 <!-- SPDX-License-Identifier: Apache-2.0 -->
-# AGENTS.md
+#GOAL.md
 
-Instructions for coding agents working in this repository. Follows the
-[AGENTS.md](https://agents.md) convention.
 
 ## What this project is
 

@@ -2,10 +2,11 @@
 # 0011 — One wallet system, two authority levels, on Turnkey
 
 **Date:** 2026-09-02
-**Status:** decided, and **conditional on a spike that has not run yet**. See
-"What must be proved before any integration code" — if the spike fails, this
-decision reverts to [ADR 0005](0005-customers-keep-custody-and-grant-radar-a-bounded-signer.md)'s
-Privy and this file says so.
+**Status:** **superseded in its sequencing, and deferred in its vendor choice.**
+Read the amendment at the bottom first — it is dated 2026-09-02, the same day,
+and it changes what gets built now. The reasoning below about custody, about the
+signer, and about why a customer must sign every pump.fun trade all still hold.
+What no longer holds is that an embedded wallet is the thing to build first.
 
 Supersedes the vendor choice in ADR 0005 and the key placement in
 [ADR 0007](0007-the-privy-authorization-key-lives-in-the-signer-process.md).
@@ -179,3 +180,112 @@ unreliable.
 If the spike fails precondition 1, 2 or 3, stay on Privy. The Privy code is not
 deleted until the spike passes, so reverting is abandoning a branch rather than
 rebuilding a lane.
+
+---
+
+## Amendment, 2026-09-02 — bring-your-own-wallet first, and the vendor choice is deferred
+
+Everything above decides *which embedded-wallet vendor*. That was the wrong
+first question, and three things surfaced after it was written.
+
+### The cost comparison in "Why Turnkey over Privy" is wrong
+
+It says cost is not a constraint. For a **running bot** that is false, and the
+error is in the direction that would have cost money.
+
+| | free tier |
+|---|---|
+| Privy | **50,000 monthly signatures**, under 499 monthly active wallets |
+| Turnkey | **25 signatures**, then $0.10/transaction or $99/month |
+
+Twenty-five signatures is a few minutes of a trading bot. The claim that both
+were free was true only of the refusal spike, not of operation. Corrected here
+rather than left standing.
+
+### Radar's own capital needs no vendor at all
+
+Already true, already written down, and missed while comparing vendors:
+[ADR 0005](0005-customers-keep-custody-and-grant-radar-a-bounded-signer.md) puts
+**Radar's own capital on the local signer**, whose guarantee is stronger than
+either provider's and whose key is on a machine Radar owns. The split that
+matters is *local signer for Radar, a vendor for customers* — not Privy versus
+Turnkey.
+
+So the operator's own trading costs nothing in wallet fees under any vendor
+choice, because it does not go through one. That removes the cost pressure that
+prompted the comparison.
+
+### The delegated wallet is built for a capability nothing justifies using
+
+`Policy::CLOSED` ships.
+[`0017`](../research/0017-a-control-that-could-have-been-traded.md) measures the
+edge at **0 bps**, and
+[`0022`](../research/0022-capacity-was-a-budget-not-a-ceiling.md) puts the bar at
+roughly **456 bps** before a trade is worth making at all. An embedded wallet
+with a scoped delegation exists to trade *while the customer is asleep*. Nothing
+currently justifies trading while they are awake.
+
+## So: bring-your-own-wallet first
+
+The customer connects a wallet they already own — Phantom, Solflare — and signs
+each trade themselves.
+
+**It is additive, not a migration.** This is the whole reason it can go first.
+Adding an embedded lane later moves nobody's funds and changes nobody's address,
+so it does not send the message the section "Why the modes share one wallet"
+exists to avoid. That section still stands; it argues against *moving* customers
+between wallet models, not against offering a second option to new ones.
+
+**It is a stronger position on custody, not merely an equal one.** Radar being a
+signer on a wallet it provisioned is defensible. Radar never touching a wallet
+the customer already had is better, and the difference is not cosmetic.
+
+**And it fits what Radar actually is.** The objection to user-signed execution is
+latency: Solana settles in 400ms slots and a wallet popup loses the window. That
+is decisive for a sniper. Radar is not one — the outcome pass is hourly, its
+signals are launch-block structure and creator history, and the interface plan
+explicitly refuses real-time price streaming because "a ticking price would lie
+about freshness". Manual approval is workable at that cadence. It would not be
+for the sniping the product eventually wants, which is a real cost and is why
+this is sequencing rather than a reversal.
+
+### What was considered and does not exist
+
+**Scoped on-chain session keys**, the usual answer to "keep funds in the user's
+wallet but let a bot sign". They require *the target program* to integrate them,
+and pump.fun does not. Radar's own captures settle it independently: `user` is a
+**required signer** at account index 6 on `buy`, `buy_exact_sol_in` and `sell` —
+all three, in
+[`pumpfun_accounts.json`](../../crates/radar-decode/tests/fixtures/pumpfun_accounts.json).
+No delegate key substitutes for the owner's signature.
+
+SPL `approve` delegates *token* transfers; a buy spends SOL through an
+instruction naming the user as signer regardless. A program-controlled vault
+works, and puts the funds somewhere other than the customer's wallet — which is
+the custody question again in different clothes.
+
+### What this defers
+
+**The vendor choice.** Privy or Turnkey is now a decision for the day an edge
+exists and a customer wants autonomy. With zero customers there is no cost being
+incurred and no migration risk either way, so deciding now buys nothing. The
+comparison above stays as the analysis to resume from, with the pricing
+corrected.
+
+The Turnkey code already written — [`turnkey.rs`](../../crates/radar-signer/src/turnkey.rs)
+and its spike harness — is kept rather than deleted. It is inert: nothing calls
+it, and its own tests are the only thing that exercises it.
+
+### What is *not* deferred
+
+Custody, the bounded signer, and the rule that a connected wallet is
+**authentication, not authority** are unchanged. A connected Phantom may not
+soften a refusal any more than an embedded wallet could.
+
+### Legal
+
+The custody reasoning here is architectural, not legal advice. "Non-custodial",
+"not a money transmitter" and similar are questions for a lawyer before any
+customer's funds are involved, and this file should not be read as having settled
+them.
+

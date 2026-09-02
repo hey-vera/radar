@@ -7,6 +7,22 @@
 //! public half is registered against an organisation, used to authenticate a
 //! request that causes customer funds to move.
 //!
+//! # Deferred, and deliberately inert
+//!
+//! **Nothing calls this.** [ADR 0011's amendment](https://github.com/hey-vera/radar/blob/main/docs/adr/0011-one-wallet-system-two-authority-levels-on-turnkey.md)
+//! sequences bring-your-own-wallet first, so the embedded-wallet vendor choice —
+//! Turnkey or Privy — is deferred until an edge exists and a customer wants
+//! autonomy. `Policy::CLOSED` ships and the measured edge is 0 bps, so a scoped
+//! delegation would be built for a capability nothing justifies using.
+//!
+//! It is kept rather than deleted because the analysis behind it is the thing
+//! worth keeping, and the stamping is verified offline against Turnkey's
+//! documented format. It has **never been run against a live organisation**.
+//!
+//! Its only exerciser is its own tests. If that changes, ADR 0011's
+//! preconditions have to be met first — starting with the policy engine being
+//! shown to *refuse*.
+//!
 //! # Why it lives here and not in `radar-serve`
 //!
 //! [ADR 0007](https://github.com/hey-vera/radar/blob/main/docs/adr/0007-the-privy-authorization-key-lives-in-the-signer-process.md)'s

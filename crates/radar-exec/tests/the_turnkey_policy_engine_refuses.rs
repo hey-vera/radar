@@ -32,7 +32,12 @@
 //! usually skips is a test nobody notices has stopped working. It prints what it
 //! would have proved and how to run it.
 //!
-//! # Status
+//! # Status: deferred
+//!
+//! [ADR 0011's amendment](../../../docs/adr/0011-one-wallet-system-two-authority-levels-on-turnkey.md)
+//! sequences bring-your-own-wallet first, so this spike is not on the critical
+//! path any more. It stays because the question it asks does not go away — it
+//! is the gate on any future delegated wallet, whichever vendor supplies one.
 //!
 //! **This harness has never been run.** It is written from Turnkey's documented
 //! API and has not been executed against a live organisation, because doing so

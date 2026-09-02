@@ -231,10 +231,15 @@ impl BondingCurve {
         // Invariant: `lo` fits and `hi` does not. Sixty-four iterations is more
         // than enough to close any `u64` range, and a fixed bound cannot loop
         // forever the way a `while lo < hi` can when the midpoint stops moving.
+        //
+        // There is no early break, and its absence is deliberate. Once
+        // `hi - lo == 1` the midpoint is `lo`, which fits, so `lo` is reassigned
+        // to itself and the remaining iterations change nothing. A `break` there
+        // would be an optimisation on a loop that runs at most sixty-four times
+        // -- and mutation testing showed it was untestable, because removing it
+        // cannot change an answer. An untestable branch is one to delete rather
+        // than one to write a test around.
         for _ in 0..64 {
-            if hi - lo <= 1 {
-                break;
-            }
             let mid = lo + (hi - lo) / 2;
             if fits(mid) { lo = mid } else { hi = mid }
         }
@@ -456,5 +461,91 @@ mod tests {
         assert_eq!(parsed.token_total_supply, 1_000_000_000_000_000);
         assert!(!parsed.complete);
         assert_eq!(parsed.creator, Address::new([7u8; 32]));
+    }
+
+    #[test]
+    fn a_sell_returns_what_mainnet_reserves_say() {
+        // The exit half, pinned to an exact number for the same reason the buy
+        // is. Every previous test of `sell` went through `capacity_lamports`,
+        // which takes a maximum -- so the arithmetic could have been wrong in
+        // ways a maximum hides. Mutation testing found exactly that gap.
+        let fill = live().sell(1_000_000_000_000).expect("a fill");
+        assert_eq!(fill.lamports, 40_632_713);
+        assert_eq!(fill.tokens, 1_000_000_000_000);
+        assert_eq!(fill.impact_bps, 11);
+    }
+
+    #[test]
+    fn a_round_trip_through_the_curve_loses_money_before_any_fee() {
+        // Buy 0.03 SOL of this token and immediately sell it back: 30,000,000
+        // lamports in, 29,950,340 out. About 16.5 bps, and that is *before* the
+        // 125 bps the venue charges each way (see `crate::fees`).
+        //
+        // Worth pinning because it is the cheapest possible demonstration that a
+        // round trip is not free even at zero impact-budget, which is the fact
+        // 0019 and 0022 are both about.
+        let curve = live();
+        let bought = curve.buy(30_000_000).expect("a fill");
+        let back = curve.sell(bought.tokens).expect("a fill");
+        assert_eq!(back.lamports, 29_950_340);
+        assert!(back.lamports < 30_000_000);
+    }
+
+    #[test]
+    fn selling_nothing_is_nothing_and_selling_something_is_something() {
+        // Both halves in one test, because either alone passes under a mutation
+        // that inverts the zero check.
+        let curve = live();
+        assert_eq!(curve.sell(0), None);
+        assert!(curve.sell(1_000_000_000_000).is_some());
+    }
+
+    #[test]
+    fn the_layout_length_is_exactly_the_fields_it_names() {
+        // 8 discriminator + 5 * 8 reserves + 1 flag + 32 creator = 81. A wrong
+        // constant that is *larger* than the real layout still parses the
+        // mainnet capture, because that account carries trailing bytes -- so the
+        // boundary has to be tested at exactly the layout length.
+        assert_eq!(LAYOUT_LEN, 81);
+        let mut exact = vec![0u8; LAYOUT_LEN];
+        exact[..8].copy_from_slice(&DISCRIMINATOR);
+        // Non-zero reserves, so the parse yields a tradeable curve rather than
+        // one that is refused for a different reason.
+        exact[8..16].copy_from_slice(&1_000_000u64.to_le_bytes());
+        exact[16..24].copy_from_slice(&1_000_000u64.to_le_bytes());
+        assert!(BondingCurve::parse(&exact).is_ok(), "exactly the layout");
+        assert!(
+            BondingCurve::parse(&exact[..LAYOUT_LEN - 1]).is_err(),
+            "one byte short is short"
+        );
+    }
+
+    #[test]
+    fn the_impact_search_lands_on_the_boundary_and_not_past_it() {
+        // A tidy curve so the answer is checkable by hand: 1e12 tokens against
+        // 1e6 lamports, a 1% budget, and a ceiling well above the answer.
+        //
+        // The reserves are lopsided on purpose. With *equal* reserves one
+        // lamport buys zero tokens, `buy` returns `None` for it, and the search
+        // refuses before it starts -- which is correct behaviour and makes the
+        // curve useless for testing the search. The first version of this test
+        // used equal reserves and failed for that reason.
+        //
+        // 10,099 lamports is exactly 100 bps; 10,100 is 101. A search that
+        // stopped one short, or overshot by one, would still return a plausible
+        // number -- which is why the neighbour is asserted too.
+        let curve = BondingCurve {
+            virtual_token_reserves: 1_000_000_000_000,
+            virtual_sol_reserves: 1_000_000,
+            real_token_reserves: 1_000_000_000_000,
+            real_sol_reserves: 0,
+            token_total_supply: 1_000_000_000_000,
+            complete: false,
+            creator: Address::new([1u8; 32]),
+        };
+        let found = curve.buy_within_impact(100, 1_000_000).expect("depth");
+        assert_eq!(found, 10_099);
+        assert_eq!(curve.buy(found).expect("a fill").impact_bps, 100);
+        assert_eq!(curve.buy(found + 1).expect("a fill").impact_bps, 101);
     }
 }

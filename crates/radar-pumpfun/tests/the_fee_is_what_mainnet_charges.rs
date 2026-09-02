@@ -228,3 +228,107 @@ fn a_truncated_schedule_is_refused_rather_than_read_as_far_as_it_goes() {
         "a row that is cut in half is not a row"
     );
 }
+
+/// Builds a fee-config account with `tiers` rows, so the parser's *stride*
+/// through the vector is exercised.
+///
+/// The mainnet capture has exactly one tier, which means the loop body runs
+/// once and its final offset advance never affects the result. Mutation testing
+/// found that: every offset arithmetic in `FeeConfig::parse` could be corrupted
+/// without a single test noticing.
+fn synthetic(tiers: &[(u128, u64, u64, u64)]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&radar_pumpfun::fees::FEE_CONFIG_DISCRIMINATOR);
+    out.push(255); // bump
+    out.extend_from_slice(&[0u8; 32]); // admin
+    for value in [7u64, 8, 9] {
+        out.extend_from_slice(&value.to_le_bytes()); // flat fees
+    }
+    out.extend_from_slice(&u32::try_from(tiers.len()).expect("small").to_le_bytes());
+    for (threshold, lp, protocol, creator) in tiers {
+        out.extend_from_slice(&threshold.to_le_bytes());
+        out.extend_from_slice(&lp.to_le_bytes());
+        out.extend_from_slice(&protocol.to_le_bytes());
+        out.extend_from_slice(&creator.to_le_bytes());
+    }
+    out
+}
+
+#[test]
+fn every_tier_in_a_multi_row_schedule_is_read_at_the_right_offset() {
+    // Three rows with distinct values, so a wrong stride produces a wrong fee
+    // rather than an error. This is the shape the mainnet capture cannot test,
+    // because a one-row vector's stride is unobservable.
+    let bytes = synthetic(&[
+        (0, 1, 2, 3),
+        (1_000_000, 10, 20, 30),
+        (5_000_000, 100, 200, 300),
+    ]);
+    let config = FeeConfig::parse(&bytes).expect("a fee config");
+    assert_eq!(config.tiers.len(), 3);
+    assert_eq!(config.flat.total_bps(), 24, "7 + 8 + 9");
+    assert_eq!(config.tiers[0].threshold_lamports, 0);
+    assert_eq!(config.tiers[0].fees.total_bps(), 6);
+    assert_eq!(config.tiers[1].threshold_lamports, 1_000_000);
+    assert_eq!(config.tiers[1].fees.total_bps(), 60);
+    assert_eq!(config.tiers[2].threshold_lamports, 5_000_000);
+    assert_eq!(config.tiers[2].fees.total_bps(), 600);
+    // And the schedule selects across them.
+    assert_eq!(
+        config
+            .fees_at_market_cap(4_999_999)
+            .expect("covered")
+            .total_bps(),
+        60
+    );
+    assert_eq!(
+        config
+            .fees_at_market_cap(5_000_000)
+            .expect("covered")
+            .total_bps(),
+        600
+    );
+}
+
+#[test]
+fn a_truncation_reports_how_many_bytes_the_layout_needed() {
+    // The `needed` figure is the parser's own offset arithmetic, reported. If it
+    // is never asserted, every `+` in that arithmetic can be corrupted silently
+    // -- which is precisely what mutation testing found.
+    use radar_pumpfun::curve::Malformed;
+    let full = synthetic(&[(0, 1, 2, 3), (1_000_000, 10, 20, 30)]);
+    // Cut one byte into the second tier's threshold. Header is 41, flat fees 24,
+    // the length prefix 4, and the first row 40, so the second row starts at 109
+    // and needs 16 bytes for its threshold.
+    let cut = 109 + 1;
+    match FeeConfig::parse(&full[..cut]) {
+        Err(Malformed::TooShort { len, needed }) => {
+            assert_eq!(len, cut);
+            assert_eq!(needed, 109 + 16, "the threshold this row could not read");
+        }
+        other => panic!("expected a length refusal, got {other:?}"),
+    }
+
+    // And again, cut inside that row's *fees* rather than its threshold, so the
+    // other offset in the loop body is reported too. The threshold occupies
+    // 109..125; the fees need 24 more.
+    let cut = 125 + 8;
+    match FeeConfig::parse(&full[..cut]) {
+        Err(Malformed::TooShort { len, needed }) => {
+            assert_eq!(len, cut);
+            assert_eq!(needed, 125 + 24, "the fees this row could not read");
+        }
+        other => panic!("expected a length refusal, got {other:?}"),
+    }
+}
+
+#[test]
+fn a_schedule_claiming_more_rows_than_it_carries_is_refused() {
+    // The row count is four bytes read out of an account. A parser that trusted
+    // it would allocate on it and read past the end; one that read as far as it
+    // could would return a schedule missing its top rows, which prices a large
+    // trade at a small trade's fee.
+    let mut bytes = synthetic(&[(0, 1, 2, 3)]);
+    bytes[41 + 24..41 + 24 + 4].copy_from_slice(&99u32.to_le_bytes());
+    assert!(FeeConfig::parse(&bytes).is_err());
+}

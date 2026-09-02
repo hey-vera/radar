@@ -1204,3 +1204,35 @@ a search has been exhausted, the next authority is the runtime. Two accounts are
 still unidentified, and the way to learn whether they matter is to simulate a
 transaction without them and read the error — not to widen the search again.
 
+## 26. A shard that was never run, behind a shard that failed loudly
+
+The mutation job was split across four parallel runners to make it finish
+inside a runner's life. The matrix was written `[1, 2, 3, 4]` and passed to
+`cargo mutants --shard ${{ matrix.shard }}/4`.
+
+`--shard k/n` is **zero-indexed**: it requires `k < n`. So `4/4` was a usage
+error and failed immediately — and `0/4`, a real quarter of the mutants, was
+never run at all.
+
+The loud failure hid the silent one. The obvious fix on seeing a red
+`mutants-shards (4)` is to work out why that shard is unhappy; do that and the
+job goes green having tested three quarters of the mutants, reporting success
+for a check that was no longer checking. The visible bug was the harmless one.
+
+Caught by trying to reproduce the failing shard locally, where the tool prints
+`shard k must be less than n` rather than a stack trace. Fixed by indexing from
+zero, and verified rather than assumed: the four shards list 122, 122, 122 and
+121 mutants against an unsharded total of 487, so they partition the set
+exactly.
+
+**This is the third time the same shape has appeared**, and the first two are
+already in this file's tooling: a `just mutants` recipe that would pass without
+mutating brand-new modules because `git diff` cannot see untracked files, and a
+monitor that read 0 of 779 and reported a working detector as a quiet one. The
+recurring lesson is that **a check must fail differently when it did not run
+than when it found nothing** — and splitting work across workers is a
+particularly easy way to lose that property, because each worker reports on
+itself and nothing reports on the union.
+
+Worth doing when sharding anything: assert the parts sum to the whole.
+

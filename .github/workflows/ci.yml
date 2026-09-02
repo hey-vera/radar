@@ -78,7 +78,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        # Zero-indexed: `--shard k/n` requires k < n, so 4/4 is a usage
+        # error and 0/4 is a real shard. Written [1,2,3,4] first, which
+        # failed shard 4 loudly *and skipped shard 0 silently* -- a quarter
+        # of the mutants untested while the job looked merely broken.
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
     # Only on pull requests: `--in-diff` needs two sides to diff, and on a push
     # to main there is nothing to compare against that is not already merged.

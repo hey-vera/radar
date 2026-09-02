@@ -68,8 +68,17 @@ jobs:
         run: cargo install --locked cargo-deny
       - run: just cargo-deny
 
-  mutants:
-    name: mutants
+  mutants-shards:
+    # Sharded across four runners. The set is split, not sampled: every mutant
+    # is still tested, and a shard that finds a survivor fails its own job.
+    #
+    # Serial, this job was killed part-way on every run of a forty-commit branch
+    # and reported nothing -- which reads exactly like success.
+    name: mutants-shards
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     # Only on pull requests: `--in-diff` needs two sides to diff, and on a push
     # to main there is nothing to compare against that is not already merged.
@@ -85,7 +94,31 @@ jobs:
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-mutants
-      - run: just mutants origin/${{ github.base_ref }}
+      - run: just mutants origin/${{ github.base_ref }} ${{ matrix.shard }}/4
+
+  # The name the branch ruleset requires, kept as one context.
+  #
+  # A matrix job reports as `mutants (1)`, `mutants (2)` and so on, so sharding
+  # the job under its own name would have deleted the required check rather than
+  # satisfied it -- and a required check that no longer exists blocks every pull
+  # request permanently.
+  #
+  # `if: always()` so this runs even when a shard fails; without it the job is
+  # skipped, and a skipped required check is not a passing one.
+  mutants:
+    name: mutants
+    runs-on: ubuntu-latest
+    needs: mutants-shards
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: every shard passed
+        run: |
+          result='${{ needs.mutants-shards.result }}'
+          echo "shards: $result"
+          # `success` is the only acceptable answer. `skipped` and `cancelled`
+          # are failures here: this check exists to say the mutants were tested,
+          # and neither of those means they were.
+          test "$result" = success
 
   msrv:
     name: msrv

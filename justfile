@@ -95,7 +95,7 @@ fmt:
 # per mutant, and an infinite loop introduced by a mutant looks exactly like a
 # slow one. Reporting that as "caught" would be the check lying in the direction
 # that feels good.
-mutants base="origin/main":
+mutants base="origin/main" shard="":
     #!/usr/bin/env bash
     set -euo pipefail
     if ! command -v cargo-mutants >/dev/null 2>&1; then
@@ -148,16 +148,22 @@ mutants base="origin/main":
         echo "no changes against {{ base }}; nothing to mutate."
         exit 0
     fi
-    # `--jobs 2` because this runs serially otherwise, and a branch that has
-    # accumulated commits accumulates mutants with them: an early branch here
-    # produced 28, and a forty-commit one produced 390, which took twenty-five
-    # minutes locally and never once finished in CI.
+    # Sharded, because this check scales with the size of the diff and nothing
+    # else in CI does. An early branch here produced 28 mutants; a forty-commit
+    # one produced 408, which never once finished inside a runner's life -- every
+    # attempt was killed part-way, reporting nothing, which is the worst failure
+    # a check can have because it looks identical to a real finding.
     #
-    # Two rather than the runner's four cores. Each job builds the workspace, so
-    # the limit is memory rather than CPU, and a job that OOMs intermittently is
-    # worse than one that is merely slow -- it fails in a way that looks like a
-    # real finding.
-    {{ cargo }} mutants --in-diff "$diff_file" --jobs 2         --timeout 300 --minimum-test-timeout 60 -- --offline
+    # `--shard k/n` splits the *set*, so every mutant is still tested; the work
+    # is spread across parallel jobs rather than dropped. `--jobs 2` inside each
+    # shard rather than the runner's four cores: each job builds the workspace,
+    # so the limit is memory, and a job that OOMs intermittently fails in a way
+    # that looks like a finding too.
+    shard_arg=""
+    if [ -n "{{ shard }}" ]; then
+        shard_arg="--shard {{ shard }}"
+    fi
+    {{ cargo }} mutants --in-diff "$diff_file" --jobs 2 $shard_arg         --timeout 300 --minimum-test-timeout 60 -- --offline
 
 # Advisories, licences, and source provenance.
 cargo-deny:

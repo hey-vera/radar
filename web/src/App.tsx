@@ -27,6 +27,8 @@
 
 import { Link, Route, Switch, useRoute } from "wouter";
 
+import { Wallet } from "./Wallet";
+
 import { Agent } from "./Agent";
 import { Decisions } from "./Decisions";
 import { Health } from "./Health";
@@ -55,9 +57,12 @@ export function App() {
             Radar
           </Link>
         </h1>
-        <p className="mt-1 text-sm text-[var(--color-dim)]">
-          Solana research intelligence. A record of what was refused, and why.
-        </p>
+        <div className="flex items-start justify-between gap-4">
+          <p className="mt-1 text-sm text-[var(--color-dim)]">
+            Solana research intelligence. A record of what was refused, and why.
+          </p>
+          <Wallet />
+        </div>
       </header>
 
       <Nav />

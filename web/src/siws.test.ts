@@ -9,7 +9,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { detect, shorten, signIn, type WalletProvider } from "./wallet";
+import { detect, shorten, signIn, type WalletProvider } from "./siws";
 
 const ADDRESS = "5Kuix3HiXh7adsdcybmr5N5coLBi2mv7exGMLvoPSKjM";
 const MESSAGE = `radar.heyvera.org wants you to sign in with your Solana account:\n${ADDRESS}\n\nSigning proves you own this wallet. It authorises no transaction and moves no funds.\n\nNonce: abc123\nIssued At: 1788000000`;

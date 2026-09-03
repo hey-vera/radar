@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
-//! Signing in with a wallet the customer already owns.
+//! Sign-in with Solana: proving the customer owns the wallet they claim.
+//!
+//! Named for the protocol rather than for `Wallet.tsx`, which renders it. Two
+//! files differing only in case are one file on Windows, and this repository
+//! lost `AGENTS.md` to exactly that on 2026-09-02.
 //!
 //! ADR 0011's amendment: bring-your-own-wallet first. The customer connects
 //! Phantom or Solflare, signs one message to prove ownership, and gets a session

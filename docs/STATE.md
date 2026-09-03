@@ -93,16 +93,16 @@ Both were measured on a two-day window at 72,193 launches. The store now holds
 re-ran both on 2026-09-03.
 
 **The launch-block signal did not survive intact.** `0008`'s headline — 68% of
-instantly-graduating launches have exactly six recipients — is **25.6%** on
-18,268 launches. The enrichment over the 5.2% control is real; the magnitude was
+instantly-graduating launches have exactly six recipients — is **25.1%** on
+17,497 launches. The enrichment over the 5.5% control is real; the magnitude was
 wrong by 2.7×, and the "spike with holes either side" that made the structural
 argument was sampling rather than structure. The strongest band has moved off six
-to **ten to thirteen** (11.0× base). `0008` predicted exactly this failure — *"six
+to **ten to thirteen** (10.1× base). `0008` predicted exactly this failure — *"six
 is a tool's default, not a law"* — and nothing was built to notice it, so it was
 found nine days later by hand.
 
 What replaces it is stronger and points the same way the project already points:
-**one to three recipients covers 71.6% of launches and graduates instantly in
+**one to three recipients covers 70.5% of launches and graduates instantly in
 0.02% of them.** The reliable signal is the refusal.
 
 **The creator signal strengthened.** `0007`'s separation holds on 2,957 creators

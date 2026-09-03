@@ -7,18 +7,18 @@
 
 > **Superseded on 2026-09-03 by
 > [`0024`](0024-the-spike-became-a-hump-and-the-signal-moved.md), which re-ran
-> this on 18,268 launches instead of 80 per population.** Two things did not
+> this on 17,497 launches instead of 80 per population.** Two things did not
 > survive, and this note's own warning is what caught them.
 >
 > - ~~68% of instantly-graduating launches have exactly six recipients~~ —
->   **25.6%** [20.1–32.0]. The enrichment over the 5.2% control is real; the
+>   **25.1%** [19.7–31.4]. The enrichment over the 5.5% control is real; the
 >   magnitude was wrong by 2.7×.
 > - ~~"a spike at six and holes on both sides"~~ — **the upper holes were
->   sampling, not structure.** At n=207 the instant column carries 10.1%, 10.1%
->   and 4.8% at seven, eight and nine.
+>   sampling, not structure.** At n=207 the instant column carries 11.1%, 9.7%
+>   and 6.3% at seven, eight and nine.
 >
 > The real holes are at the *bottom*, and they are stronger than anything here:
-> **one to three recipients covers 71.6% of launches and graduates instantly in
+> **one to three recipients covers 70.5% of launches and graduates instantly in
 > 0.02% of them.** The 11.7× predictive figure below has also moved off six to
 > the **ten-to-thirteen** band. The method changed too — this note's launch block
 > was a first-seen heuristic that overstates the launch population by about four

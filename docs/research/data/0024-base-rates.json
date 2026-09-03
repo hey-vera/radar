@@ -14,13 +14,12 @@
     "quantities on 2026-08-25 and its headline was wrong by 2.7x nine days later. A consumer",
     "that hard-codes any of these numbers is repeating that mistake. Read measured_on, and",
     "refuse rather than guess when this file is absent -- absent is not zero (rule 9), and a",
-    "missing base rate means the claim cannot be made, not that the rate is zero."
+    "missing base rate means the claim cannot be made, not that the rate is zero.",
+    "CORRECTED 2026-09-03, same day: the first emission counted failed launch transactions as launches -- 8.4% of them -- because the query did not filter on transaction status. Every conclusion held; the figures moved by a few tenths of a point. The correction was found by `radar dossier` disagreeing with the query about one mint."
   ],
-
   "schema": 1,
   "measured_on": "2026-09-03",
   "supersedes": "0008",
-
   "store": {
     "launches": 483629,
     "graduations": 14336,
@@ -30,88 +29,246 @@
     "graduation_rate": 0.029642,
     "watermark_slot": 444006292
   },
-
   "launch_block": {
     "_comment": "Distinct token accounts receiving the token inside its own launch block. NOT owners, NOT buyers -- see 0012. Never imply a cabal identity from these.",
     "window": "2026-08-25T00:00:00Z/2026-08-25T12:00:00Z",
-    "launches": 18268,
-    "base_rate_graduates": 0.02874,
-    "base_rate_instant": 0.011330,
-
+    "launches": 17497,
+    "base_rate_graduates": 0.03001,
+    "base_rate_instant": 0.01183,
     "populations": {
-      "never_graduated": { "n": 17743, "mode": 2, "mode_share": 0.363 },
-      "organic":         { "n": 318,   "mode": 3, "mode_share": 0.481 },
-      "instant":         { "n": 207,   "mode": 6, "mode_share": 0.256 }
+      "never_graduated": {
+        "n": 16972,
+        "mode": 2,
+        "mode_share": 0.349
+      },
+      "organic": {
+        "n": 318,
+        "mode": 3,
+        "mode_share": 0.481
+      },
+      "instant": {
+        "n": 207,
+        "mode": 6,
+        "mode_share": 0.251
+      }
     },
-
     "share_with_exactly_six": {
-      "never_graduated": 0.052,
-      "organic": 0.072,
-      "instant": 0.256,
+      "never_graduated": 0.055,
+      "organic": 0.075,
+      "instant": 0.251,
       "_comment": "0008 reported 0.05 / 0.16 / 0.68. Quoting 'six, versus 5% otherwise' is wrong twice: the instant figure is 2.7x too high, and 'otherwise' hides the organic cohort."
     },
-
     "bands": [
-      { "name": "one to three",    "lo": 1,  "hi": 3,  "fires_on": 0.716, "p_graduates": 0.0133, "p_instant": 0.0002, "p_instant_ci95": [0.0000, 0.0006], "x_base_instant": 0.0 },
-      { "name": "exactly six",     "lo": 6,  "hi": 6,  "fires_on": 0.055, "p_graduates": 0.0758, "p_instant": 0.0528, "p_instant_ci95": [0.0406, 0.0685], "x_base_instant": 4.7 },
-      { "name": "five to seven",   "lo": 5,  "hi": 7,  "fires_on": 0.161, "p_graduates": 0.0618, "p_instant": 0.0380, "p_instant_ci95": [0.0317, 0.0456], "x_base_instant": 3.4 },
-      { "name": "ten to thirteen", "lo": 10, "hi": 13, "fires_on": 0.022, "p_graduates": 0.1853, "p_instant": 0.1244, "p_instant_ci95": [0.0954, 0.1606], "x_base_instant": 11.0 }
+      {
+        "name": "one to three",
+        "lo": 1,
+        "hi": 3,
+        "fires_on": 0.705,
+        "p_graduates": 0.0142,
+        "p_instant": 0.0002,
+        "p_instant_ci95": [
+          0.0,
+          0.0006
+        ],
+        "x_base_instant": 0.0
+      },
+      {
+        "name": "exactly six",
+        "lo": 6,
+        "hi": 6,
+        "fires_on": 0.057,
+        "p_graduates": 0.0755,
+        "p_instant": 0.0517,
+        "p_instant_ci95": [
+          0.0396,
+          0.0672
+        ],
+        "x_base_instant": 4.4
+      },
+      {
+        "name": "five to seven",
+        "lo": 5,
+        "hi": 7,
+        "fires_on": 0.17,
+        "p_graduates": 0.0622,
+        "p_instant": 0.0383,
+        "p_instant_ci95": [
+          0.032,
+          0.0458
+        ],
+        "x_base_instant": 3.2
+      },
+      {
+        "name": "ten to thirteen",
+        "lo": 10,
+        "hi": 13,
+        "fires_on": 0.021,
+        "p_graduates": 0.184,
+        "p_instant": 0.12,
+        "p_instant_ci95": [
+          0.0909,
+          0.1568
+        ],
+        "x_base_instant": 10.1
+      }
     ],
-
     "histogram": {
       "_comment": "recipients -> [never_graduated, organic, instant]. The 14+ tail is folded in 0024's table but kept split here.",
-      "1":  [2451, 0,   0],
-      "2":  [6444, 19,  2],
-      "3":  [4013, 153, 0],
-      "4":  [1047, 16,  6],
-      "5":  [1262, 25,  38],
-      "6":  [927,  23,  53],
-      "7":  [574,  22,  21],
-      "8":  [362,  11,  21],
-      "9":  [212,  7,   10],
-      "10": [123,  13,  18],
-      "11": [98,   5,   17],
-      "12": [63,   6,   9],
-      "13": [37,   0,   5],
-      "14+":[130,  18,  7]
+      "1": [
+        2337,
+        0,
+        0
+      ],
+      "2": [
+        5920,
+        20,
+        2
+      ],
+      "3": [
+        3906,
+        153,
+        0
+      ],
+      "4": [
+        1040,
+        15,
+        6
+      ],
+      "5": [
+        1299,
+        25,
+        39
+      ],
+      "6": [
+        930,
+        24,
+        52
+      ],
+      "7": [
+        561,
+        22,
+        23
+      ],
+      "8": [
+        348,
+        10,
+        20
+      ],
+      "9": [
+        200,
+        8,
+        13
+      ],
+      "10": [
+        120,
+        13,
+        19
+      ],
+      "11": [
+        87,
+        6,
+        12
+      ],
+      "12": [
+        62,
+        5,
+        10
+      ],
+      "13": [
+        37,
+        0,
+        4
+      ],
+      "14+": [
+        125,
+        17,
+        7
+      ]
     }
   },
-
   "creator_history": {
     "_comment": "Re-measurement of 0007 at a pinned pivot. Graduation predicts VOLATILITY, NOT PROFIT (0011): organic graduations end at a median -3228 bps against -853 for never-graduated. Nothing may present a creator's graduation history as a good sign.",
     "command": "radar study --store <store> --pivot 442653662",
     "pivot_slot": 442653662,
-    "store_span": [441040080, 444006292],
+    "store_span": [
+      441040080,
+      444006292
+    ],
     "creators": 2957,
     "later_launches": 74871,
     "later_organic": 1366,
     "base_rate": 0.0182,
-
     "by_prior_record": [
-      { "known_at_pivot": "no organic graduation", "creators": 2231, "launches": 34846, "organic": 302, "rate": 0.0086, "ci95": [0.0077, 0.0097] },
-      { "known_at_pivot": "exactly one",           "creators": 350,  "launches": 10365, "organic": 202, "rate": 0.0194, "ci95": [0.0170, 0.0223] },
-      { "known_at_pivot": "two or more",           "creators": 376,  "launches": 29660, "organic": 862, "rate": 0.0290, "ci95": [0.0272, 0.0310] }
+      {
+        "known_at_pivot": "no organic graduation",
+        "creators": 2231,
+        "launches": 34846,
+        "organic": 302,
+        "rate": 0.0086,
+        "ci95": [
+          0.0077,
+          0.0097
+        ]
+      },
+      {
+        "known_at_pivot": "exactly one",
+        "creators": 350,
+        "launches": 10365,
+        "organic": 202,
+        "rate": 0.0194,
+        "ci95": [
+          0.017,
+          0.0223
+        ]
+      },
+      {
+        "known_at_pivot": "two or more",
+        "creators": 376,
+        "launches": 29660,
+        "organic": 862,
+        "rate": 0.029,
+        "ci95": [
+          0.0272,
+          0.031
+        ]
+      }
     ],
-
     "ratios": {
       "band_vs_band": 3.37,
       "best_band_vs_base": 1.59,
       "_comment": "0007 reported 2.12x band-vs-band and 1.69x against base. Quote whichever is meant and say which -- the two differ by more than a factor of two."
     }
   },
-
   "round_trip_bps": {
     "_comment": "Three numbers, reconciled in docs/STATE.md. Never publish one without knowing which. by_notional is 0019's measured per-leg median, doubled.",
     "venue_fee": 250,
     "bar": 456,
     "kernel_assumed": 850,
     "by_notional": [
-      { "band": "$0.20-$2",     "round_trip": 3042 },
-      { "band": "$2-$20",       "round_trip": 250 },
-      { "band": "$20-$200",     "round_trip": 456 },
-      { "band": "$200-$2,000",  "round_trip": 450 },
-      { "band": "$2,000+",      "round_trip": 260 }
+      {
+        "band": "$0.20-$2",
+        "round_trip": 3042
+      },
+      {
+        "band": "$2-$20",
+        "round_trip": 250
+      },
+      {
+        "band": "$20-$200",
+        "round_trip": 456
+      },
+      {
+        "band": "$200-$2,000",
+        "round_trip": 450
+      },
+      {
+        "band": "$2,000+",
+        "round_trip": 260
+      }
     ],
-    "at_min_notional": { "usd": 1.00, "round_trip": 3042 }
+    "at_min_notional": {
+      "usd": 1.0,
+      "round_trip": 3042
+    }
   }
 }

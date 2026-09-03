@@ -3,7 +3,7 @@
 
 **Date:** 2026-09-03
 **Store:** the live guardian VPS recorder, 483,629 launches and 14,336 graduations
-**Chain:** 18,268 pump.fun launches, 2026-08-25 00:00–12:00 UTC
+**Chain:** 17,497 pump.fun launches, 2026-08-25 00:00–12:00 UTC
 **Query:** [`queries/0024-launch-block-recipients.sql`](queries/0024-launch-block-recipients.sql)
 **Status:** measured. **[`0008`](0008-the-launch-block-gives-the-bundle-away.md)'s
 headline does not survive.** The enrichment at six is real and about five times
@@ -20,6 +20,26 @@ is no longer six.
 >
 > This is that re-run. The constant held and **the shape did not**, which is the
 > opposite of what that paragraph expected to lose.
+
+> **Corrected, 2026-09-03, the same day.** The first run of this note counted
+> **failed** launch transactions as launches. CryptoHouse's `token_transfers`
+> carries rows for failed transactions, and the query did not join
+> `solana.transactions` to filter on `status`. That is the same mistake
+> [`0006`](0006-the-graduation-table-was-empty-for-a-structural-reason.md)
+> records, where 35 of 97 migration instructions in an hour were in failed
+> transactions and counting them overstated a label by more than a third.
+>
+> It was found by `radar dossier` disagreeing with this query about a specific
+> mint: the query reported a launch, and the dossier reported that the mint
+> account did not exist and every transaction touching it had failed. Measured
+> over one hour, **218 of 2,607** launch transactions failed — 8.4%.
+>
+> Re-measured with the filter, **every conclusion below holds** and the figures
+> move by a few tenths of a point: 18,268 launches become **17,497**, six
+> recipients among instant graduations goes from 25.6% to **25.1%**, and the
+> population graduation rate goes from 2.874% to **3.001%** — which is *closer*
+> to the store's independently computed 2.964%. Everything below is the
+> corrected run, and the carried query carries the fix.
 
 ## Why this was re-run now
 
@@ -58,8 +78,8 @@ carrying the pump.fun `create` (`181ec828051c0777`) or `create_v2`
 `radar_decode::pumpfun::Instruction::is_launch` matches both and checking for
 `create_v2` alone silently drops the other.
 
-**The cross-check that the population is right:** 525 of the 18,268 launches
-found on chain graduated, a rate of **2.874%**, against the store's own
+**The cross-check that the population is right:** 525 of the 17,497 launches
+found on chain graduated, a rate of **3.001%**, against the store's own
 independently computed **2.964%** over 483,629 launches. Two different
 instruments over different populations landing within a tenth of a point is what
 makes the rest of this readable.
@@ -67,52 +87,52 @@ makes the rest of this readable.
 **Three populations, and no sampling.** Every launch in the window is measured,
 and the graduation label comes from Radar's own store — CryptoHouse cannot
 distinguish an instant graduation from an organic one without re-implementing the
-resolver 0006 fixed. 0008 sampled eighty per population; this is 18,268.
+resolver 0006 fixed. 0008 sampled eighty per population; this is 17,497.
 
 ## The result
 
 ```
 recipients          never graduated          organic          instant
-     1            2451 ( 13.8%)         0 (  0.0%)       0 (  0.0%)
-     2            6444 ( 36.3%)        19 (  6.0%)       2 (  1.0%)
-     3            4013 ( 22.6%)       153 ( 48.1%)       0 (  0.0%)
-     4            1047 (  5.9%)        16 (  5.0%)       6 (  2.9%)
-     5            1262 (  7.1%)        25 (  7.9%)      38 ( 18.4%)
-     6             927 (  5.2%)        23 (  7.2%)      53 ( 25.6%)
-     7             574 (  3.2%)        22 (  6.9%)      21 ( 10.1%)
-     8             362 (  2.0%)        11 (  3.5%)      21 ( 10.1%)
-     9             212 (  1.2%)         7 (  2.2%)      10 (  4.8%)
-    10             123 (  0.7%)        13 (  4.1%)      18 (  8.7%)
-    11              98 (  0.6%)         5 (  1.6%)      17 (  8.2%)
-    12              63 (  0.4%)         6 (  1.9%)       9 (  4.3%)
-    13              37 (  0.2%)         0 (  0.0%)       5 (  2.4%)
-   14+             130 (  0.7%)        18 (  5.7%)       7 (  3.4%)
+     1            2337 ( 13.8%)         0 (  0.0%)       0 (  0.0%)
+     2            5920 ( 34.9%)        20 (  6.3%)       2 (  1.0%)
+     3            3906 ( 23.0%)       153 ( 48.1%)       0 (  0.0%)
+     4            1040 (  6.1%)        15 (  4.7%)       6 (  2.9%)
+     5            1299 (  7.7%)        25 (  7.9%)      39 ( 18.8%)
+     6             930 (  5.5%)        24 (  7.5%)      52 ( 25.1%)
+     7             561 (  3.3%)        22 (  6.9%)      23 ( 11.1%)
+     8             348 (  2.1%)        10 (  3.1%)      20 (  9.7%)
+     9             200 (  1.2%)         8 (  2.5%)      13 (  6.3%)
+    10             120 (  0.7%)        13 (  4.1%)      19 (  9.2%)
+    11              87 (  0.5%)         6 (  1.9%)      12 (  5.8%)
+    12              62 (  0.4%)         5 (  1.6%)      10 (  4.8%)
+    13              37 (  0.2%)         0 (  0.0%)       4 (  1.9%)
+   14+             125 (  0.7%)        17 (  5.3%)       7 (  3.4%)
                  ------                -----            -----
-       n          17,743                  318              207
-    mode               2 (36.3%)            3 (48.1%)       6 (25.6%)
+       n          16,972                  318              207
+    mode               2 (34.9%)            3 (48.1%)       6 (25.1%)
 ```
 
 ## What survived, and what did not
 
 | | 0008 | 0024 |
 |---|---|---|
-| instant launches with exactly six | **68%** | **25.6%** [20.1–32.0] |
-| never-graduated with exactly six | 5% | 5.2% [4.9–5.6] |
-| organic with exactly six | 16% | 7.2% [4.9–10.6] |
-| instant with five to seven | 88% | 54.1% [47.3–60.8] |
-| holes at 7, 8, 9 in the instant column | yes | **no** — 10.1%, 10.1%, 4.8% |
+| instant launches with exactly six | **68%** | **25.1%** [19.7–31.4] |
+| never-graduated with exactly six | 5% | 5.5% [5.1–5.8] |
+| organic with exactly six | 16% | 7.5% [5.1–11.0] |
+| instant with five to seven | 88% | 55.1% [48.3–61.7] |
+| holes at 7, 8, 9 in the instant column | yes | **no** — 11.1%, 9.7%, 6.3% |
 | instant mode | 6 | 6 |
 
 **The direction survives and the magnitude does not.** Six recipients is still
 about five times commoner among instant graduations than among launches that
 never graduated, and the two intervals are nowhere near touching. But the 68% is
-a 25.6%, and a claim built on 68% is wrong by a factor of 2.7.
+a 25.1%, and a claim built on 68% is wrong by a factor of 2.7.
 
 **The spike is a hump.** 0008's most persuasive sentence was structural rather
 than statistical — *"a distribution with a spike at six and holes on both sides
 of it is not a market. It is a tool with a default setting."* At n=80 the instant
 column had literal zeros at 2, 3, 4, 7, 8 and 9. At n=207 the upper holes are
-gone: 7, 8 and 9 carry 10.1%, 10.1% and 4.8%. **Those zeros were sampling, not
+gone: 7, 8 and 9 carry 11.1%, 9.7% and 6.3%. **Those zeros were sampling, not
 structure**, and the argument that rested on them cannot be made any more.
 
 ## The holes that are real are at the bottom, and they are the strongest thing here
@@ -123,16 +143,16 @@ in is the largest in the data.
 
 ```
 band              fires on   P(graduates)          P(instant)              vs base
-one to three         71.6%      1.33%  (0.5x)    0.02% [0.00–0.06]     0.0x
-exactly six           5.5%      7.58%  (2.6x)    5.28% [4.06–6.85]     4.7x
-five to seven        16.1%      6.18%  (2.2x)    3.80% [3.17–4.56]     3.4x
-ten to thirteen       2.2%     18.53%  (6.4x)   12.44% [9.54–16.06]   11.0x
+one to three         70.5%      1.42%  (0.5x)    0.02% [0.00–0.06]     0.0x
+exactly six           5.7%      7.55%  (2.5x)    5.17% [3.96–6.72]     4.4x
+five to seven        17.0%      6.22%  (2.1x)    3.83% [3.20–4.58]     3.2x
+ten to thirteen       2.1%     18.40%  (6.1x)   12.00% [9.09–15.68]   10.1x
 ```
 
-Base rates over the window: **2.874%** graduate, **1.133%** graduate instantly.
+Base rates over the window: **3.001%** graduate, **1.183%** graduate instantly.
 
-**A launch block with one to three recipients covers 71.6% of all launches and
-graduates instantly in 0.02% of cases** — two launches out of 12,908, with a 95%
+**A launch block with one to three recipients covers 70.5% of all launches and
+graduates instantly in 0.02% of cases** — two launches out of 12,338, with a 95%
 upper bound of 0.06%. That is a stronger, broader and more stable statement than
 anything 0008 made, and it points the same way the project already points:
 **the reliable signal is the refusal.**
@@ -143,8 +163,8 @@ anything 0008 made, and it points the same way the project already points:
 instant graduation. That figure still exists in this data — it has moved to a
 different band.
 
-**Ten to thirteen recipients is now 11.0× base**, where six is 4.7×. It fires on
-2.2% of launches and graduates instantly 12.44% of the time.
+**Ten to thirteen recipients is now 10.1× base**, where six is 4.4×. It fires on
+2.1% of launches and graduates instantly 12.00% of the time.
 
 This is exactly the failure mode 0008 named: the count is a configuration, and
 whoever runs these tools has changed it. **Anything that hard-codes six is
@@ -172,6 +192,10 @@ threshold is a measurement with a date on it rather than a constant.
   for exactly this reason; it does not eliminate the effect.
 - **n=207 instant and n=318 organic.** Better than 0008's 80, and the reason the
   upper holes closed. It is not enough to settle the shape of the tail beyond 13.
+- **Failed launches were counted as launches in this note's first run.** The
+  correction is at the top; 8.4% of launch transactions fail. It was found by
+  `radar dossier` disagreeing with this query about one mint, which is the first
+  time the two halves of this work have checked each other.
 - **One venue, one twelve-hour window, one day.** The comparison against 0008 is
   therefore also a comparison between two different days, and some of the
   movement may be the venue rather than the tooling.
@@ -246,7 +270,7 @@ these numbers move.
 
 1. **Stop publishing 68% / 5%.** It is wrong by 2.7× on the numerator and it
    hides the organic cohort. Where the shape needs one sentence, the honest one
-   is the refusal: *"71.6% of launches have one to three recipients in their
+   is the refusal: *"70.5% of launches have one to three recipients in their
    launch block, and 0.02% of those graduate instantly."*
 2. **Re-measure on a schedule, and alarm when the mode moves.** 0008 asked for
    this and nothing was built, so the drift was found nine days later by hand.

@@ -163,7 +163,15 @@ mutants base="origin/main" shard="":
     if [ -n "{{ shard }}" ]; then
         shard_arg="--shard {{ shard }}"
     fi
-    {{ cargo }} mutants --in-diff "$diff_file" --jobs 2 $shard_arg         --timeout 300 --minimum-test-timeout 60 -- --offline
+    # `--jobs 1`. Two parallel jobs means cargo-mutants keeps two complete
+    # source-and-target copies, and a hosted runner has about 14GB free -- a
+    # workspace target directory is several of those. Shards died mid-run with
+    # no error and no exit code, which is what a runner running out of room
+    # looks like from inside the job.
+    #
+    # Sharding is what buys the parallelism now, across machines that each have
+    # their own disk, rather than inside one.
+    {{ cargo }} mutants --in-diff "$diff_file" --jobs 1 $shard_arg         --timeout 300 --minimum-test-timeout 60 -- --offline
 
 # Advisories, licences, and source provenance.
 cargo-deny:

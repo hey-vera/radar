@@ -84,6 +84,10 @@ jobs:
         # of the mutants untested while the job looked merely broken.
         shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
+    # A wedged job should fail as a timeout rather than as an unexplained
+    # cancellation, which is a distinction this workflow has already cost a
+    # session for want of.
+    timeout-minutes: 30
     # Only on pull requests: `--in-diff` needs two sides to diff, and on a push
     # to main there is nothing to compare against that is not already merged.
     if: github.event_name == 'pull_request'
@@ -98,7 +102,18 @@ jobs:
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-mutants
+      # Reported so a job that dies mid-run says why. Shards were repeatedly
+      # killed with no error and no exit code, which is indistinguishable
+      # between a full disk, an out-of-memory kill and a cancelled run -- and
+      # guessing wrong cost most of a session.
+      - name: what this runner has
+        run: |
+          df -h / | tail -1
+          free -m | head -2
       - run: just mutants origin/${{ github.base_ref }} ${{ matrix.shard }}/4
+      - name: what is left of it
+        if: always()
+        run: df -h / | tail -1
 
   # The name the branch ruleset requires, kept as one context.
   #

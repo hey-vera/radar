@@ -132,7 +132,23 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       missed: `radar-provider` must have `radar-agent` among its production
       dependents, because docs/STATE.md says so and that sentence has been
       stale once already.
-- [ ] 8. P1.4 — the `LEARNINGS.md` index table (~30 lines)
+- [x] 8+11. P1.4 and P2.2 — the `LEARNINGS.md` index, and the entry shape
+      done together because the index is only honest once the entries are.
+      0004 §3.2 measured the split: entries 1-19 used
+      `**What catches a recurrence:**` and named an artefact; 20-28 used
+      `**The check:**` and named a habit; five (16, 22, 24, 25, 26) had neither.
+      All 28 now use the one header. Eight say `nothing mechanical` and then
+      name the habit — which is the file's own opening standard
+      ("or says plainly that nothing does"), not a gap in it. Four of the five
+      that had neither turned out to have a real artefact nobody had named:
+      16's kept run, 24's `radar route`, 25's fixture-first ordering, 26's
+      `mutants` gate job.
+      The index is a 28-row table at the top, generated from the headings and
+      the mechanism lines, with the mechanical/habit split stated. Anchor links
+      pass the existing link check.
+      `every_learnings_entry_names_what_catches_a_recurrence_and_is_indexed`
+      holds both halves. Verified to bite on a new entry with no mechanism line
+      and on an entry with no index row. 28 passed, clippy clean.
 - [~] 9. P1.5, second half — the invisible-document hole
       done: `untracked_documents()` and
       `no_markdown_document_is_invisible_to_these_checks` refuse when a

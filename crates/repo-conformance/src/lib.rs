@@ -493,6 +493,18 @@ pub fn test_paths(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// The numbered entries in `LEARNINGS.md`, as `(number, heading)`.
+#[must_use]
+pub fn learnings_entries(text: &str) -> Vec<(u32, String)> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("## "))
+        .filter_map(|h| {
+            let (number, _) = h.split_once(". ")?;
+            Some((number.parse().ok()?, h.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -794,6 +806,77 @@ mod tests {
                 "{c} depends on radar-signer outside [dev-dependencies]; only radar-exec may, and only through the signer process (AGENTS.md rule 1)"
             );
         }
+    }
+
+    #[test]
+    fn every_learnings_entry_names_what_catches_a_recurrence_and_is_indexed() {
+        // The file opens by promising that "each entry names the check that
+        // would catch a recurrence, or says plainly that nothing does". Design
+        // 0004 §3.2 measured the promise: entries 1 to 19 kept it, 20 to 28 used
+        // a different header for a weaker thing, and five kept it in neither
+        // form. A standard the file states about itself and does not hold is
+        // the same defect as a document describing code that changed.
+        //
+        // The header is one spelling on purpose. "Nothing mechanical, the habit
+        // is X" is a valid answer -- eight entries give it -- and it is only
+        // legible as an answer when it appears in the same place as the others.
+        const HEADER: &str = "**What catches a recurrence:**";
+
+        let text = std::fs::read_to_string(root().join("LEARNINGS.md")).expect("LEARNINGS.md");
+        let entries = learnings_entries(&text);
+        assert!(
+            entries.len() > 20,
+            "LEARNINGS.md parsed to {} entries, which is too few to be right and would make the assertions below vacuous",
+            entries.len()
+        );
+
+        // Split once, on the headings, so each entry is checked against its own
+        // body rather than against the whole file.
+        let mut sections: Vec<(u32, String, String)> = Vec::new();
+        let mut current: Option<(u32, String, String)> = None;
+        for line in text.lines() {
+            if let Some(heading) = line.strip_prefix("## ")
+                && let Some((number, _)) = heading.split_once(". ")
+                && let Ok(number) = number.parse::<u32>()
+            {
+                if let Some(done) = current.take() {
+                    sections.push(done);
+                }
+                current = Some((number, heading.to_string(), String::new()));
+                continue;
+            }
+            if let Some((_, _, body)) = current.as_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        if let Some(done) = current.take() {
+            sections.push(done);
+        }
+
+        let mut missing = Vec::new();
+        let mut unindexed = Vec::new();
+        for (number, heading, body) in &sections {
+            if !body.contains(HEADER) {
+                missing.push(heading.clone());
+            }
+            // The index links each entry by number. A new entry with no row is
+            // not visibly absent from a table of twenty-eight, which is exactly
+            // how a navigation aid stops being one.
+            if !text.contains(&format!("| [{number}](#")) {
+                unindexed.push(*number);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "these LEARNINGS entries do not say what catches a recurrence: {missing:?}. The file's own opening requires it, and {HEADER:?} is the spelling -- `nothing mechanical, the habit is ...` is a valid answer and eight entries give it"
+        );
+        assert!(
+            unindexed.is_empty(),
+            "these LEARNINGS entries have no row in the index table: {unindexed:?}. An entry missing from a table of {} is not visibly missing, which is how a navigation aid quietly stops being one",
+            sections.len()
+        );
     }
 
     #[test]

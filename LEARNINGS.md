@@ -1236,3 +1236,40 @@ itself and nothing reports on the union.
 
 Worth doing when sharding anything: assert the parts sum to the whole.
 
+## 27. Half a cache key, left to the caller to remember
+
+`/v1/scoreboard` and `/v1/tokens/{mint}` each scan the whole store and were
+measured at 1.7s and 3.2s against a 500ms budget, so both were put behind a
+cache keyed on the store's watermark — rule 3, so a research replay at an older
+`AsOf` can never be handed today's answer.
+
+The watermark is the whole key for the scoreboard. It is only half of it for a
+token: two mints share a watermark. The first shape kept the mint *inside the
+cached value* and left the handler to compare it before accepting a hit, with a
+comment at the call site explaining that it must. The handler did compare it —
+and then, on a mismatch, fell through to `get_or_compute`, which matched on the
+watermark alone and returned the other token's evidence. The comment was correct
+and the code beneath it was not.
+
+Two things about how it was caught are worth keeping.
+
+It was caught by a test written to **document** the pattern rather than to hunt a
+bug — "here is how the token handler carries a key beside the value" — and the
+test failed on its first run. The failure looked at first like a bad assertion,
+because the shape it asserted was the shape that had just been reviewed and
+committed to.
+
+And it is entry 23's shape at a different altitude: a check that looked like a
+check. The difference is that 23 was a sentence describing a boundary and this
+was a comment describing an invariant, and neither is a mechanism.
+
+The fix was not to correct the handler. It was to give `Cache` a key type
+parameter, so the question being asked is part of what the entry stores and no
+caller can forget to check it. `Cache<Report>` for the scoreboard,
+`Cache<TokenEvidence, String>` for the token, and the fall-through that caused
+this cannot be written.
+
+**The check:** if a cache's correctness depends on a caller comparing something,
+that something is part of the key. A comment saying a caller must check is a
+comment saying the type is wrong.
+

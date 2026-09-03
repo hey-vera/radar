@@ -97,6 +97,36 @@ When instructions conflict, this order:
 
 - Keep work within the requested scope. Do not silently widen a task into a
   project, and do not silently narrow one either.
+
+**A direction question preempts the work in flight.** When the owner asks what
+the product should *be* — what to build, what to charge, what the thing is for —
+that is not an interruption to answer briefly and get back to the diff. It is
+the higher-priority item, and treating it as a distraction is a mistake this
+file exists to stop.
+
+The failure mode is specific and it has happened: the owner asks a design
+question mid-implementation, gets a paragraph in a chat message, the agent
+returns to the tests, and the answer is never written down. **The tests will
+wait. The decision will not get recorded later.**
+
+So:
+
+1. **Stop the implementation.** Say plainly that you are stopping it.
+2. **Answer it properly, in the repository.** A design question gets a document
+   in [`docs/design/`](docs/design/) — the options, the recommendation, and the
+   part where you say where it is weakest. A settled decision gets an ADR or a
+   `GOAL.md` edit. A chat answer is a draft, not a deliverable.
+3. **Then resume**, and say what you resumed.
+
+`GOAL.md` is the owner's document and says so: *"If Josh decides something
+different, this file gets updated to say what Radar is actually supposed to be."*
+A direction the owner has stated and the repository does not carry is a
+disagreement nobody can see.
+
+**Say which mode you are in.** "This is my recommendation" and "this is what you
+decided, recorded" are different sentences and get read differently. When the
+owner has reaffirmed something after you raised a concern, that is a decision:
+record it as theirs, note the consequence once, and stop arguing.
 - When a better approach exists, say so briefly and continue with the requested
   goal — unless it is infeasible or unsafe, in which case say that instead.
 - Noticing an unrelated defect is not permission to fix it in the same change.

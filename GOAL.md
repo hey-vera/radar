@@ -59,16 +59,59 @@ as everything else: roughly 456 bps of expected edge before a trade is worth
 making at all. An AI strategy that cannot clear it does not get to trade because
 it is an AI.
 
-## Who it is for
+## Who it is for — two modes, each with two ways to sign
 
-Two modes, one product, and the difference is only *who presses go*:
+The mode says **where the judgement comes from**. Signing says **who presses
+go**. They are separate choices and a customer makes both.
 
-- **Signals** — Radar shows what it decided and why. The customer connects a
-  wallet they already own and executes what they choose to.
-- **AI** — Radar decides and trades within bounds the customer sets and can
-  revoke at any time.
+### Signal mode — no AI
 
-Both modes see the same evidence. Neither is a watered-down version of the other.
+Radar's deterministic strategy decides. What a customer gets is the evidence and
+the reasoning, unchanged from what the recorder holds.
+
+- **Manual** — the customer signs every trade Radar offers.
+- **Automated** — a signed session signs on their behalf.
+- **Risk level** — a threshold that keeps high-risk trades from being offered at
+  all, and from being auto-signed if they are.
+
+### AI mode
+
+A model reasons over the same tools and evidence, and can go looking for more.
+
+- **Manual** and **automated**, the same two ways to sign.
+- The model may decide the evidence is not enough and **ask for more** — pull the
+  launch block, check the creator's other launches, look at who funded them —
+  and then refuse on what it finds.
+
+**The AI is the safety officer and the expert trader at once**, and the two are
+the same job: deciding what not to touch is most of trading.
+
+### Talking to it
+
+AI mode is a conversation, not a dashboard.
+
+- *"Look at $COIN, the narrative seems good."* The model investigates, reasons,
+  answers — and may start trading it.
+- *"Stop trading that one, I found proof it is bundled."*
+- *"Stop everything, right now."*
+- *"Do all my open trades have stop losses? I want to sleep."*
+
+**This is a product for a person, not a well-built machine that happens to have a
+screen.** A customer who cannot ask it a question in their own words, or stop it
+in one sentence, does not actually control it — whatever the settings page says.
+
+### Two consequences that are not negotiable
+
+**A stop command must never travel through the model.** "Stop everything" has to
+revoke the session directly, at the same layer that grants it. If stopping means
+*asking the AI to stop*, then a confused or wedged model is a customer who cannot
+stop it — precisely when they most need to. The kill switch works when the AI is
+broken, or it is not a kill switch.
+
+**The AI may only subtract.** It can refuse what the risk kernel would allow. It
+can never allow what the kernel refuses, and neither can a risk level, a
+conversation, or a customer insisting. Refusals compose; permissions do not.
+[AGENTS.md](AGENTS.md) rule 1 is the code form of this.
 
 ## What makes it different
 
@@ -113,6 +156,11 @@ In order. Nothing below is skippable, and nothing later is worth building first.
 **A Radar account on X that anyone can @-mention under a memecoin post, which
 answers with what Radar measured.** Not an opinion, not a rating: the evidence.
 
+The tone is a roaster and the function is a cabal hunter. Somebody asks, in
+public, whether a coin and its community are sound — and everybody watching sees
+the answer at the same time. Being *funny* is a distribution strategy; being
+*right* is the product.
+
 > Six recipients in the launch block. The creator has twelve prior launches and
 > none graduated. Exit capacity at 1% impact is $31, against a 250 bps round
 > trip.
@@ -146,6 +194,12 @@ So the on-chain half is real and the social half is zero.
 - **Mentions are untrusted input.** An account that reads replies and answers
   with a model is a prompt-injection surface, and somebody will try it on day
   one. [AGENTS.md](AGENTS.md) rule 4 is not optional here.
+- **The flywheel points at a token's price, and that is a legal question before
+  it is a product one.** Attention drives buying. If Radar, or anyone connected
+  to it, holds or is paid to mention a token it comments on, that is promotion
+  wearing analysis's clothes — and the rules about touting do not care that the
+  facts were true. Get advice on this before the account posts once, not after
+  it works.
 - **It is public, automated, and about identifiable people's projects.** A wrong
   accusation at scale is a different risk from a wrong number on a private
   dashboard. What it may assert needs bounds before it posts anything.

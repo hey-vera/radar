@@ -132,17 +132,30 @@ pub fn run(
     println!("SOL price    : ${:.2}\n", price_dollars(sol_price));
 
     let mut examined: Vec<(radar_store::Decision, Address)> = Vec::new();
-    let proposals = paid_tier(
+    // Constructed here rather than inside `paid_tier`, so the function stays
+    // callable without a network. The clock stays at the edge: the launch-block
+    // window is a fixed width back from *now* rather than from a calendar date,
+    // so its cost does not grow every day -- see `launch_block::LOOKBACK_HOURS`.
+    let blocks = CryptoHouseBlocks::new(
+        radar_backfill::cryptohouse::Client::default(),
+        &radar_store::from_epoch(radar_store::now_epoch()),
+    );
+    let rpc = RpcClient::default();
+    let pass = paid_tier(
         &universe,
         &strategy,
         worth_paying_for.iter().take(budget),
-        &quoter,
+        &Sources {
+            blocks: &blocks,
+            structures: &rpc,
+            quoter: &quoter,
+        },
         sol_price,
         watermark,
         &mut examined,
     );
 
-    let verdicts_by_mint = verdicts(&proposals, watermark, reader);
+    let verdicts_by_mint = verdicts(&pass.proposals, watermark, reader);
 
     if let Some(dir) = record_to {
         // The kernel's verdict is folded in only now, because a decision is not
@@ -217,23 +230,114 @@ fn portfolio_state(reader: &Reader, watermark: radar_types::Slot) -> PortfolioSt
 ///
 /// Split out because it is the part with a budget attached, and because reading
 /// the free tier's tally should not mean scrolling past the spending.
-fn paid_tier<'a>(
+/// Where a mint's account structure comes from.
+///
+/// A trait for one method, so [`paid_tier`] can be driven without a network.
+/// The concrete implementation is [`RpcClient`]; the reason this exists is that
+/// the alternative was a function nothing could call, and mutation testing
+/// found the consequence: `paid_tier` could be replaced with "return no
+/// proposals" and every test still passed.
+///
+/// That is not a hypothetical defect. It is [LEARNINGS](../../../LEARNINGS.md)
+/// 10 exactly -- a live run over 41,254 candidates raised zero proposals, and
+/// zero read as a fact about the market when it was a fact about the probe.
+pub trait Structures {
+    /// The mint account, or `None` when it could not be read.
+    ///
+    /// `None` rather than an error: the caller records absence and carries on,
+    /// and the strategy refuses on an unreadable structure rather than treating
+    /// it as clean (rule 9).
+    fn mint_structure(&self, mint: &Address) -> Option<radar_sim::MintStructure>;
+}
+
+impl Structures for RpcClient {
+    fn mint_structure(&self, mint: &Address) -> Option<radar_sim::MintStructure> {
+        RpcClient::mint_structure(self, mint).ok()
+    }
+}
+
+/// What a paid pass produced, and what it declined.
+///
+/// The counts are returned rather than only printed, and that is the point: as
+/// locals feeding a `println!` they could be corrupted -- incremented by the
+/// wrong operator, compared the wrong way round -- with nothing able to observe
+/// it. Mutation testing found seven such spots in this function.
+///
+/// A count nobody can read is a count nobody can check, and these are the
+/// numbers that say whether a gate is working or merely silent.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Pass {
+    /// Proposals the strategy raised.
+    pub proposals: Vec<Proposal>,
+    /// Candidates refused on launch-block shape, before any exit was probed.
+    pub refused_on_shape: usize,
+    /// Candidates whose launch block could not be read at all.
+    ///
+    /// Counted apart from "looked and found clean": a fetch that fails leaves
+    /// the verdict absent, the strategy correctly declines to refuse on an
+    /// absence, and the gate is then silently off.
+    pub look_failed: usize,
+}
+
+/// The lines a pass prints about what it declined.
+///
+/// Extracted so the two thresholds are testable. Inline they were `if n > 0`
+/// guards around a `println!`, which mutation testing could turn into `<`, `>=`
+/// or `==` without any test noticing.
+#[must_use]
+pub fn render_pass_notes(pass: &Pass) -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    if pass.refused_on_shape > 0 {
+        let _ = writeln!(
+            out,
+            "{} candidate(s) refused on shape before any exit probe was paid for.",
+            pass.refused_on_shape
+        );
+    }
+    if pass.look_failed > 0 {
+        out.push_str(
+            "  A candidate whose launch block could not be read carries no verdict,
+               and the strategy will not refuse on an absence — so those passed this
+               gate without being examined rather than by being clean.
+",
+        );
+    }
+    out
+}
+
+/// The two paid calls, over one source of blocks, structures and quotes.
+///
+/// Every dependency arrives as an argument rather than being constructed
+/// inside. That is what makes the function callable at all -- see
+/// [`Structures`] for what it cost to have skipped it.
+pub struct Sources<'s, B, S, Q> {
+    /// Launch blocks, for the coordination read.
+    pub blocks: &'s B,
+    /// Mint accounts.
+    pub structures: &'s S,
+    /// The exit quoter.
+    pub quoter: &'s Q,
+}
+
+fn paid_tier<'a, B, S, Q>(
     universe: &Universe,
     strategy: &CreatorEdge,
     mints: impl Iterator<Item = &'a Address>,
-    quoter: &JupiterQuoter,
+    sources: &Sources<'_, B, S, Q>,
     sol_price: MicroUsd,
     watermark: radar_types::Slot,
     examined: &mut Vec<(radar_store::Decision, Address)>,
-) -> Vec<Proposal> {
-    let rpc = RpcClient::default();
-    // The clock stays at the edge. The launch-block window is a fixed width
-    // back from *now* rather than from a calendar date, so its cost does not
-    // grow every day -- see `launch_block::LOOKBACK_HOURS`.
-    let blocks = CryptoHouseBlocks::new(
-        radar_backfill::cryptohouse::Client::default(),
-        &radar_store::from_epoch(radar_store::now_epoch()),
-    );
+) -> Pass
+where
+    B: radar_graph::LaunchBlockSource,
+    B::Error: std::fmt::Display,
+    S: Structures,
+    Q: radar_sim::Quoter,
+{
+    let rpc = sources.structures;
+    let blocks = sources.blocks;
+    let quoter = sources.quoter;
     let mut proposals = Vec::new();
     let mut refused_on_shape = 0usize;
     // Counted apart from "looked and found clean". A fetch that fails leaves the
@@ -247,7 +351,7 @@ fn paid_tier<'a>(
     let mut shapes = radar_graph::Distribution::new();
     let mut look_failed = 0usize;
 
-    let prevalence_table = prevalence_table_of(&blocks);
+    let prevalence_table = prevalence_table_of(blocks);
 
     for mint in mints {
         // The launch-block look runs first because it is the cheaper of the two
@@ -258,7 +362,36 @@ fn paid_tier<'a>(
             Some(facts) => match blocks.shape_at(mint, facts.slot) {
                 Ok(shape) => {
                     shapes.observe(shape);
-                    Some(radar_graph::assess(shape).coordination)
+                    let at_launch = radar_graph::assess(shape).coordination;
+
+                    // The launch block is not the only place a bundle can
+                    // appear. A token can sit dormant for years and be bundled
+                    // by whoever picks it up, and reading only the launch leaves
+                    // it labelled clean on exactly the day that matters.
+                    //
+                    // One query for the token's whole window, not one per slot.
+                    // A failure here is *not* counted as `look_failed`: the
+                    // launch block was read, so the coordination gate is not
+                    // silently off, and conflating the two would make a broken
+                    // sweep look like an unread launch.
+                    let later = match blocks.bundle_slots(mint, facts.slot) {
+                        Ok(rows) => radar_graph::ongoing::strongest(rows),
+                        Err(e) => {
+                            eprintln!("  {mint}  later blocks unreadable: {e}");
+                            None
+                        }
+                    };
+                    if let Some(sighting) = newly_bundled(later, at_launch) {
+                        println!(
+                            "  {mint}  bundled after launch: {:?} at {:?}",
+                            sighting.coordination, sighting.when
+                        );
+                    }
+
+                    // The stronger of the two verdicts. A launch that read clean
+                    // and a later block that did not is a token to refuse, and
+                    // taking the launch alone would refuse nothing.
+                    Some(later.map_or(at_launch, |s| s.coordination.max(at_launch)))
                 }
                 Err(e) => {
                     look_failed += 1;
@@ -301,21 +434,13 @@ fn paid_tier<'a>(
             continue;
         }
 
-        let structure = rpc.mint_structure(mint).ok();
+        let structure = rpc.mint_structure(mint);
         // Discovered, not assumed. This used to quote a hardcoded 1_000_000_000
         // base units for every token — roughly 0.00005% of a pump.fun supply —
         // so the "capacity" it measured was worth a fraction of a cent and every
         // candidate was refused as CapacityBelowFloor. Zero proposals read as a
         // fact about the market and was a fact about the probe. LEARNINGS 10.
-        let exit = radar_sim::discover_capacity(
-            quoter,
-            mint,
-            structure,
-            radar_sim::Search {
-                max_impact_bps: strategy.thresholds.capacity_impact_bps,
-                ..radar_sim::Search::DEFAULT
-            },
-        );
+        let exit = radar_sim::discover_capacity(quoter, mint, structure, search_for(strategy));
         let Some(candidate) = universe.candidate(mint, Some(exit), Some(sol_price)) else {
             continue;
         };
@@ -336,23 +461,37 @@ fn paid_tier<'a>(
     }
 
     print!("{}", render_shapes(&shapes, look_failed));
-    if refused_on_shape > 0 {
-        println!(
-            "{refused_on_shape} candidate(s) refused on shape before any exit probe was paid for."
-        );
-    }
-    if look_failed > 0 {
-        println!(
-            "  A candidate whose launch block could not be read carries no verdict,
-               and the strategy will not refuse on an absence — so those passed this
-               gate without being examined rather than by being clean."
-        );
-    }
-    proposals
+    let pass = Pass {
+        proposals,
+        refused_on_shape,
+        look_failed,
+    };
+    print!("{}", render_pass_notes(&pass));
+    pass
 }
 
 /// The widest bar drawn, in characters.
 const BAR_WIDTH: usize = 28;
+
+/// The later sighting, but only when it says something the launch block did not.
+///
+/// Extracted from the line that prints it because a comparison inside a
+/// `println!` is a comparison no test can reach: mutation testing flipped this
+/// `>` to `==`, `<` and `>=` and every one of them survived. All three are
+/// wrong in the same direction -- `>=` and `==` repeat the launch verdict as
+/// though it were news, and `<` announces a *weaker* later reading as a
+/// strengthening -- and the line exists precisely to surface the case the
+/// launch block missed.
+///
+/// This is only what gets *printed*. The verdict itself takes the stronger of
+/// the two regardless, so a wrong answer here is a silent report rather than a
+/// silent trade.
+fn newly_bundled(
+    later: Option<radar_graph::ongoing::Sighting>,
+    at_launch: radar_graph::Coordination,
+) -> Option<radar_graph::ongoing::Sighting> {
+    later.filter(|seen| seen.coordination > at_launch)
+}
 
 /// Renders what the sampled launch blocks looked like.
 ///
@@ -673,6 +812,28 @@ fn report_one(
     }
 }
 
+/// The exit search this strategy asks for.
+///
+/// Extracted rather than written inline, and the reason is a real defect rather
+/// than tidiness. Inline, deleting the `max_impact_bps` line left
+/// `..Search::DEFAULT` supplying 100 -- which is *also* what the shipped
+/// strategy configures, so the two agreed by coincidence and no test could tell
+/// them apart. Mutation testing found it.
+///
+/// That coincidence is the dangerous kind: it makes
+/// [`capacity_impact_bps`](radar_strategy::creator_edge::Thresholds) decorative.
+/// Change the strategy's budget and the search would keep measuring at 1%, while
+/// every figure derived from it -- and
+/// [research 0022](https://github.com/hey-vera/radar/blob/main/docs/research/0022-capacity-was-a-budget-not-a-ceiling.md)
+/// establishes that this one setting determined the capacity figure 0018 built
+/// its whole case on -- said otherwise.
+fn search_for(strategy: &CreatorEdge) -> radar_sim::Search {
+    radar_sim::Search {
+        max_impact_bps: strategy.thresholds.capacity_impact_bps,
+        ..radar_sim::Search::DEFAULT
+    }
+}
+
 /// Puts every proposal through the kernel under the shipped policy.
 fn verdicts(
     proposals: &[radar_risk::Proposal],
@@ -691,7 +852,12 @@ fn verdicts(
 
     // The shipped policy. Building the trading lane deploys no capital; only
     // changing this does, and changing it is a decision with an owner.
-    let policy = Policy::CLOSED;
+    //
+    // `Policy::SHIPPED` rather than `Policy::CLOSED`, and the difference is not
+    // cosmetic: `radar-serve`'s funnel reports the same constant, so opening the
+    // policy here cannot leave the interface telling a customer that nothing can
+    // trade. It used to read `CLOSED` on its own.
+    let policy = Policy::SHIPPED;
     // Rebuilt from what was recorded rather than assumed empty. It *is* empty
     // today, because nothing has ever traded -- but `flat()` would keep saying
     // so on the day something does, and a position limit measured against a
@@ -734,11 +900,27 @@ fn verdicts(
         }
         by_mint.insert(proposal.mint, verdict);
     }
-    println!(
-        "
-Radar ships with Policy::CLOSED, which refuses everything. Nothing above
-         was acted on, and nothing will be until that policy is changed deliberately."
-    );
+    // Derived from the policy this run actually judged against. It printed
+    // "Radar ships with Policy::CLOSED, which refuses everything" as a literal,
+    // so it said so whatever the policy was -- the fourth place that could not
+    // stop reassuring, and the one a `repo-conformance` check found rather than
+    // a reader.
+    if policy.is_closed() {
+        println!(
+            "
+Radar ships with a policy that refuses everything. Nothing above was acted
+         on, and nothing will be until that policy is changed deliberately."
+        );
+    } else {
+        println!(
+            "
+CAPITAL IS ARMED: autonomy {:?}, max position {}. What is above was judged
+         against a policy that can authorise. The signer holds its own policy
+         (ADR 0008) and clamps against it unconditionally; it is not readable
+         from here, so this is not a statement that anything was signed.",
+            policy.autonomy, policy.max_position
+        );
+    }
     by_mint
 }
 
@@ -763,8 +945,210 @@ pub const fn default_cap() -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn only_a_stronger_later_reading_is_announced() {
+        // Swept rather than sampled, because the interesting case is the
+        // boundary: a later block that merely *matches* the launch verdict is
+        // not news, and printing it would bury the case the sweep exists for.
+        use radar_graph::Coordination;
+        use radar_graph::ongoing::{Sighting, When};
+        let seen = |c| {
+            Some(Sighting {
+                shape: radar_graph::LaunchBlockShape {
+                    recipients: 6,
+                    transactions: 1,
+                },
+                coordination: c,
+                when: When::Later { slots_after: 900 },
+            })
+        };
+
+        let ladder = [
+            Coordination::Unremarkable,
+            Coordination::Suspected,
+            Coordination::Likely,
+        ];
+        for (i, &later) in ladder.iter().enumerate() {
+            for (j, &launch) in ladder.iter().enumerate() {
+                let announced = newly_bundled(seen(later), launch).is_some();
+                assert_eq!(
+                    announced,
+                    i > j,
+                    "later {later:?} against launch {launch:?}: only a strictly \
+                     stronger later reading is news"
+                );
+            }
+        }
+
+        // An unread sweep announces nothing, which is distinct from a sweep that
+        // read clean.
+        assert!(newly_bundled(None, Coordination::Unremarkable).is_none());
+    }
+
     /// A launch-block source that answers however a test needs it to.
     struct StubBlocks(Result<radar_graph::prevalence::Table, String>);
+
+    /// The same, plus a shape to return -- for the tests that reach the
+    /// coordination read rather than only the prevalence table.
+    struct ShapedBlocks(radar_graph::LaunchBlockShape);
+
+    /// A source whose launch block reads clean and whose later blocks do not.
+    ///
+    /// The year-three case: nothing about the launch was remarkable, and the
+    /// token was bundled long afterwards by whoever picked it up.
+    struct BundledLater {
+        launch: radar_graph::LaunchBlockShape,
+        later: Vec<(u64, radar_graph::LaunchBlockShape)>,
+    }
+
+    impl LaunchBlockSource for BundledLater {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Ok(self.launch)
+        }
+
+        fn bundle_slots(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<(u64, radar_graph::LaunchBlockShape)>, Self::Error> {
+            Ok(self.later.clone())
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            Err("not used by this test".to_owned())
+        }
+    }
+
+    /// A source whose launch block reads, and whose sweep does not.
+    struct SweepFails(radar_graph::LaunchBlockShape);
+
+    impl LaunchBlockSource for SweepFails {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Ok(self.0)
+        }
+
+        fn bundle_slots(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<(u64, radar_graph::LaunchBlockShape)>, Self::Error> {
+            Err("the sweep timed out".to_owned())
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            Err("not used by this test".to_owned())
+        }
+    }
+
+    /// A universe holding one launch, for the sweep tests.
+    fn one_launch(mint: Address, slot: radar_types::Slot) -> Universe {
+        let mut launches = std::collections::BTreeMap::new();
+        launches.insert(
+            mint,
+            radar_strategy::assemble::LaunchFacts {
+                creator: Address::new([9u8; 32]),
+                slot,
+                observed_at: slot,
+            },
+        );
+        Universe {
+            launches,
+            creators: std::collections::BTreeMap::new(),
+            creators_observed_at: std::collections::BTreeMap::new(),
+            as_of: AsOf::at(slot),
+        }
+    }
+
+    impl LaunchBlockSource for ShapedBlocks {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Ok(self.0)
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            Err("not used by this test".to_owned())
+        }
+    }
+
+    /// A structure source that reads nothing, which is a real state: rule 9
+    /// says an unreadable mint is refused rather than treated as clean.
+    struct NoStructures;
+
+    impl Structures for NoStructures {
+        fn mint_structure(&self, _: &Address) -> Option<radar_sim::MintStructure> {
+            None
+        }
+    }
+
+    /// A quoter with nothing to sell at any size.
+    ///
+    /// `NoRoute` rather than an error: it is the answer, and one of the more
+    /// important ones -- a token with no sell route cannot be exited.
+    struct NoDepth;
+
+    impl radar_sim::Quoter for NoDepth {
+        fn quote_sell(
+            &self,
+            _: &Address,
+            size_tokens: u64,
+        ) -> Result<radar_sim::QuotePoint, radar_sim::QuoteError> {
+            Err(radar_sim::QuoteError::NoRoute { size_tokens })
+        }
+    }
+
+    /// A quoter that is never reached by these tests, and says so if it is.
+    struct UnusedQuoter;
+
+    impl radar_sim::Quoter for UnusedQuoter {
+        fn quote_sell(
+            &self,
+            _: &Address,
+            _: u64,
+        ) -> Result<radar_sim::QuotePoint, radar_sim::QuoteError> {
+            panic!("the exit must not be probed for a launch already refused on shape")
+        }
+    }
 
     impl LaunchBlockSource for StubBlocks {
         type Error = String;
@@ -1223,5 +1607,332 @@ mod tests {
         // A first run against a large store must not make tens of thousands of
         // requests to somebody's free endpoint.
         assert!(default_cap() > 0 && default_cap() <= 100);
+    }
+
+    #[test]
+    fn every_proposal_gets_a_verdict_under_the_shipped_policy() {
+        // `verdicts` returns the map the caller records from, and nothing
+        // asserted it was populated -- so replacing the whole body with an empty
+        // map passed the suite. That is the shape LEARNINGS 10 records: a
+        // function whose output nothing checks is a function that can stop
+        // working silently.
+        //
+        // The store is empty, which is fine and is the point: the kernel is pure
+        // (rule 2), so a verdict does not depend on there being history. What is
+        // asserted is that every proposal handed in comes back out with one.
+        let store = std::env::temp_dir().join("radar-verdicts-test");
+        let reader = Reader::open(&store);
+
+        let mints = [Address::new([1u8; 32]), Address::new([2u8; 32])];
+        let proposals: Vec<radar_risk::Proposal> = mints
+            .iter()
+            .map(|mint| radar_risk::Proposal {
+                mint: *mint,
+                creator: Address::new([9u8; 32]),
+                action: radar_risk::Action::Buy,
+                notional: radar_types::MicroUsd(5_000_000),
+                estimated_round_trip_cost: radar_types::MicroUsd(100_000),
+                oldest_input_slot: radar_types::Slot(999),
+                simulated_exit_capacity: Some(radar_types::MicroUsd(50_000_000)),
+            })
+            .collect();
+
+        let by_mint = verdicts(&proposals, radar_types::Slot(1_000), &reader);
+
+        assert_eq!(by_mint.len(), proposals.len(), "one verdict per proposal");
+        for mint in &mints {
+            let verdict = by_mint.get(mint).expect("a verdict for every mint");
+            // Under the shipped policy every one of them is refused, and saying
+            // so here is what keeps this test from passing on the day the policy
+            // is opened without anyone noticing this file.
+            assert!(
+                matches!(verdict, Verdict::Refused { .. }),
+                "the shipped policy authorises nothing: {verdict:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_exit_search_carries_the_strategys_own_impact_budget() {
+        // Not `Search::DEFAULT`'s. The two happen to agree at 100 bps today, so
+        // an inline struct literal that dropped the field passed every test --
+        // which would make the strategy's budget decorative the moment anyone
+        // changed it.
+        //
+        // research 0022's finding is that this single number determined the
+        // capacity figure 0018 built its case on, so plumbing that silently
+        // ignored it would be expensive rather than cosmetic.
+        let mut strategy = CreatorEdge::default();
+        strategy.thresholds.capacity_impact_bps = 850;
+        assert_eq!(search_for(&strategy).max_impact_bps, 850);
+        assert_ne!(
+            search_for(&strategy).max_impact_bps,
+            radar_sim::Search::DEFAULT.max_impact_bps,
+            "the fixture must actually differ from the default"
+        );
+
+        // And the rest of the search still comes from the default, which is what
+        // the struct-update syntax is there for.
+        assert_eq!(
+            search_for(&strategy).max_quotes,
+            radar_sim::Search::DEFAULT.max_quotes
+        );
+    }
+
+    #[test]
+    fn a_pass_examines_the_candidates_it_is_given() {
+        // The property LEARNINGS 10 is about. `paid_tier` could be replaced
+        // wholesale with "return no proposals" and every test still passed --
+        // which is exactly the shape of the 2026-08-25 run where 41,254
+        // candidates produced zero proposals and zero read as a fact about the
+        // market rather than about the probe.
+        //
+        // Asserting the *examinations* rather than the proposals is deliberate:
+        // a candidate refused on shape is still a decision, and it is the
+        // strongest one Radar makes. A function that examined nothing would
+        // record nothing, which is the failure worth catching.
+        let creator = Address::new([9u8; 32]);
+        let mint = Address::new([1u8; 32]);
+        let slot = radar_types::Slot(1_000);
+
+        let mut launches = std::collections::BTreeMap::new();
+        launches.insert(
+            mint,
+            radar_strategy::assemble::LaunchFacts {
+                creator,
+                slot,
+                observed_at: slot,
+            },
+        );
+        let universe = Universe {
+            launches,
+            creators: std::collections::BTreeMap::new(),
+            creators_observed_at: std::collections::BTreeMap::new(),
+            as_of: AsOf::at(slot),
+        };
+
+        // Six recipients in the launch block is `BUNDLE_CENTRE` -- the shape
+        // research 0008 measures as arranged in advance, and the one verdict
+        // that is actionable. So this candidate is refused before any exit is
+        // probed, which `UnusedQuoter` asserts by panicking if it is not.
+        let blocks = ShapedBlocks(radar_graph::LaunchBlockShape {
+            recipients: radar_graph::BUNDLE_CENTRE,
+            transactions: 6,
+        });
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &universe,
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &UnusedQuoter,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(
+            examined.len(),
+            1,
+            "the candidate must be recorded even though it was refused"
+        );
+        assert_eq!(examined[0].1, mint);
+        assert!(
+            pass.proposals.is_empty(),
+            "an arranged launch must not become a proposal"
+        );
+        // The count is asserted, not just the behaviour. As a local feeding a
+        // `println!` it could be incremented by the wrong operator and nothing
+        // could tell.
+        assert_eq!(pass.refused_on_shape, 1);
+        assert_eq!(
+            pass.look_failed, 0,
+            "the block was read, and it was arranged"
+        );
+    }
+
+    #[test]
+    fn a_pass_reports_only_the_declines_it_actually_had() {
+        // The two thresholds. Inline they were `if n > 0` around a `println!`,
+        // which could become `<`, `>=` or `==` with nothing noticing -- so a
+        // pass that refused nothing would announce refusals, or one that refused
+        // plenty would stay quiet.
+        assert_eq!(render_pass_notes(&Pass::default()), "", "nothing to report");
+
+        let refused = Pass {
+            refused_on_shape: 1,
+            ..Pass::default()
+        };
+        let notes = render_pass_notes(&refused);
+        assert!(notes.contains("1 candidate(s) refused on shape"), "{notes}");
+        assert!(
+            !notes.contains("could not be read"),
+            "nothing failed to read: {notes}"
+        );
+
+        let unread = Pass {
+            look_failed: 2,
+            ..Pass::default()
+        };
+        let notes = render_pass_notes(&unread);
+        assert!(notes.contains("could not be read"), "{notes}");
+        assert!(
+            !notes.contains("refused on shape"),
+            "nothing was refused on shape: {notes}"
+        );
+    }
+
+    #[test]
+    fn a_launch_block_that_cannot_be_read_is_counted_apart_from_a_clean_one() {
+        // Rule 9, and the reason `look_failed` exists at all: a fetch that fails
+        // leaves the verdict absent, the strategy correctly declines to refuse
+        // on an absence, and the coordination gate is then *silently off*.
+        // Without this count a broken source and a clean population produce
+        // identical output.
+        let creator = Address::new([9u8; 32]);
+        let mint = Address::new([2u8; 32]);
+        let slot = radar_types::Slot(1_000);
+
+        let mut launches = std::collections::BTreeMap::new();
+        launches.insert(
+            mint,
+            radar_strategy::assemble::LaunchFacts {
+                creator,
+                slot,
+                observed_at: slot,
+            },
+        );
+        let universe = Universe {
+            launches,
+            creators: std::collections::BTreeMap::new(),
+            creators_observed_at: std::collections::BTreeMap::new(),
+            as_of: AsOf::at(slot),
+        };
+
+        // `StubBlocks::shape_at` refuses, which is the case under test.
+        let blocks = StubBlocks(Err("no table either".to_owned()));
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &universe,
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &NoDepth,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(pass.look_failed, 1, "the unreadable block must be counted");
+        assert_eq!(
+            pass.refused_on_shape, 0,
+            "an absent verdict is not a refusal"
+        );
+        assert!(
+            pass.proposals.is_empty(),
+            "nothing with no measurable exit should be proposed"
+        );
+    }
+
+    #[test]
+    fn a_token_bundled_after_launch_is_refused_even_though_its_launch_was_clean() {
+        // The whole point of wiring the ongoing detector. Before this the launch
+        // block was read once and the verdict stood forever -- so a token that
+        // sat dormant and was bundled years later stayed labelled clean on
+        // precisely the day it mattered.
+        //
+        // `UnusedQuoter` carries the second half of the claim: it panics if the
+        // exit is probed, so this asserts the candidate is refused *before*
+        // anything is paid for.
+        let mint = Address::new([4u8; 32]);
+        let slot = radar_types::Slot(1_000);
+        let blocks = BundledLater {
+            // Three recipients is unremarkable, and `assess` reads it as clean.
+            launch: radar_graph::LaunchBlockShape {
+                recipients: 3,
+                transactions: 3,
+            },
+            // Six, five million slots later: the bundle centre.
+            later: vec![(
+                5_000_000,
+                radar_graph::LaunchBlockShape {
+                    recipients: radar_graph::BUNDLE_CENTRE,
+                    transactions: 6,
+                },
+            )],
+        };
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &one_launch(mint, slot),
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &UnusedQuoter,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(
+            pass.refused_on_shape, 1,
+            "a bundle after launch must refuse the candidate"
+        );
+        assert_eq!(examined.len(), 1, "and the refusal is still recorded");
+        assert!(pass.proposals.is_empty());
+    }
+
+    #[test]
+    fn a_sweep_that_fails_does_not_read_as_an_unread_launch_block() {
+        // The two failures mean different things and are counted apart. An
+        // unreadable *launch* block leaves the coordination gate silently off,
+        // which is what `look_failed` exists to surface. An unreadable *sweep*
+        // leaves the launch verdict intact, so the gate is still doing its
+        // original job -- and counting it there would report a working gate as a
+        // broken one.
+        let mint = Address::new([5u8; 32]);
+        let slot = radar_types::Slot(1_000);
+        // The launch itself is bundled, so the candidate is refused on that
+        // alone and the exit is never probed.
+        let blocks = SweepFails(radar_graph::LaunchBlockShape {
+            recipients: radar_graph::BUNDLE_CENTRE,
+            transactions: 6,
+        });
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &one_launch(mint, slot),
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &UnusedQuoter,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(pass.refused_on_shape, 1, "the launch block still decided");
+        assert_eq!(
+            pass.look_failed, 0,
+            "a failed sweep is not an unread launch block"
+        );
     }
 }

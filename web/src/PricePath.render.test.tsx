@@ -17,11 +17,15 @@ import type { Measurement } from "./api";
 function measurement(over: Partial<Measurement>): Measurement {
   return {
     measured_at: 1,
-    fills: 1,
+    price_reads: 1,
+    last_transfer_slot: null,
     first_price: 100,
     last_price: 100,
     peak_price: 100,
     trough_price: 100,
+    window_peak_price: null,
+    window_trough_price: null,
+    vwap: null,
     graduated_at: null,
     held_to_end_bps: null,
     ...over,

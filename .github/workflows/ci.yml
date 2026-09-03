@@ -68,9 +68,26 @@ jobs:
         run: cargo install --locked cargo-deny
       - run: just cargo-deny
 
-  mutants:
-    name: mutants
+  mutants-shards:
+    # Sharded across four runners. The set is split, not sampled: every mutant
+    # is still tested, and a shard that finds a survivor fails its own job.
+    #
+    # Serial, this job was killed part-way on every run of a forty-commit branch
+    # and reported nothing -- which reads exactly like success.
+    name: mutants-shards
+    strategy:
+      fail-fast: false
+      matrix:
+        # Zero-indexed: `--shard k/n` requires k < n, so 4/4 is a usage
+        # error and 0/4 is a real shard. Written [1,2,3,4] first, which
+        # failed shard 4 loudly *and skipped shard 0 silently* -- a quarter
+        # of the mutants untested while the job looked merely broken.
+        shard: [0, 1, 2, 3]
     runs-on: ubuntu-latest
+    # A wedged job should fail as a timeout rather than as an unexplained
+    # cancellation, which is a distinction this workflow has already cost a
+    # session for want of.
+    timeout-minutes: 30
     # Only on pull requests: `--in-diff` needs two sides to diff, and on a push
     # to main there is nothing to compare against that is not already merged.
     if: github.event_name == 'pull_request'
@@ -85,7 +102,42 @@ jobs:
       - uses: taiki-e/install-action@5b4d68e2e660441203ab128a23676f1e4faf1532 # v2
         with:
           tool: cargo-mutants
-      - run: just mutants origin/${{ github.base_ref }}
+      # Reported so a job that dies mid-run says why. Shards were repeatedly
+      # killed with no error and no exit code, which is indistinguishable
+      # between a full disk, an out-of-memory kill and a cancelled run -- and
+      # guessing wrong cost most of a session.
+      - name: what this runner has
+        run: |
+          df -h / | tail -1
+          free -m | head -2
+      - run: just mutants origin/${{ github.base_ref }} ${{ matrix.shard }}/4
+      - name: what is left of it
+        if: always()
+        run: df -h / | tail -1
+
+  # The name the branch ruleset requires, kept as one context.
+  #
+  # A matrix job reports as `mutants (1)`, `mutants (2)` and so on, so sharding
+  # the job under its own name would have deleted the required check rather than
+  # satisfied it -- and a required check that no longer exists blocks every pull
+  # request permanently.
+  #
+  # `if: always()` so this runs even when a shard fails; without it the job is
+  # skipped, and a skipped required check is not a passing one.
+  mutants:
+    name: mutants
+    runs-on: ubuntu-latest
+    needs: mutants-shards
+    if: always() && github.event_name == 'pull_request'
+    steps:
+      - name: every shard passed
+        run: |
+          result='${{ needs.mutants-shards.result }}'
+          echo "shards: $result"
+          # `success` is the only acceptable answer. `skipped` and `cancelled`
+          # are failures here: this check exists to say the mutants were tested,
+          # and neither of those means they were.
+          test "$result" = success
 
   msrv:
     name: msrv

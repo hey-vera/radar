@@ -10,6 +10,10 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The bonding curve and its fee schedule, so an exit can be priced off the venue
+# rather than off a vendor's quote ladder (research 0022). Pure arithmetic --
+# this adds no network surface to a crate that already has too much.
+radar-pumpfun.workspace = true
 radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

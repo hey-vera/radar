@@ -16,6 +16,25 @@
 //!
 //! An **uncited** reply is marked, because an uncited claim has the shape of a
 //! fabrication and a reader has to be able to tell which they have.
+//!
+//! # This is an operator screen, not product
+//!
+//! `/v1/link` is `Audience::Operator` -- it drives a device-authorisation flow
+//! that binds a *vendor credential* to this instance, which is an operator
+//! action and not something a customer may ever reach. `/v1/chat` is
+//! `Audience::Customer`, so the two halves of this component do not share an
+//! audience, and the link panel is the half that must not ship to customers.
+//!
+//! Nothing enforces that yet, because nothing needs to: no customer
+//! authenticator is configured, so every route falls back to the operator
+//! check. The day `RADAR_PRIVY_APP_ID` is set, this component begins showing a
+//! customer a panel whose every request is refused.
+//!
+//! Two things follow, and both belong to the screen split rather than here:
+//! `Link` moves to the operator surface, and `/v1/chat` gains per-customer
+//! metering -- today it reserves against one **global** daily budget with no
+//! customer in the path, so the first signed-up account could spend the whole
+//! day's allowance.
 
 import { useCallback, useEffect, useState } from "react";
 import { agent, ApiError, type Answered, type Progress } from "./api";

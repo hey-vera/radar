@@ -1167,3 +1167,149 @@ X, and go and look. ADR 0003 said the signer accepts only legacy transactions. I
 did not say "and this requires every venue we trade on to offer legacy routing",
 because that consequence lived in a different crate and nobody owned the sentence
 that joined them.
+
+## 25. A published interface that was not the deployed program
+
+pump.fun publishes an Anchor IDL on chain, signed into an account by the program
+authority. It is the most authoritative reference available for the program: not
+a blog post, not a third-party decompilation, but the program's own declaration
+of its interface.
+
+It declares sixteen accounts for `buy`. Every `buy` captured from mainnet carries
+eighteen.
+
+The two extras are Anchor *remaining accounts*, which by construction do not
+appear in a declared account list. So the IDL is not wrong — it is complete about
+the thing it describes, and the thing it describes is not the whole call. A
+builder written against it would have been two accounts short, and would have
+found out at simulation if it was lucky and on chain if it was not.
+
+**What makes this worth recording is that it is the second occurrence.**
+`radar-decode`'s discriminator table exists because public references described a
+program with three instructions where the live one has twenty-one. The lesson
+taken from that was "do not trust third-party references, capture from mainnet".
+The lesson available now is stronger and less comfortable: **first-party
+references are also not the program**. The program is what the network accepted,
+and the only way to know what that was is to read a transaction it accepted.
+
+The IDL was still worth fetching. It named three accounts that six hundred seed
+derivations had failed to find, and it was the thing that revealed the count
+mismatch in the first place — a reference is a good source of hypotheses and a
+bad source of facts. The discipline is not "ignore references", it is **let the
+reference propose and let the capture dispose**, which is what ADR 0009's first
+precondition already said and what the fixture-first ordering already enforced.
+
+The corollary for what remains unknown: after a reference has been consulted and
+a search has been exhausted, the next authority is the runtime. Two accounts are
+still unidentified, and the way to learn whether they matter is to simulate a
+transaction without them and read the error — not to widen the search again.
+
+## 26. A shard that was never run, behind a shard that failed loudly
+
+The mutation job was split across four parallel runners to make it finish
+inside a runner's life. The matrix was written `[1, 2, 3, 4]` and passed to
+`cargo mutants --shard ${{ matrix.shard }}/4`.
+
+`--shard k/n` is **zero-indexed**: it requires `k < n`. So `4/4` was a usage
+error and failed immediately — and `0/4`, a real quarter of the mutants, was
+never run at all.
+
+The loud failure hid the silent one. The obvious fix on seeing a red
+`mutants-shards (4)` is to work out why that shard is unhappy; do that and the
+job goes green having tested three quarters of the mutants, reporting success
+for a check that was no longer checking. The visible bug was the harmless one.
+
+Caught by trying to reproduce the failing shard locally, where the tool prints
+`shard k must be less than n` rather than a stack trace. Fixed by indexing from
+zero, and verified rather than assumed: the four shards list 122, 122, 122 and
+121 mutants against an unsharded total of 487, so they partition the set
+exactly.
+
+**This is the third time the same shape has appeared**, and the first two are
+already in this file's tooling: a `just mutants` recipe that would pass without
+mutating brand-new modules because `git diff` cannot see untracked files, and a
+monitor that read 0 of 779 and reported a working detector as a quiet one. The
+recurring lesson is that **a check must fail differently when it did not run
+than when it found nothing** — and splitting work across workers is a
+particularly easy way to lose that property, because each worker reports on
+itself and nothing reports on the union.
+
+Worth doing when sharding anything: assert the parts sum to the whole.
+
+## 27. Half a cache key, left to the caller to remember
+
+`/v1/scoreboard` and `/v1/tokens/{mint}` each scan the whole store and were
+measured at 1.7s and 3.2s against a 500ms budget, so both were put behind a
+cache keyed on the store's watermark — rule 3, so a research replay at an older
+`AsOf` can never be handed today's answer.
+
+The watermark is the whole key for the scoreboard. It is only half of it for a
+token: two mints share a watermark. The first shape kept the mint *inside the
+cached value* and left the handler to compare it before accepting a hit, with a
+comment at the call site explaining that it must. The handler did compare it —
+and then, on a mismatch, fell through to `get_or_compute`, which matched on the
+watermark alone and returned the other token's evidence. The comment was correct
+and the code beneath it was not.
+
+Two things about how it was caught are worth keeping.
+
+It was caught by a test written to **document** the pattern rather than to hunt a
+bug — "here is how the token handler carries a key beside the value" — and the
+test failed on its first run. The failure looked at first like a bad assertion,
+because the shape it asserted was the shape that had just been reviewed and
+committed to.
+
+And it is entry 23's shape at a different altitude: a check that looked like a
+check. The difference is that 23 was a sentence describing a boundary and this
+was a comment describing an invariant, and neither is a mechanism.
+
+The fix was not to correct the handler. It was to give `Cache` a key type
+parameter, so the question being asked is part of what the entry stores and no
+caller can forget to check it. `Cache<Report>` for the scoreboard,
+`Cache<TokenEvidence, String>` for the token, and the fall-through that caused
+this cannot be written.
+
+**The check:** if a cache's correctness depends on a caller comparing something,
+that something is part of the key. A comment saying a caller must check is a
+comment saying the type is wrong.
+
+## 28. A mutant that killed the machine, so the check could not report
+
+One of four mutation shards was killed three minutes into every run of a
+sixty-eight-commit branch, reporting a baseline and then `ERROR interrupted`.
+The other three passed. It was diagnosed twice as a cancellation caused by
+pushing during an in-flight run — the mechanism entry 26's session had just
+learned — and both times that was wrong, for a reason visible in the run itself:
+`cancel-in-progress` cancels a *whole run*, and this was one job out of twelve.
+
+The cause was in the code being mutated. `compact_u16` was an unbounded
+`loop`, and `cargo mutants` turns its `remaining == 0` exit into `remaining
+!= 0`. For a value of zero that never terminates, and every iteration pushes a
+byte — so it is an unbounded **allocation**, not a spin. The runner ran out of
+memory and the job died with it, three minutes in, before the tool's own 300s
+per-mutant timeout could fire.
+
+That is the part worth keeping. **A tool cannot time out a mutant that kills the
+machine it is running on.** Every timeout `cargo mutants` offers assumes the
+harness outlives the mutant. When it does not, the check does not report a
+survivor, or a timeout, or a failure — it reports nothing, and the job looks
+infrastructurally broken rather than informative. Entry 26's lesson in a new
+place: a check must fail differently when it did not run than when it found
+nothing, and here it could not fail at all.
+
+Two things follow.
+
+**An unbounded loop that allocates is a different risk from one that spins**, and
+mutation testing is the thing most likely to find it, because it deliberately
+breaks exit conditions. Where the bound is known — a compact-u16 is three bytes,
+because the format is defined over a `u16` at seven bits a byte — write it. The
+mutation then produces a wrong answer that a test catches, which is the outcome
+the whole exercise is for.
+
+**A single job failing where its siblings pass is evidence about the work, not
+the infrastructure.** Sharding is deterministic, so the same shard drawing the
+same fatal mutant every time is a signature. The tell was there in the first
+log: shard 1, every run, same three minutes.
+
+**The check:** when one shard of a parallel job dies and the rest pass, look at
+what that shard was given before looking at the runner.

@@ -98,6 +98,33 @@ impl Policy {
         max_consecutive_failures: 0,
     };
 
+    /// The policy this build decides with.
+    ///
+    /// # Why this exists beside [`CLOSED`](Self::CLOSED)
+    ///
+    /// It **is** `CLOSED` today, and the indirection is the point rather than
+    /// the value.
+    ///
+    /// Two places consumed `Policy::CLOSED` directly and independently:
+    /// `radar consider`, which decides, and `radar-serve`'s funnel, which tells
+    /// a reader whether anything can be authorised. Opening the policy means
+    /// changing the first — and the second would have gone on reporting
+    /// `closed`, telling a customer nothing can trade while Radar traded. The
+    /// interface's strongest safety claim was a compile-time constant that
+    /// could not move with the thing it described.
+    ///
+    /// One constant cannot diverge from itself. Changing what ships is still a
+    /// deliberate decision about money; it is now a decision that cannot be
+    /// taken in one place and missed in the other.
+    ///
+    /// **This bounds the deciding policy and nothing else.**
+    /// [ADR 0008](https://github.com/hey-vera/radar/blob/main/docs/adr/0008-the-signer-holds-its-own-policy.md)
+    /// put a second policy in the signer, loaded from `RADAR_SIGNER_POLICY`,
+    /// which no other process can read. The signer clamps against its own copy
+    /// unconditionally, so it can refuse what this one permits — never the
+    /// reverse.
+    pub const SHIPPED: Self = Self::CLOSED;
+
     /// Whether this policy could ever authorise anything.
     #[must_use]
     pub const fn is_closed(&self) -> bool {
@@ -120,6 +147,18 @@ mod tests {
         // An unconfigured risk engine that permits trading is not a risk engine.
         assert_eq!(Policy::default(), Policy::CLOSED);
         assert!(Policy::CLOSED.is_closed());
+    }
+
+    #[test]
+    fn what_ships_is_closed_and_is_one_constant() {
+        // `SHIPPED` is what `radar consider` decides with and what the funnel
+        // reports. It is `CLOSED` today; the assertion that matters is that
+        // there is *one* of it, because the bug this replaced was two call
+        // sites reading `CLOSED` independently — so opening the policy in the
+        // decider would have left the interface reporting `closed` while Radar
+        // traded.
+        assert!(Policy::SHIPPED.is_closed());
+        assert_eq!(Policy::SHIPPED, Policy::CLOSED);
     }
 
     #[test]

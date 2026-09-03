@@ -389,6 +389,140 @@ Both were verified by running them — the second by breaking the CLI on purpose
 and confirming `radar brief` exits non-zero. A check confirmed only where it
 passes is not confirmed.
 
+## Before the deploy that lands the customer lane
+
+**Read this one before installing.** The instance already has
+`RADAR_PRIVY_APP_ID` set, and that is the setting that switches customer
+authentication on. It has been on.
+
+### What that means today, on the running binary
+
+The guard tries a **customer** token first and falls back to Cloudflare Access:
+
+```rust
+if audience.accepts_customer()
+    && let Some(config) = state.customer.config()      // Privy configured
+    && let Some(token) = customer::token_from(headers) // a bearer token
+{ ... return next.run(request).await; }                // served, before Access
+```
+
+So Access is the fallback, not the gate. On the deployed binary there is no
+admission check between "this token is genuine" and "this identity is one of
+ours" — and anyone can sign up to a Privy application. Any verified identity for
+that app reaches `/v1/funnel`, `/v1/scoreboard` and `/v1/tokens/*`.
+
+**Nothing has actually been exposed**, and that is worth checking rather than
+assuming. The application has no registered users:
+
+```bash
+ssh guardian-vps-tail 'set -a; . /etc/radar/radar.env; set +a
+  curl -s -u "$RADAR_PRIVY_APP_ID:$RADAR_PRIVY_APP_SECRET"     -H "privy-app-id: $RADAR_PRIVY_APP_ID"     https://auth.privy.io/api/v1/users | head -c 200'
+```
+
+On 2026-09-01 that returned zero. The door is unlocked and nobody holds a key.
+
+The harm if somebody did is also bounded: those routes are Radar's own research
+record, `/v1/chat` is not mounted because no model provider is configured, and
+`/v1/customer/wallet` returns the caller's *own* wallet from their own verified
+DID, so it leaks nothing about anyone else.
+
+It is still not what anybody chose, and the fix is below.
+
+### The three settings, and what each does when unset
+
+None of them stops the binary starting. Each fails **closed**, which means an
+instance that installs the new binary without them is *more* restrictive than
+before, not less — a customer will be refused rather than admitted. That is the
+right direction to be wrong in, and it is why the order here is install first,
+configure second, rather than the other way round.
+
+| setting | unset means |
+|---|---|
+| `RADAR_CUSTOMER_ACCESS` | **nobody** may reach the product as a customer |
+| `RADAR_CUSTOMER_SALT` | customers cannot be metered, so nothing is spent on them |
+| `RADAR_CHAT_PER_CUSTOMER_DAILY` | no customer may spend the model budget |
+
+`RADAR_STATE_DIR` is now read at start for the share meter as well as the model
+ledger, and the binary **will not start without it**. It is already set on this
+host; check before installing anywhere else:
+
+```bash
+ssh guardian-vps-tail 'grep -c RADAR_STATE_DIR /etc/radar/radar.env'
+```
+
+### Finding your own DID — and why it has to come second
+
+The allowlist matches the `sub` of a Privy access token, because there is no
+email in one. **The identity does not exist until you have logged in once**, so
+the order is: deploy closed, log in, read the DID, then allowlist it. Setting the
+allowlist first means guessing a string that has not been issued.
+
+Once you have logged in through the interface, the identity is at Privy and can
+be read back:
+
+```bash
+ssh guardian-vps-tail 'set -a; . /etc/radar/radar.env; set +a
+  curl -s -u "$RADAR_PRIVY_APP_ID:$RADAR_PRIVY_APP_SECRET"     -H "privy-app-id: $RADAR_PRIVY_APP_ID"     https://auth.privy.io/api/v1/users' |
+  grep -oE '"id":"did:privy:[^"]+"'
+```
+
+Two other routes to the same string, for when that one is inconvenient:
+
+- **The Privy dashboard.** Users → your account.
+- **From a refusal.** An identity that is not admitted is told its own DID in the
+  403 body. This will *not* work for you while you hold a Cloudflare Access
+  cookie: the guard falls through to Access, Access passes, and you are served
+  rather than refused. Use a browser with no Access session.
+
+### Setting them
+
+Edit on the host — these are secrets and belong in the env file, not in a shell
+history or a commit:
+
+```bash
+ssh guardian-vps-tail 'head -c 48 /dev/urandom | base64'   # the salt, generated on the box
+ssh -t guardian-vps-tail 'sudo -e /etc/radar/radar.env'
+```
+
+Add:
+
+```
+RADAR_CUSTOMER_ACCESS=closed
+RADAR_CUSTOMER_SALT=<the base64 from above>
+```
+
+`closed` first, on purpose. It is the state the instance should be in while you
+are deploying, and it is what makes the login below safe to do before the
+allowlist exists. Once you have your DID, change the one line:
+
+```
+RADAR_CUSTOMER_ACCESS=allowlist:did:privy:<your did>
+```
+
+Leave `RADAR_CHAT_PER_CUSTOMER_DAILY` out until a model provider is configured —
+the chat route is not mounted without one, so a limit on it would be a setting
+with nothing to limit.
+
+Then restart and confirm the instance says what it is doing. The start-up banner
+reports both:
+
+```bash
+ssh guardian-vps-tail 'sudo systemctl restart radar-serve && sleep 2 &&
+  journalctl -u radar-serve -n 20 --no-pager | grep -E "admission|chat share|customers"'
+```
+
+Expected:
+
+```
+  admission  : allowlist of 1
+  chat share : closed — no customer may spend the model budget (set RADAR_CHAT_PER_CUSTOMER_DAILY)
+  customers  : enforcing for application cmthhk…
+```
+
+A line reading `admission  : closed — no customer may reach the product` means
+the variable did not take, and **a line reading `open` means the product is
+public**. Both are worth reading rather than assuming.
+
 ## Every deploy after that
 
 **Run these from a workstation that can reach `guardian-vps-tail`, not from the
@@ -410,22 +544,64 @@ scp dist/radar-serve dist/radar dist/radar-backfill guardian-vps-tail:/tmp/
 Check the commit line before shipping. `gh run download` takes the most recent
 *completed* run, which during a merge is often the previous one.
 
+### The three binaries do not live in the same place
+
+Checked 2026-09-01, and an earlier version of this section had it wrong in the
+way this file exists to prevent — it installed all three to `~/bin` and then
+`sha256sum`'d `~/bin`, which "verifies" a `radar-serve` that nothing runs.
+
+Ask rather than assume:
+
+```bash
+ssh guardian-vps-tail 'grep -h ExecStart /etc/systemd/system/radar-*.service'
+```
+
+| binary | where its unit runs it from | sudo? |
+|---|---|---|
+| `radar-backfill` | `/home/guardian/bin/` (`radar-follow.service`) | no |
+| `radar` | `/home/guardian/bin/` (used by `radar-brief.sh`) | no |
+| `radar-serve` | **`/usr/local/bin/`**, root-owned | **yes** |
+
 Install by writing beside the target and renaming, rather than over it. A running
 process holds its inode, so a rename never disturbs one mid-write, and the
-running binary keeps working until it is restarted:
+running binary keeps working until it is restarted.
+
+The two that need no privileges:
 
 ```bash
 ssh guardian-vps-tail '
   set -e
-  for b in radar radar-backfill radar-serve; do
+  for b in radar radar-backfill; do
     install -m755 /tmp/$b ~/bin/$b.new && mv -f ~/bin/$b.new ~/bin/$b
   done
-  sha256sum ~/bin/radar ~/bin/radar-backfill ~/bin/radar-serve'
+  sha256sum ~/bin/radar ~/bin/radar-backfill'
 ```
 
-**Compare that output against `BUILD-INFO.txt`.** Verifying the download proves
-the artifact arrived; only this proves the artifact is what got installed, and
-the two came apart in exactly the way described above.
+And the one that does. `guardian` has full sudo but **no NOPASSWD entry for
+radar**, so this needs an interactive session and cannot be run unattended:
+
+```bash
+ssh -t guardian-vps-tail '
+  set -e
+  sudo install -m755 /tmp/radar-serve /usr/local/bin/radar-serve.new &&
+  sudo mv -f /usr/local/bin/radar-serve.new /usr/local/bin/radar-serve &&
+  sha256sum /usr/local/bin/radar-serve'
+```
+
+**Compare all three against `BUILD-INFO.txt`.** Verifying the download proves the
+artifact arrived; only this proves the artifact is what got installed, and the
+two came apart in exactly the way described above.
+
+The quickest way to catch the mistake this section used to cause:
+
+```bash
+ssh guardian-vps-tail 'readlink /proc/$(pgrep -x radar-serve)/exe'
+```
+
+It prints the path, and `(deleted)` after it when the running process is holding
+a binary that has since been replaced — which is a deploy that landed and has not
+been restarted. If it prints a path under `/home/guardian/bin`, the unit is not
+running what you just installed.
 
 Then restart, and ask the service what it thinks it is running:
 

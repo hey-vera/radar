@@ -53,10 +53,26 @@ pub struct Funnel {
     pub stages: Vec<Stage>,
     /// Why candidates were passed over, most common first.
     pub reasons: Vec<ReasonCount>,
-    /// Whether the shipped policy could authorise anything at all.
+    /// Whether the policy this build **decides** with could authorise anything.
     ///
     /// The single most important fact on the page, and the one a raw refusal
     /// list buries under six other reasons.
+    ///
+    /// # What it does not cover, stated because the field reads stronger than
+    /// # it is
+    ///
+    /// This is `radar_risk::Policy::SHIPPED` — the constant `radar consider`
+    /// judges against. It is **not** a guarantee that nothing can be signed.
+    /// [ADR 0008](https://github.com/hey-vera/radar/blob/main/docs/adr/0008-the-signer-holds-its-own-policy.md)
+    /// put a second policy in `radar-signer`, loaded from `RADAR_SIGNER_POLICY`
+    /// at start, and this process cannot read it. The signer clamps against its
+    /// own copy unconditionally, so it can refuse what this policy permits —
+    /// never the reverse.
+    ///
+    /// So `true` means *the decider authorises nothing*, which is the honest
+    /// claim. Rendering it as "nothing can be authorised, ever, anywhere" is a
+    /// claim about a file in another process, and LEARNINGS 23 records what
+    /// happens when a boundary is described as covering more than it does.
     pub policy_closed: bool,
 }
 
@@ -132,8 +148,28 @@ pub struct TokenEvidence {
 pub struct Measurement {
     /// When it was taken.
     pub measured_at: u64,
-    /// Fills observed in the window.
+    /// Price reads the figures below were computed from.
+    ///
+    /// **Not a fill count, and it over-counts.** The price windows it is folded
+    /// across overlap by five of their six hours and the fold is
+    /// `saturating_add`, so a fill inside the window is counted again on every
+    /// hourly pass: it grows while nothing trades, and two measurements of the
+    /// same token are not comparable
+    /// ([LEARNINGS](https://github.com/hey-vera/radar/blob/main/LEARNINGS.md)
+    /// entry 19, which invalidated the first runs of research 0017 and 0018).
+    ///
+    /// Renamed on the wire from `fills` so a client cannot render it under a
+    /// label the number does not support. Use
+    /// [`last_transfer_slot`](Self::last_transfer_slot) for "did anything
+    /// change hands".
+    #[serde(rename = "price_reads")]
     pub fills: u64,
+    /// The last slot a transfer was observed, or `None` if none ever was.
+    ///
+    /// A `max`, so unlike [`fills`](Self::fills) it cannot be inflated by
+    /// re-reading the same window. This is the field that answers whether the
+    /// token still trades.
+    pub last_transfer_slot: Option<u64>,
     /// Prices, scaled by `PRICE_SCALE`. Null where not measured, never zero.
     pub first_price: Option<u64>,
     /// The last price observed.
@@ -142,6 +178,25 @@ pub struct Measurement {
     pub peak_price: Option<u64>,
     /// The lowest.
     pub trough_price: Option<u64>,
+    /// The highest fill price **within the most recent price window**.
+    ///
+    /// Exposed because [`peak_price`](Self::peak_price) is folded from launch
+    /// and so can only widen -- it says nothing about *when* the peak happened,
+    /// which is precisely why research 0020 could not answer whether an exit
+    /// rule helps. This is the same measurement without the fold.
+    ///
+    /// **The window overlaps.** It is six hours and the pass runs hourly, so a
+    /// peak set five hours ago appears in six consecutive measurements. It is a
+    /// bounded recent lookback, not the movement since the previous checkpoint,
+    /// and reading it as the latter overstates how fresh a move is.
+    ///
+    /// `None` on every row written before the column existed, which is most of
+    /// the store.
+    pub window_peak_price: Option<u64>,
+    /// The lowest fill price within the most recent price window. Same caveats.
+    pub window_trough_price: Option<u64>,
+    /// Volume-weighted average price across every observed fill.
+    pub vwap: Option<u64>,
     /// Whether the token graduated, and when.
     pub graduated_at: Option<u64>,
     /// Return from first to last, in basis points, where both are known.
@@ -170,10 +225,14 @@ pub fn token_evidence(
         .map(|o| Measurement {
             measured_at: o.measured_at.get(),
             fills: o.fills,
+            last_transfer_slot: o.last_transfer_slot.map(radar_types::Slot::get),
             first_price: o.first_price,
             last_price: o.last_price,
             peak_price: o.peak_price,
             trough_price: o.trough_price,
+            window_peak_price: o.window_peak_price,
+            window_trough_price: o.window_trough_price,
+            vwap: o.vwap,
             graduated_at: o.graduated_at.map(radar_types::Slot::get),
             held_to_end_bps: o.held_to_end_gain_bps(),
         })
@@ -184,6 +243,549 @@ pub fn token_evidence(
         decisions,
         measurements,
     })
+}
+
+/// Where a page of the decision record ended, so the next one can continue.
+///
+/// # Why this is a pair and not a slot
+///
+/// `decided_at` is **not unique**, and not nearly. It is the watermark a
+/// `radar consider` run was taken at, and every decision in that run carries the
+/// same one — so a single value covers a whole batch, which at the observed rate
+/// is tens of rows and over a backlog pass is thousands.
+///
+/// A cursor of "the last slot I saw" would therefore return one page and then
+/// skip **every remaining decision at that slot**, silently, with a perfectly
+/// plausible-looking result. That is the convenient default that loses data, and
+/// this repository has a rule about those.
+///
+/// So the cursor is the pair `(decided_at, mint)`, which is unique because a
+/// strategy records one decision per mint per run, and the ordering is by both.
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Cursor {
+    /// The watermark of the last decision on the previous page.
+    pub decided_at: u64,
+    /// Its mint, which is what breaks the tie.
+    pub mint: String,
+}
+
+impl Cursor {
+    /// Parses `<slot>:<mint>`.
+    ///
+    /// `None` for anything malformed rather than a partial read: a cursor that
+    /// parsed half of itself would page through a different sequence than the
+    /// one the caller was given, which is worse than starting over.
+    #[must_use]
+    pub fn parse(raw: &str) -> Option<Self> {
+        let (slot, mint) = raw.split_once(':')?;
+        if mint.is_empty() {
+            return None;
+        }
+        Some(Self {
+            decided_at: slot.parse().ok()?,
+            mint: mint.to_owned(),
+        })
+    }
+
+    /// Renders `<slot>:<mint>`.
+    #[must_use]
+    pub fn render(&self) -> String {
+        format!("{}:{}", self.decided_at, self.mint)
+    }
+}
+
+/// What a caller asked the decision record for.
+#[derive(Clone, PartialEq, Eq, Debug, Default)]
+pub struct Query {
+    /// Continue after this point. `None` starts at the newest.
+    pub after: Option<Cursor>,
+    /// Only decisions carrying this reason, from either list.
+    pub reason: Option<String>,
+    /// Only `proposed` or only `passed`.
+    pub conclusion: Option<Conclusion>,
+    /// Only decisions whose mint or creator starts with this.
+    ///
+    /// A **prefix**, not a substring, and case-sensitive. Both are the same
+    /// choice: base58 addresses are compared by their leading characters
+    /// everywhere else in this system, a substring match over 4,400 addresses
+    /// returns noise, and case-folding a base58 string is wrong -- `A` and `a`
+    /// are different characters in the alphabet, so folding them would match
+    /// addresses that do not exist.
+    pub prefix: Option<String>,
+    /// How many to return.
+    pub limit: usize,
+}
+
+/// A query-string prefix reduced to what should actually be filtered on.
+///
+/// `None` for absent, empty, or whitespace. `?prefix=` is a stray parameter, not
+/// a request for decisions whose mint starts with nothing — and **every** mint
+/// starts with nothing, so honouring it would silently return the whole record
+/// while the control said a filter was applied.
+///
+/// A function rather than an inline `.filter()` in the handler because that is
+/// where it was, and a mutation that deleted the `!` went uncaught: only *empty*
+/// prefixes would have been kept, so every real search would have matched
+/// everything.
+#[must_use]
+pub fn normalise_prefix(raw: Option<String>) -> Option<String> {
+    raw.map(|p| p.trim().to_owned()).filter(|p| !p.is_empty())
+}
+
+/// The largest page anyone may ask for.
+///
+/// A cap rather than a suggestion. The store is read whole to answer this, so an
+/// unbounded `limit` costs the *client* nothing and hands it every decision
+/// Radar has ever taken in one response.
+pub const MAX_LIMIT: usize = 200;
+
+/// The page size when a caller does not choose one.
+pub const DEFAULT_LIMIT: usize = 50;
+
+/// A page of the decision record, newest first.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Page {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// The decisions, newest first.
+    pub decisions: Vec<Decision>,
+    /// The cursor to pass as `after` for the following page.
+    ///
+    /// `None` means this is the last page. Distinct from an empty `decisions`
+    /// list, which can also happen on a filter that matches nothing.
+    pub next: Option<String>,
+    /// How many decisions matched the filter in total, across every page.
+    ///
+    /// Costs nothing extra: answering this endpoint reads the whole table
+    /// regardless, so the count is already in hand. It is what lets a reader see
+    /// that a reason accounts for four thousand refusals rather than the fifty
+    /// in front of them.
+    pub matched: usize,
+}
+
+/// Whether a decision carries a reason, from either list.
+///
+/// Both lists, deliberately. The strategy's reasons and the kernel's are
+/// different vocabularies at different stages, and a reader filtering by
+/// `CapacityBelowFloor` does not know or care which layer emitted it.
+fn carries(decision: &Decision, reason: &str) -> bool {
+    decision.reasons.iter().any(|r| r == reason)
+        || decision.kernel_reasons.iter().any(|r| r == reason)
+}
+
+/// Sorts, filters and cuts one page out of the decision record.
+///
+/// Pure, and separate from the handler for the reason everything else in this
+/// module is: the cursor arithmetic is the part with a wrong version that looks
+/// right, and it needs no store to be tested.
+///
+/// **Newest first**, ordered by `(decided_at, mint)` descending. The mint is not
+/// decoration — see [`Cursor`].
+#[must_use]
+pub fn page(mut decisions: Vec<Decision>, query: &Query, as_of: u64) -> Page {
+    decisions.sort_by(|a, b| {
+        b.decided_at
+            .get()
+            .cmp(&a.decided_at.get())
+            .then_with(|| b.mint.to_string().cmp(&a.mint.to_string()))
+    });
+
+    let mut matched: Vec<Decision> = decisions
+        .into_iter()
+        .filter(|d| query.conclusion.is_none_or(|wanted| d.conclusion == wanted))
+        .filter(|d| {
+            query
+                .reason
+                .as_deref()
+                .is_none_or(|reason| carries(d, reason))
+        })
+        .filter(|d| {
+            query.prefix.as_deref().is_none_or(|prefix| {
+                d.mint.to_string().starts_with(prefix) || d.creator.to_string().starts_with(prefix)
+            })
+        })
+        .collect();
+
+    let total = matched.len();
+
+    // The cursor is applied *after* counting, so `matched` describes the whole
+    // filtered set rather than the tail of it. A count that shrank as a reader
+    // paged would be reporting on the pagination.
+    if let Some(after) = query.after.as_ref() {
+        matched.retain(|d| {
+            (d.decided_at.get(), d.mint.to_string()) < (after.decided_at, after.mint.clone())
+        });
+    }
+
+    let limit = query.limit.clamp(1, MAX_LIMIT);
+    // One past the limit, so "is there another page" is answered by looking
+    // rather than by comparing the page size against the limit -- which reports
+    // a further page whenever the total is an exact multiple.
+    let has_more = matched.len() > limit;
+    matched.truncate(limit);
+
+    let next = has_more.then(|| matched.last()).flatten().map(|last| {
+        Cursor {
+            decided_at: last.decided_at.get(),
+            mint: last.mint.to_string(),
+        }
+        .render()
+    });
+
+    Page {
+        as_of,
+        decisions: matched,
+        next,
+        matched: total,
+    }
+}
+
+/// The exit-capacity bands, in micro-USD, matching research 0018.
+///
+/// Fixed rather than computed from the data, and deliberately the **same** bands
+/// the published note used. A chart whose buckets move with the data cannot be
+/// compared against the note it is illustrating, and the reader would have no
+/// way to tell a change in the market from a change in the histogram.
+const BANDS: &[(u64, Option<u64>)] = &[
+    (0, Some(25_000_000)),
+    (25_000_000, Some(30_000_000)),
+    (30_000_000, Some(35_000_000)),
+    (35_000_000, Some(60_000_000)),
+    (60_000_000, None),
+];
+
+/// One band of the exit-capacity distribution.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Band {
+    /// Inclusive floor, micro-USD.
+    pub floor: u64,
+    /// Exclusive ceiling, micro-USD. `None` on the open-ended top band.
+    pub ceiling: Option<u64>,
+    /// How many decisions measured a capacity in this band.
+    pub decisions: usize,
+}
+
+/// The capacity wall: what the venue actually offers, and what Radar sized into
+/// it.
+///
+/// The single most important picture in the product, because it is the reason
+/// the thing does not work yet. 80% of proposals sit in a ±13% band around $31,
+/// because every pre-graduation pump.fun token rides the same bonding curve —
+/// capacity is closer to a property of the venue than of the token, and the
+/// median position it produces is $6.21 against an 850 bps round trip.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Capacity {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// The distribution.
+    pub bands: Vec<Band>,
+    /// Decisions where a capacity was measured.
+    pub measured: usize,
+    /// Decisions where it was **not**.
+    ///
+    /// Reported rather than bucketed. AGENTS.md rule 9: a capacity that could
+    /// not be measured is `None`, and `None` means "cannot exit", never "no
+    /// limit found" — and certainly not zero. Folding these into the bottom band
+    /// would draw a wall of thin tokens that nobody measured.
+    pub unmeasured: usize,
+    /// The median measured capacity, micro-USD. `None` when nothing was
+    /// measured.
+    pub median_capacity: Option<u64>,
+    /// The median proposed notional, micro-USD, over proposals that carried one.
+    pub median_notional: Option<u64>,
+    /// What a round trip is assumed to cost, per ten thousand.
+    pub round_trip_bps: u64,
+}
+
+/// The median of a sorted-in-place list, or `None` when it is empty.
+///
+/// `None` rather than zero, for the reason every other absent figure in this
+/// interface is: a median of nothing is not a median of zero.
+fn median_of(mut values: Vec<u64>) -> Option<u64> {
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_unstable();
+    values.get(values.len() / 2).copied()
+}
+
+/// Builds the capacity distribution from recorded decisions.
+///
+/// Pure, and separate from the handler for the usual reason: the bucketing has a
+/// wrong version that looks right — every boundary is a place where a token can
+/// land in the wrong band or in none at all — and it needs no store to test.
+#[must_use]
+pub fn capacity(decisions: &[Decision], as_of: u64, round_trip_bps: u64) -> Capacity {
+    let mut bands: Vec<Band> = BANDS
+        .iter()
+        .map(|&(floor, ceiling)| Band {
+            floor,
+            ceiling,
+            decisions: 0,
+        })
+        .collect();
+
+    let mut measured = 0usize;
+    let mut unmeasured = 0usize;
+    let mut capacities: Vec<u64> = Vec::new();
+
+    for decision in decisions {
+        let Some(capacity) = decision.exit_capacity_micro_usd else {
+            unmeasured += 1;
+            continue;
+        };
+        measured += 1;
+        capacities.push(capacity);
+        // Half-open `[floor, ceiling)`, so a value exactly on a boundary lands in
+        // exactly one band. Inclusive on both ends would double-count it and the
+        // totals would quietly exceed `measured`.
+        if let Some(band) = bands
+            .iter_mut()
+            .find(|b| capacity >= b.floor && b.ceiling.is_none_or(|c| capacity < c))
+        {
+            band.decisions += 1;
+        }
+    }
+
+    let notionals: Vec<u64> = decisions
+        .iter()
+        .filter_map(|d| d.notional_micro_usd)
+        .collect();
+
+    Capacity {
+        as_of,
+        bands,
+        measured,
+        unmeasured,
+        median_capacity: median_of(capacities),
+        median_notional: median_of(notionals),
+        round_trip_bps,
+    }
+}
+
+/// The return buckets, in basis points.
+///
+/// Wide, and deliberately so. A histogram of memecoin returns with fine buckets
+/// is a spike at zero and a long flat nothing; these are chosen so the shape a
+/// reader needs — most of the mass is below break-even — is visible at a glance.
+///
+/// The floor is open-ended downward because a token can go to nothing, and the
+/// ceiling is open-ended upward because one occasionally does not.
+const RETURN_BUCKETS: &[(Option<i64>, Option<i64>)] = &[
+    (None, Some(-5_000)),
+    (Some(-5_000), Some(-2_000)),
+    (Some(-2_000), Some(-850)),
+    (Some(-850), Some(0)),
+    // Zero is its own bucket and not a boundary. See `exactly_zero`.
+    (Some(1), Some(850)),
+    (Some(850), Some(2_000)),
+    (Some(2_000), None),
+];
+
+/// One bucket of the return distribution.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Bucket {
+    /// Inclusive floor in bps. `None` is open-ended downward.
+    pub floor: Option<i64>,
+    /// Exclusive ceiling in bps. `None` is open-ended upward.
+    pub ceiling: Option<i64>,
+    /// How many scored decisions landed here.
+    pub scored: usize,
+}
+
+/// What the selection actually returned, as a distribution rather than a median.
+///
+/// # Why a median is not enough, and is the thing to resist
+///
+/// Research 0017's central caveat: **24–43% of both cohorts return exactly
+/// zero**. A median over a point mass that large is a report about the point
+/// mass, not about the market — and a bare median of 0 must not be read as "the
+/// two cohorts performed identically".
+///
+/// A histogram is the only rendering that shows that, which is why this endpoint
+/// exists at all when `/v1/scoreboard` already reports a median.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Returns {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// The distribution, excluding the exact zeroes.
+    pub buckets: Vec<Bucket>,
+    /// How many scored decisions returned **exactly** zero.
+    ///
+    /// Its own figure rather than a bucket, because it is the caveat rather than
+    /// a feature of the distribution. A quarter to two-fifths of this population
+    /// ends exactly where it started — most tokens here trade a handful of times
+    /// and stop — and a bucket that quietly absorbed them would hide the one
+    /// thing 0017 says carries the whole result.
+    pub exactly_zero: usize,
+    /// Scored decisions in total, including the zeroes.
+    pub scored: usize,
+    /// Decisions that could not be scored at all.
+    ///
+    /// A decision with no entry price cannot be scored, and that is every
+    /// refusal that never reached the exit probe. Counted, never treated as a
+    /// return of nothing.
+    pub unscored: usize,
+    /// What a round trip is assumed to cost, per ten thousand.
+    pub round_trip_bps: u64,
+}
+
+/// Builds the return distribution from decisions and their outcomes.
+///
+/// Pure. The bucketing is the part with a wrong version that looks right, and it
+/// needs no store.
+///
+/// **Gross.** Nothing here is net of the round trip; the figure is carried so a
+/// caller can draw the line rather than move the data under it.
+#[must_use]
+pub fn returns(
+    decisions: &[Decision],
+    outcomes: &[radar_store::Outcome],
+    as_of: u64,
+    round_trip_bps: u64,
+) -> Returns {
+    // `radar_research`'s index, not a second one built here.
+    //
+    // The first version of this function built its own map keyed on the mint and
+    // kept whichever priced outcome came **last in iteration order** -- not the
+    // one with the greatest `measured_at` -- and it never applied the rule that
+    // only an observation taken *after* the decision says anything about what
+    // followed it. That is look-ahead: a decision scored against a market it had
+    // not seen. The scoreboard next door had always applied it, which is exactly
+    // why there should have been one implementation rather than two.
+    let priced = radar_research::selection::LastPriced::of(outcomes);
+
+    let mut buckets: Vec<Bucket> = RETURN_BUCKETS
+        .iter()
+        .map(|&(floor, ceiling)| Bucket {
+            floor,
+            ceiling,
+            scored: 0,
+        })
+        .collect();
+
+    let mut exactly_zero = 0usize;
+    let mut scored = 0usize;
+    let mut unscored = 0usize;
+
+    for decision in decisions {
+        let bps = priced
+            .after(&decision.mint, decision.decided_at)
+            .and_then(|price| decision.return_bps(price));
+        let Some(bps) = bps else {
+            unscored += 1;
+            continue;
+        };
+        scored += 1;
+        if bps == 0 {
+            exactly_zero += 1;
+            continue;
+        }
+        if let Some(bucket) = buckets
+            .iter_mut()
+            .find(|b| b.floor.is_none_or(|f| bps >= f) && b.ceiling.is_none_or(|c| bps < c))
+        {
+            bucket.scored += 1;
+        }
+    }
+
+    Returns {
+        as_of,
+        buckets,
+        exactly_zero,
+        scored,
+        unscored,
+        round_trip_bps,
+    }
+}
+
+/// Roughly how many slots a day is on Solana, at ~400ms a slot.
+///
+/// Approximate on purpose, and it does not need to be better. This groups
+/// decisions into buckets so a reader can see whether the recorder is still
+/// running; a bucket boundary drifting by a few minutes changes nothing about
+/// that, and pretending to a precision the slot clock does not offer would.
+pub const SLOTS_PER_DAY: u64 = 216_000;
+
+/// How many decisions were taken in one bucket of the record.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Interval {
+    /// The first slot of the bucket.
+    pub from_slot: u64,
+    /// How many decisions were taken in it.
+    pub decisions: usize,
+    /// How many of those raised a proposal.
+    pub proposed: usize,
+}
+
+/// The shape of the recorder's activity over time.
+///
+/// # Why this is worth a screen
+///
+/// Its obvious job — "is the recorder alive" — is also answered by the watermark
+/// on the operator's page. This is the same question asked in a form that shows
+/// a **gap**, and that difference has mattered: the follow recorder has died
+/// before, on a query error, with no restart and no alarm. A watermark tells you
+/// where it got to. A row of buckets tells you it stopped on Tuesday.
+#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+pub struct Activity {
+    /// The watermark this was read at.
+    pub as_of: u64,
+    /// Buckets, oldest first, with **no gaps**.
+    ///
+    /// A day with no decisions is a bucket with a zero, not an absent bucket.
+    /// Absent, a client drawing bars in order would close the gap and show an
+    /// unbroken record over an outage — which is exactly the failure this is
+    /// meant to reveal.
+    pub intervals: Vec<Interval>,
+}
+
+/// Buckets the decision record by day, most recent `days` of it.
+///
+/// Pure, and the gap-filling is why: the wrong version is one that emits only
+/// the days it saw, which draws an unbroken chart over an outage.
+#[must_use]
+pub fn activity(decisions: &[Decision], as_of: u64, days: u64) -> Activity {
+    let Some(newest) = decisions.iter().map(|d| d.decided_at.get()).max() else {
+        return Activity {
+            as_of,
+            intervals: Vec::new(),
+        };
+    };
+
+    // Anchored on the newest decision rather than on the watermark. If the
+    // recorder died a week ago the watermark keeps moving -- it follows the
+    // chain, not the decider -- and anchoring there would draw seven empty
+    // buckets and no data, which reads as "no decisions" rather than "it
+    // stopped".
+    let newest_bucket = newest / SLOTS_PER_DAY;
+    let oldest_bucket = newest_bucket.saturating_sub(days.saturating_sub(1));
+
+    let mut intervals: Vec<Interval> = (oldest_bucket..=newest_bucket)
+        .map(|b| Interval {
+            from_slot: b * SLOTS_PER_DAY,
+            decisions: 0,
+            proposed: 0,
+        })
+        .collect();
+
+    for decision in decisions {
+        let bucket = decision.decided_at.get() / SLOTS_PER_DAY;
+        if bucket < oldest_bucket {
+            continue;
+        }
+        let Ok(index) = usize::try_from(bucket - oldest_bucket) else {
+            continue;
+        };
+        if let Some(interval) = intervals.get_mut(index) {
+            interval.decisions += 1;
+            if decision.proposed() {
+                interval.proposed += 1;
+            }
+        }
+    }
+
+    Activity { as_of, intervals }
 }
 
 /// How many rows each table holds, for the health screen.
@@ -389,5 +991,794 @@ mod tests {
         // it under six other reasons that are the same fact restated.
         assert!(funnel(&[], 0, 0, true).policy_closed);
         assert!(!funnel(&[], 0, 0, false).policy_closed);
+    }
+
+    /// A decision at a chosen watermark, so ties can be built deliberately.
+    fn at(mint: u8, slot: u64) -> Decision {
+        Decision {
+            decided_at: Slot(slot),
+            ..decision(mint, false, &["CapacityBelowFloor"], false)
+        }
+    }
+
+    /// Every page of a query, walked to exhaustion.
+    ///
+    /// Returns the mints in the order a reader would actually see them, which is
+    /// what the cursor is for and what a per-page assertion cannot check.
+    fn walk(all: &[Decision], limit: usize) -> Vec<(u64, String)> {
+        let mut seen = Vec::new();
+        let mut after = None;
+        // Bounded rather than `loop`. A cursor that fails to advance is an
+        // infinite loop, and a test that hangs says less than one that fails.
+        for _ in 0..100 {
+            let query = Query {
+                after: after.clone(),
+                limit,
+                ..Query::default()
+            };
+            let got = page(all.to_vec(), &query, 1);
+            // The pair, not the mint. A mint is reconsidered on later runs, so
+            // it recurs legitimately across watermarks -- and an identity that
+            // collapsed those would report a cursor bug that was not there.
+            seen.extend(
+                got.decisions
+                    .iter()
+                    .map(|d| (d.decided_at.get(), d.mint.to_string())),
+            );
+            match got.next {
+                None => return seen,
+                Some(raw) => {
+                    after = Some(Cursor::parse(&raw).expect("a cursor it just rendered"));
+                }
+            }
+        }
+        panic!("the cursor never reached the end");
+    }
+
+    #[test]
+    fn paging_over_a_single_watermark_returns_every_row_exactly_once() {
+        // The case this whole design exists for.
+        //
+        // `decided_at` is the watermark a `radar consider` run was taken at, and
+        // every decision in that run shares it -- so a realistic page is all
+        // ties. A cursor of "the last slot I saw" returns one page and then skips
+        // every remaining row at that slot, silently, with a result that looks
+        // entirely plausible.
+        let all: Vec<Decision> = (1..=25u8).map(|m| at(m, 10_000)).collect();
+
+        let seen = walk(&all, 10);
+        assert_eq!(seen.len(), 25, "every row is returned");
+
+        let unique: std::collections::BTreeSet<_> = seen.iter().collect();
+        assert_eq!(unique.len(), 25, "and none of them twice");
+    }
+
+    #[test]
+    fn paging_across_several_watermarks_holds_the_order() {
+        // Ties and distinct slots together, which is what the real store looks
+        // like: hourly batches, each internally tied.
+        let mut all = Vec::new();
+        for slot in [10_000u64, 10_100, 10_200] {
+            for mint in 1..=7u8 {
+                all.push(at(mint, slot));
+            }
+        }
+        let seen = walk(&all, 4);
+        assert_eq!(seen.len(), 21);
+        assert_eq!(
+            seen.iter().collect::<std::collections::BTreeSet<_>>().len(),
+            21,
+            "no repeats across pages"
+        );
+    }
+
+    #[test]
+    fn the_newest_decision_comes_first() {
+        let all = vec![at(1, 10_000), at(2, 10_500), at(3, 9_000)];
+        let got = page(
+            all,
+            &Query {
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        let slots: Vec<u64> = got.decisions.iter().map(|d| d.decided_at.get()).collect();
+        assert_eq!(slots, vec![10_500, 10_000, 9_000]);
+    }
+
+    #[test]
+    fn there_is_no_next_page_when_the_total_is_an_exact_multiple_of_the_limit() {
+        // The off-by-one that hands a reader an empty final page. Comparing the
+        // returned count against the limit reports "more" whenever they are
+        // equal, which for an exact multiple is always.
+        let all: Vec<Decision> = (1..=10u8).map(|m| at(m, 10_000)).collect();
+        let got = page(
+            all,
+            &Query {
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(got.decisions.len(), 10);
+        assert!(got.next.is_none(), "ten of ten is the last page");
+    }
+
+    #[test]
+    fn the_match_count_describes_the_filter_and_not_the_page() {
+        // A count that shrank as a reader paged would be reporting on the
+        // pagination. The point of this figure is to say that a reason accounts
+        // for four thousand refusals rather than the fifty in front of you.
+        let all: Vec<Decision> = (1..=30u8).map(|m| at(m, 10_000)).collect();
+        let first = page(
+            all.clone(),
+            &Query {
+                limit: 5,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(first.matched, 30);
+
+        let after = Cursor::parse(&first.next.expect("more pages")).expect("parses");
+        let second = page(
+            all,
+            &Query {
+                after: Some(after),
+                limit: 5,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(second.matched, 30, "unchanged by paging");
+    }
+
+    #[test]
+    fn a_reason_filter_reads_both_lists() {
+        // The strategy's reasons and the kernel's are different vocabularies at
+        // different stages, and a reader filtering by a reason code does not know
+        // or care which layer emitted it.
+        let mut kernel = at(1, 10_000);
+        kernel.reasons.clear();
+        kernel.kernel_reasons = vec!["OverPositionLimit".to_owned()];
+
+        let all = vec![kernel, at(2, 10_000)];
+
+        let from_kernel = page(
+            all.clone(),
+            &Query {
+                reason: Some("OverPositionLimit".to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(from_kernel.matched, 1);
+
+        let from_strategy = page(
+            all,
+            &Query {
+                reason: Some("CapacityBelowFloor".to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(from_strategy.matched, 1);
+    }
+
+    #[test]
+    fn a_conclusion_filter_separates_the_two() {
+        let all = vec![
+            decision(1, true, &[], false),
+            decision(2, false, &["CapacityBelowFloor"], false),
+        ];
+        let proposed = page(
+            all.clone(),
+            &Query {
+                conclusion: Some(Conclusion::Proposed),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(proposed.matched, 1);
+        assert!(proposed.decisions[0].proposed());
+
+        let passed = page(
+            all,
+            &Query {
+                conclusion: Some(Conclusion::Passed),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(passed.matched, 1);
+        assert!(!passed.decisions[0].proposed());
+    }
+
+    #[test]
+    fn a_limit_is_clamped_rather_than_honoured() {
+        // The store is read whole to answer this, so an unbounded limit costs the
+        // caller nothing and hands it every decision Radar has ever taken.
+        let all: Vec<Decision> = (1..=250u8).map(|m| at(m, 10_000)).collect();
+        let huge = page(
+            all.clone(),
+            &Query {
+                limit: 100_000,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(huge.decisions.len(), MAX_LIMIT);
+
+        // And zero is not a page size. Without the lower clamp it returns nothing
+        // forever, with a cursor that never advances.
+        let none = page(
+            all,
+            &Query {
+                limit: 0,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(none.decisions.len(), 1);
+    }
+
+    #[test]
+    fn a_cursor_round_trips_and_refuses_what_it_cannot_read() {
+        let cursor = Cursor {
+            decided_at: 441_734_987,
+            mint: "So11111111111111111111111111111111111111112".to_owned(),
+        };
+        assert_eq!(Cursor::parse(&cursor.render()), Some(cursor));
+
+        // Half-parsed is worse than not parsed: it pages through a different
+        // sequence than the caller was handed.
+        for bad in ["", "123", "notaslot:mint", "123:", ":mint"] {
+            assert!(Cursor::parse(bad).is_none(), "{bad} must not parse");
+        }
+    }
+
+    #[test]
+    fn an_empty_store_is_an_empty_page_rather_than_a_missing_one() {
+        let got = page(
+            Vec::new(),
+            &Query {
+                limit: 10,
+                ..Query::default()
+            },
+            7,
+        );
+        assert!(got.decisions.is_empty());
+        assert_eq!(got.matched, 0);
+        assert!(got.next.is_none());
+        assert_eq!(got.as_of, 7, "the watermark is reported even with no rows");
+    }
+
+    /// A decision with a measured exit capacity.
+    fn with_capacity(mint: u8, capacity: Option<u64>, notional: Option<u64>) -> Decision {
+        Decision {
+            exit_capacity_micro_usd: capacity,
+            notional_micro_usd: notional,
+            ..decision(mint, notional.is_some(), &[], false)
+        }
+    }
+
+    #[test]
+    fn an_unmeasured_capacity_is_counted_apart_rather_than_as_zero() {
+        // Rule 9, and the version of it that would draw a false picture: a
+        // capacity that could not be measured means "cannot exit", and folding
+        // it into the bottom band draws a wall of thin tokens nobody measured.
+        let all = vec![
+            with_capacity(1, None, None),
+            with_capacity(2, None, None),
+            with_capacity(3, Some(31_000_000), None),
+        ];
+        let got = capacity(&all, 1, 850);
+
+        assert_eq!(got.unmeasured, 2);
+        assert_eq!(got.measured, 1);
+        let bottom = got.bands.first().expect("a bottom band");
+        assert_eq!(bottom.decisions, 0, "the unmeasured must not land here");
+    }
+
+    #[test]
+    fn every_measured_decision_lands_in_exactly_one_band() {
+        // The totals are the check. A boundary that is inclusive on both sides
+        // double-counts, and one that is exclusive on both drops a value
+        // silently -- and both produce a histogram that looks entirely normal.
+        let all: Vec<Decision> = [
+            0,
+            24_999_999,
+            25_000_000,
+            29_999_999,
+            30_000_000,
+            34_999_999,
+            35_000_000,
+            59_999_999,
+            60_000_000,
+            618_400_000,
+        ]
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            let mint = u8::try_from(i + 1).expect("small");
+            with_capacity(mint, Some(c), None)
+        })
+        .collect();
+
+        let got = capacity(&all, 1, 850);
+        let binned: usize = got.bands.iter().map(|b| b.decisions).sum();
+        assert_eq!(binned, got.measured, "every measured value is binned once");
+        assert_eq!(got.measured, 10);
+    }
+
+    #[test]
+    fn the_boundaries_fall_where_the_research_put_them() {
+        // Swept individually, because "every value is binned once" holds just as
+        // well when they are all binned into the *wrong* band.
+        let at = |c: u64| {
+            let got = capacity(&[with_capacity(1, Some(c), None)], 1, 850);
+            got.bands
+                .iter()
+                .position(|b| b.decisions == 1)
+                .expect("binned somewhere")
+        };
+        assert_eq!(at(24_999_999), 0);
+        assert_eq!(at(25_000_000), 1, "the floor belongs to the band above");
+        assert_eq!(at(29_999_999), 1);
+        assert_eq!(at(30_000_000), 2);
+        assert_eq!(at(34_999_999), 2);
+        assert_eq!(at(35_000_000), 3);
+        assert_eq!(at(59_999_999), 3);
+        assert_eq!(at(60_000_000), 4, "the open-ended band");
+        assert_eq!(at(u64::MAX), 4, "which really is open-ended");
+    }
+
+    #[test]
+    fn the_medians_are_absent_rather_than_zero_when_nothing_was_measured() {
+        let got = capacity(&[with_capacity(1, None, None)], 1, 850);
+        assert_eq!(got.median_capacity, None);
+        assert_eq!(got.median_notional, None);
+    }
+
+    #[test]
+    fn the_notional_median_ignores_refusals_that_proposed_nothing() {
+        // A refusal that never reached the exit probe has no notional, and
+        // treating that as a proposal of zero drags the median to the floor --
+        // which is the figure the whole chart exists to report.
+        let all = vec![
+            with_capacity(1, Some(31_000_000), None),
+            with_capacity(2, Some(31_000_000), Some(6_210_000)),
+            with_capacity(3, Some(31_000_000), Some(6_210_000)),
+        ];
+        let got = capacity(&all, 1, 850);
+        assert_eq!(got.median_notional, Some(6_210_000));
+    }
+
+    #[test]
+    fn an_empty_store_reports_a_shape_rather_than_nothing() {
+        // The bands still exist with zero counts. A chart handed an empty list
+        // should draw an empty chart, not fail to draw axes.
+        let got = capacity(&[], 7, 850);
+        assert_eq!(got.bands.len(), BANDS.len());
+        assert_eq!(got.measured, 0);
+        assert_eq!(got.unmeasured, 0);
+        assert_eq!(got.as_of, 7);
+        assert_eq!(got.round_trip_bps, 850);
+    }
+
+    /// An outcome measured *after* the decisions these tests use.
+    ///
+    /// The original fixture measured at slot 10,000, which is the same slot
+    /// `decision` is taken at -- so every one of these scored only because the
+    /// look-ahead rule was missing. It is `20_000` now, and
+    /// `an_observation_the_decision_could_not_have_seen_does_not_score_it`
+    /// covers the other side.
+    fn outcome(mint: u8, last_price: Option<u64>) -> radar_store::Outcome {
+        radar_store::Outcome {
+            mint: Address::new([mint; 32]),
+            measured_at: Slot(20_000),
+            launch_slot: Slot(4_000),
+            first_transfer_slot: None,
+            last_transfer_slot: None,
+            transfers: 0,
+            unique_senders: 0,
+            unique_receivers: 0,
+            graduated_at: None,
+            first_price: None,
+            last_price,
+            peak_price: None,
+            trough_price: None,
+            window_peak_price: None,
+            window_trough_price: None,
+            vwap: None,
+            fills: 0,
+        }
+    }
+
+    /// A decision priced at `entry`, so a later price produces a known return.
+    fn priced(mint: u8, entry: u64) -> Decision {
+        Decision {
+            entry_price: Some(entry),
+            ..decision(mint, true, &[], false)
+        }
+    }
+
+    #[test]
+    fn an_exact_zero_is_its_own_figure_and_not_a_bucket() {
+        // 0017's central caveat. A quarter to two-fifths of this population ends
+        // exactly where it started, and a bucket that absorbed them would hide
+        // the one thing the note says carries the whole result -- a median over
+        // that point mass is a report about the point mass.
+        let all = vec![priced(1, 100), priced(2, 100), priced(3, 100)];
+        let seen = vec![
+            outcome(1, Some(100)), // 0 bps
+            outcome(2, Some(100)), // 0 bps
+            outcome(3, Some(50)),  // -5000 bps
+        ];
+        let got = returns(&all, &seen, 1, 850);
+
+        assert_eq!(got.exactly_zero, 2);
+        assert_eq!(got.scored, 3);
+        let binned: usize = got.buckets.iter().map(|b| b.scored).sum();
+        assert_eq!(binned, 1, "the zeroes are not in any bucket");
+    }
+
+    #[test]
+    fn a_decision_with_no_entry_price_is_unscored_rather_than_flat() {
+        // A decision that never reached the exit probe has no entry, so it
+        // cannot be scored. Reporting it as zero would fold "not measurable"
+        // into "broke even" -- which is the whole population's median dressed up
+        // as a result.
+        let all = vec![decision(1, false, &["CapacityBelowFloor"], false)];
+        let got = returns(&all, &[outcome(1, Some(100))], 1, 850);
+        assert_eq!(got.unscored, 1);
+        assert_eq!(got.scored, 0);
+        assert_eq!(got.exactly_zero, 0);
+    }
+
+    #[test]
+    fn an_observation_the_decision_could_not_have_seen_does_not_score_it() {
+        // Rule 3 in this aggregate. An outcome measured *before* the decision
+        // describes a market the decision had not acted in, and scoring against
+        // it is look-ahead -- which is the defect the first version of this
+        // function shipped with, because it built its own index and forgot the
+        // rule the scoreboard next door had always applied.
+        let all = vec![priced(1, 100)];
+
+        let before = radar_store::Outcome {
+            measured_at: Slot(9_000),
+            ..outcome(1, Some(500))
+        };
+        let got = returns(&all, &[before], 1, 850);
+        assert_eq!(got.unscored, 1, "an earlier observation cannot score it");
+        assert_eq!(got.scored, 0);
+
+        // The same price, observed after, does score it.
+        let after = radar_store::Outcome {
+            measured_at: Slot(11_000),
+            ..outcome(1, Some(500))
+        };
+        let got = returns(&all, &[after], 1, 850);
+        assert_eq!(got.scored, 1);
+    }
+
+    #[test]
+    fn the_latest_priced_observation_wins_regardless_of_its_position_in_the_table() {
+        // The other half of the same bug. The first version kept whichever
+        // priced outcome came *last in iteration order*, which is not the one
+        // with the greatest `measured_at` -- the store returns rows in file
+        // order, not time order.
+        let all = vec![priced(1, 100)];
+        let table = vec![
+            radar_store::Outcome {
+                measured_at: Slot(30_000),
+                ..outcome(1, Some(300))
+            },
+            radar_store::Outcome {
+                measured_at: Slot(11_000),
+                ..outcome(1, Some(100))
+            },
+        ];
+        // 300 against an entry of 100 is +20,000 bps; 100 would be exactly zero.
+        let got = returns(&all, &table, 1, 850);
+        assert_eq!(got.exactly_zero, 0, "the later observation is the one used");
+        assert_eq!(got.scored, 1);
+    }
+
+    #[test]
+    fn a_decision_whose_token_was_never_priced_is_unscored_too() {
+        // Both halves are required. An entry with no exit is as unscoreable as
+        // an exit with no entry, and only one of them is obvious.
+        let got = returns(&[priced(1, 100)], &[outcome(1, None)], 1, 850);
+        assert_eq!(got.unscored, 1);
+        assert_eq!(got.scored, 0);
+    }
+
+    #[test]
+    fn every_scored_return_lands_in_exactly_one_bucket() {
+        // The totals are the check, as with the capacity bands: inclusive on
+        // both sides double-counts, exclusive on both drops a value, and both
+        // draw a histogram that looks entirely normal.
+        //
+        // Entry 100, so a last price of `p` is `(p - 100) * 100` bps.
+        let prices = [1u64, 20, 50, 80, 95, 101, 110, 130, 200, 500];
+        let all: Vec<Decision> = (1..=10u8).map(|m| priced(m, 100)).collect();
+        let seen: Vec<radar_store::Outcome> = prices
+            .iter()
+            .enumerate()
+            .map(|(i, &p)| {
+                let mint = u8::try_from(i + 1).expect("small");
+                outcome(mint, Some(p))
+            })
+            .collect();
+
+        let got = returns(&all, &seen, 1, 850);
+        let binned: usize = got.buckets.iter().map(|b| b.scored).sum();
+        assert_eq!(binned + got.exactly_zero, got.scored);
+        assert_eq!(got.scored, 10);
+    }
+
+    #[test]
+    fn the_deepest_loss_and_the_largest_gain_are_both_open_ended() {
+        // A token can go to nothing, and occasionally one does not. A bounded
+        // bucket at either end silently drops the rows that matter most.
+        let all = vec![priced(1, 1_000_000), priced(2, 1)];
+        let seen = vec![outcome(1, Some(1)), outcome(2, Some(1_000_000))];
+        let got = returns(&all, &seen, 1, 850);
+
+        assert_eq!(got.buckets.first().expect("a floor bucket").scored, 1);
+        assert_eq!(got.buckets.last().expect("a ceiling bucket").scored, 1);
+        assert_eq!(got.scored, 2);
+    }
+
+    #[test]
+    fn an_empty_store_still_reports_the_return_buckets() {
+        let got = returns(&[], &[], 7, 850);
+        assert_eq!(got.buckets.len(), RETURN_BUCKETS.len());
+        assert_eq!(got.scored, 0);
+        assert_eq!(got.exactly_zero, 0);
+        assert_eq!(got.as_of, 7);
+    }
+
+    #[test]
+    fn a_day_with_no_decisions_is_a_zero_rather_than_a_missing_bucket() {
+        // The failure this exists to reveal. Emitting only the days it saw draws
+        // an unbroken chart over an outage -- and the follow recorder has died
+        // before, on a query error, with no restart and no alarm.
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day * 10), at(2, day * 12)];
+        let got = activity(&all, day * 12, 3);
+
+        assert_eq!(got.intervals.len(), 3, "no gaps");
+        assert_eq!(got.intervals[0].decisions, 1, "day 10");
+        assert_eq!(
+            got.intervals[1].decisions, 0,
+            "day 11 is a zero, not absent"
+        );
+        assert_eq!(got.intervals[2].decisions, 1, "day 12");
+    }
+
+    #[test]
+    fn it_is_anchored_on_the_newest_decision_and_not_on_the_watermark() {
+        // The watermark follows the chain, not the decider. If the recorder died
+        // a week ago the watermark keeps moving, and anchoring there would draw
+        // a row of empty buckets that reads as "no decisions" rather than "it
+        // stopped".
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day * 5)];
+        let got = activity(&all, day * 30, 3);
+
+        let last = got.intervals.last().expect("a bucket");
+        assert_eq!(last.from_slot, day * 5);
+        assert_eq!(last.decisions, 1);
+    }
+
+    #[test]
+    fn proposals_are_counted_separately_from_decisions() {
+        // A day of nine hundred refusals and a day of nine hundred proposals are
+        // different systems, and one bar cannot tell them apart.
+        let day = SLOTS_PER_DAY;
+        let all = vec![
+            Decision {
+                decided_at: Slot(day * 4),
+                ..decision(1, true, &[], false)
+            },
+            at(2, day * 4),
+        ];
+        let got = activity(&all, day * 4, 1);
+        let only = got.intervals.first().expect("a bucket");
+        assert_eq!(only.decisions, 2);
+        assert_eq!(only.proposed, 1);
+    }
+
+    #[test]
+    fn decisions_older_than_the_window_are_dropped_rather_than_folded_in() {
+        // Folding them into the oldest bucket would draw a spike that never
+        // happened.
+        let day = SLOTS_PER_DAY;
+        let all = vec![at(1, day), at(2, day * 20)];
+        let got = activity(&all, day * 20, 2);
+        let total: usize = got.intervals.iter().map(|i| i.decisions).sum();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn an_empty_record_is_no_buckets_rather_than_a_row_of_zeroes() {
+        // A row of zeroes says the recorder ran and found nothing. Nothing ran.
+        let got = activity(&[], 99, 7);
+        assert!(got.intervals.is_empty());
+        assert_eq!(got.as_of, 99);
+    }
+
+    #[test]
+    fn a_prefix_matches_the_mint_or_the_creator() {
+        // Both, because a reader pasting an address does not think about which
+        // column it is in -- and "everything this creator launched" is one of
+        // the two questions this record is for.
+        let all = vec![at(1, 10_000), at(2, 10_000)];
+        let mint = all[0].mint.to_string();
+        let creator = all[0].creator.to_string();
+
+        let by_mint = page(
+            all.clone(),
+            &Query {
+                prefix: Some(mint[..8].to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(by_mint.matched, 1);
+
+        // Every fixture shares a creator, so this matches both.
+        let by_creator = page(
+            all,
+            &Query {
+                prefix: Some(creator[..8].to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(by_creator.matched, 2);
+    }
+
+    #[test]
+    fn a_prefix_is_a_prefix_and_not_a_substring() {
+        // A substring match over four thousand base58 addresses returns noise:
+        // any three characters appear somewhere in most of them.
+        let all = vec![at(1, 10_000)];
+        let mint = all[0].mint.to_string();
+        let middle = &mint[4..10];
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(middle.to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(got.matched, 0, "a middle fragment must not match");
+    }
+
+    #[test]
+    fn a_prefix_is_case_sensitive_because_base58_is() {
+        // `A` and `a` are different characters in the alphabet, so folding case
+        // would match addresses that do not exist.
+        let all = vec![at(1, 10_000)];
+        let mint = all[0].mint.to_string();
+        let folded = mint[..8].to_lowercase();
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(folded.clone()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        // Only meaningful when the fixture's prefix actually has an upper-case
+        // character in it; when it does not, folding changes nothing.
+        if folded != mint[..8] {
+            assert_eq!(got.matched, 0);
+        }
+    }
+
+    #[test]
+    fn a_prefix_composes_with_the_other_filters() {
+        // Filters that silently replace each other are how a reader ends up
+        // looking at a different set than the controls say.
+        let mut kernel = at(1, 10_000);
+        kernel.reasons = vec!["NoRoute".to_owned()];
+        let mint = kernel.mint.to_string();
+        let all = vec![kernel, at(2, 10_000)];
+
+        let got = page(
+            all,
+            &Query {
+                prefix: Some(mint[..8].to_owned()),
+                reason: Some("CapacityBelowFloor".to_owned()),
+                limit: 10,
+                ..Query::default()
+            },
+            1,
+        );
+        assert_eq!(got.matched, 0, "both filters apply, not the last one");
+    }
+
+    #[test]
+    fn a_median_of_one_value_is_that_value() {
+        // `values.len() / 2` on a single element is index 0. Mutated to `%`, it
+        // becomes index 1 and the median of one measurement is reported as
+        // absent -- which reads as "nothing was measured" for a store that has
+        // exactly one decision in it.
+        let one = vec![with_capacity(1, Some(31_000_000), None)];
+        let got = capacity(&one, 1, 850);
+        assert_eq!(got.median_capacity, Some(31_000_000));
+
+        // And two, where `/` and `%` also disagree.
+        let two = vec![
+            with_capacity(1, Some(10_000_000), None),
+            with_capacity(2, Some(30_000_000), None),
+        ];
+        assert_eq!(capacity(&two, 1, 850).median_capacity, Some(30_000_000));
+    }
+
+    #[test]
+    fn the_return_buckets_fall_where_they_are_written() {
+        // Swept individually, for the reason the capacity test gives and this
+        // one did not: "every value is binned exactly once" holds just as well
+        // when they are all binned into the *wrong* bucket. Mutation testing
+        // deleted the minus signs from three boundaries and nothing noticed.
+        //
+        // Entry 100, so a last price of `p` gives (p - 100) * 100 bps.
+        let at = |bps: i64| {
+            // Solve for the price that produces this return from an entry of
+            // 10,000: bps = (price - 10_000) * 10_000 / 10_000.
+            let price = u64::try_from(10_000 + bps).expect("in range");
+            let got = returns(&[priced(1, 10_000)], &[outcome(1, Some(price))], 1, 850);
+            got.buckets.iter().position(|b| b.scored == 1)
+        };
+
+        assert_eq!(at(-9_000), Some(0), "below -50%");
+        assert_eq!(at(-5_001), Some(0));
+        assert_eq!(at(-5_000), Some(1), "the floor belongs to the band above");
+        assert_eq!(at(-2_001), Some(1));
+        assert_eq!(at(-2_000), Some(2));
+        assert_eq!(at(-851), Some(2));
+        assert_eq!(at(-850), Some(3));
+        assert_eq!(at(-1), Some(3));
+        // Zero is not a bucket at all -- it is the point mass, reported apart.
+        assert_eq!(at(0), None, "exactly zero is never binned");
+        assert_eq!(at(1), Some(4));
+        assert_eq!(at(849), Some(4));
+        assert_eq!(at(850), Some(5), "the round trip is the boundary");
+        assert_eq!(at(1_999), Some(5));
+        assert_eq!(at(2_000), Some(6));
+        assert_eq!(at(50_000), Some(6), "and the top is open-ended");
+    }
+
+    #[test]
+    fn a_prefix_is_normalised_before_it_filters_anything() {
+        // Every mint starts with the empty string, so honouring `?prefix=` would
+        // return the whole record while the control said a filter was applied.
+        // The mutation that deleted the `!` kept only *empty* prefixes, which is
+        // the same failure with every search instead of one.
+        assert_eq!(normalise_prefix(None), None);
+        assert_eq!(normalise_prefix(Some(String::new())), None);
+        assert_eq!(normalise_prefix(Some("   ".to_owned())), None);
+        assert_eq!(
+            normalise_prefix(Some("  So111  ".to_owned())),
+            Some("So111".to_owned()),
+            "a real prefix survives, trimmed"
+        );
     }
 }

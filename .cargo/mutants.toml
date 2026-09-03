@@ -91,4 +91,43 @@ exclude_re = [
     # re-examine this entry rather than to keep believing it.
     'replace \- with \+ in bucket_of',
     'replace \- with / in bucket_of',
+
+    # `compact_u16`: the continuation bit cannot be toggled by `^` rather than
+    # set by `|`, because the value it is applied to has already been masked.
+    # `byte` is `remaining & 0x7f`, so bit 7 is provably clear on every path that
+    # reaches this line -- and against a clear bit, `|`, `^` and `+` all produce
+    # the same byte.
+    #
+    # So this is arithmetic that cannot differ, not a length prefix nobody
+    # tests. `compact_u16_matches_solanas_encoding` sweeps 0, 127, 128 and
+    # 16,384 -- the two single-byte cases and the two multi-byte ones -- and
+    # `the_account_ceiling_is_where_a_one_byte_index_runs_out` builds a real
+    # 255-account message, so a genuinely wrong continuation byte fails
+    # immediately.
+    #
+    # Verified by hand: applying `^` and running the crate's suite passes.
+    'replace \| with \^ in compact_u16',
+
+    # `encode_url`: the three bytes are packed into disjoint ranges of one
+    # `u32` -- bits 16-23, 8-15 and 0-7 -- so no two of them share a set bit and
+    # `|` and `^` produce the same value. There is nothing for a test to
+    # distinguish.
+    #
+    # Not the same claim as the two `compact_u16` entries above, which turn on a
+    # mask; this one turns on the shifts. Both were verified by applying the
+    # mutation and running the crate's suite, and `radar-types` covers this
+    # function at every length class and round-trips all 256 byte values.
+    'replace \| with \^ in encode_url',
+    # `LaunchBlockSource::bundle_slots`: the mutation replaces the default trait
+    # method's body with `Ok(vec![])`. The body already *is* `Ok(Vec::new())`,
+    # and those are the same expression written two ways -- `vec![]` expands to
+    # `Vec::new()`. There is no behaviour to distinguish, so no test could.
+    #
+    # The default is deliberate and documented at the trait: a source that only
+    # reads a launch block -- which is every existing one -- keeps working and
+    # contributes nothing to the later sweep. An *implementation* that returned
+    # an empty vec where it should have read would be a real bug, and that is
+    # covered where the implementations live -- the mutation of the CryptoHouse
+    # one is caught.
+    'replace LaunchBlockSource::bundle_slots -> Result<Vec<\(u64, LaunchBlockShape\)>, Self::Error> with Ok\(vec!\[\]\)',
 ]

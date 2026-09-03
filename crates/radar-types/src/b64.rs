@@ -94,6 +94,33 @@ pub fn encode(bytes: &[u8]) -> String {
     out
 }
 
+/// Encodes URL-safe base64, **unpadded**.
+///
+/// Unpadded because the things that use this alphabet -- JSON Web Tokens, and
+/// Turnkey's request stamps -- are specified without padding, and a trailing
+/// `=` makes a stamp a verifier will reject. The padding is therefore absent by
+/// specification rather than by preference, which is why this is a separate
+/// function and not a flag on [`encode`].
+#[must_use]
+pub fn encode_url(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                let index = usize::try_from((n >> (18 - i * 6)) & 0x3F).unwrap_or(0);
+                out.push(char::from(URL_ALPHABET[index]));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,5 +158,45 @@ mod tests {
     fn characters_outside_the_alphabet_are_refused() {
         assert_eq!(decode("QU!D"), None);
         assert_eq!(decode("****"), None);
+    }
+
+    #[test]
+    fn url_safe_encoding_round_trips_through_the_url_safe_decoder() {
+        let original: Vec<u8> = (0u8..=255).collect();
+        assert_eq!(
+            decode_url(&encode_url(&original)).as_deref(),
+            Some(&original[..])
+        );
+    }
+
+    #[test]
+    fn url_safe_encoding_is_unpadded_and_uses_the_url_alphabet() {
+        // Both properties are required by the things that consume it. A padded
+        // stamp is rejected, and a `+` or `/` in a URL position is re-encoded by
+        // whatever carries it -- which changes the bytes a verifier checks.
+        for length in 1..=32 {
+            let bytes = vec![0xFBu8; length];
+            let encoded = encode_url(&bytes);
+            assert!(!encoded.contains('='), "unpadded: {encoded}");
+            assert!(!encoded.contains('+'), "url alphabet: {encoded}");
+            assert!(!encoded.contains('/'), "url alphabet: {encoded}");
+        }
+        // 0xFB produces `+` and `/` under the standard alphabet, so this input
+        // actually distinguishes the two rather than passing vacuously.
+        assert!(encode(&[0xFB, 0xFF]).contains('+') || encode(&[0xFB, 0xFF]).contains('/'));
+    }
+
+    #[test]
+    fn every_url_safe_length_class_round_trips() {
+        // One, two and zero trailing bytes take different paths through the
+        // final chunk, and the unpadded form is where an off-by-one shows.
+        for length in 0u8..16 {
+            let bytes: Vec<u8> = (0u8..length).map(|i| i ^ 0xA5).collect();
+            assert_eq!(
+                decode_url(&encode_url(&bytes)).as_deref(),
+                Some(&bytes[..]),
+                "length {length}"
+            );
+        }
     }
 }

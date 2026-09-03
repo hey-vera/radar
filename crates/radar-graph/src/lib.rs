@@ -47,6 +47,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ongoing;
 pub mod prevalence;
 
 use radar_types::EvidenceTier;
@@ -159,6 +160,29 @@ const BAND_LIFT_X100: u64 = 670;
 pub trait LaunchBlockSource {
     /// Why the shape could not be read.
     type Error;
+
+    /// Every slot in the source's window where this mint looks bundled.
+    ///
+    /// Defaults to **empty**, which is deliberate and is rule 9's shape: a
+    /// source that cannot answer this returns no sightings, and no sightings
+    /// means *nothing was found*, never *the token is clean*. A caller that
+    /// wanted the second meaning would have to invent it.
+    ///
+    /// Defaulted rather than required so a source that only reads a launch block
+    /// -- which is every existing one -- keeps working and simply contributes
+    /// nothing here.
+    ///
+    /// # Errors
+    ///
+    /// `Self::Error` when the source cannot answer. An error is not an empty
+    /// result: one means the question failed, the other that it was asked.
+    fn bundle_slots(
+        &self,
+        _mint: &radar_types::Address,
+        _launch: radar_types::Slot,
+    ) -> Result<Vec<(u64, LaunchBlockShape)>, Self::Error> {
+        Ok(Vec::new())
+    }
 
     /// Counts the token's recipients inside one slot.
     ///

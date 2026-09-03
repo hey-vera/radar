@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { POLICY_ARTIFACTS, clearedCost, median, pct } from "./honesty";
+import { POLICY_ARTIFACTS, clearedCost, median, netOfCost, pct } from "./honesty";
 
 describe("median", () => {
   it("is the middle of the sorted values, not of the given order", () => {
@@ -112,5 +112,33 @@ describe("POLICY_ARTIFACTS", () => {
     ]) {
       expect(POLICY_ARTIFACTS.has(finding)).toBe(false);
     }
+  });
+});
+
+describe("netOfCost", () => {
+  it("takes the whole round trip off, and does not clamp", () => {
+    // The bug this exists for: the scoreboard rendered the *gross* median under
+    // a footnote saying "Returns are net of an assumed 850 bps round trip". The
+    // subtraction existed nowhere, so nothing could catch it.
+    expect(netOfCost(2000, 850)).toBe(1150);
+
+    // Signed, deliberately. A return that does not cover its costs is negative,
+    // and flooring it at zero would turn every losing trade into a break-even
+    // one -- which is the exact direction this whole screen exists to resist.
+    expect(netOfCost(21, 850)).toBe(-829);
+    expect(netOfCost(-1272, 850)).toBe(-2122);
+  });
+
+  it("is not a no-op, which is the way it would silently come back", () => {
+    // If somebody reverted this to `gross` the page would look identical except
+    // for a label, which is precisely how the original defect survived.
+    const gross = 500;
+    expect(netOfCost(gross, 850)).not.toBe(gross);
+  });
+
+  it("leaves a zero cost alone", () => {
+    // The boundary. A cost of zero must not shift the figure, or the function
+    // is doing something other than subtracting.
+    expect(netOfCost(-863, 0)).toBe(-863);
   });
 });

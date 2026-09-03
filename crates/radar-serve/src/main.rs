@@ -96,6 +96,55 @@ fn configure_agent() -> (Option<Chat>, String) {
     }
 }
 
+/// The three settings that govern the customer lane.
+///
+/// Extracted from `main` because it grew past what one function should hold, and
+/// because these three belong together: they are the whole of what decides
+/// whether a stranger can reach this instance and what they can spend on it.
+///
+/// Every one of them fails closed and none of them defaults quietly. A malformed
+/// value stops the server rather than resolving to "closed", because the two are
+/// indistinguishable once collapsed and an operator would spend the outage
+/// looking at the vendor.
+///
+/// # Errors
+///
+/// Returns the message to print when any of them cannot be read.
+fn customer_lane() -> Result<
+    (
+        radar_serve::admission::Admission,
+        radar_serve::share::Shares,
+        Vec<u8>,
+    ),
+    String,
+> {
+    let env = |k: &str| std::env::var(k).ok();
+    let admission = radar_serve::admission::Admission::from_vars(&env)?;
+    let allowance = radar_serve::share::Allowance::from_vars(&env)?;
+    // The same state directory the model ledger uses, and mandatory for the same
+    // reason: a meter that cannot record what it spent cannot enforce a ceiling
+    // across a restart, and deploys are routine.
+    let shares_store = radar_serve::ledger::Store::open(&env)
+        .map_err(|why| format!("the chat share meter needs a state directory: {why}"))?;
+    // The salt customer identifiers are hashed with before anything long lived
+    // records them. Empty when unset, which `Subject::derive` refuses -- so an
+    // unsalted instance cannot meter a customer and therefore will not spend on
+    // one. Rule 8, and it is why this is not fatal: the operator surface does
+    // not need it.
+    let salt = env("RADAR_CUSTOMER_SALT")
+        .map(String::into_bytes)
+        .unwrap_or_default();
+    Ok((
+        admission,
+        radar_serve::share::Shares::restored(
+            allowance,
+            shares_store,
+            radar_serve::chat::today_utc(),
+        ),
+        salt,
+    ))
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let store_dir = std::env::var("RADAR_STORE").unwrap_or_else(|_| "./data/store".to_owned());
@@ -140,7 +189,21 @@ async fn main() -> ExitCode {
 
     let x402 = x402::Config::from_env();
     let (agent, agent_note) = configure_agent();
+
+    let (admission, shares, customer_salt) = match customer_lane() {
+        Ok(lane) => lane,
+        Err(why) => {
+            eprintln!("radar-serve: {why}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let admission_note = admission.describe();
+    let share_note = shares.describe();
+
     let state = Arc::new(AppState {
+        admission,
+        shares,
+        customer_salt,
         registry: registry(),
         store: Reader::open(&store_dir),
         x402,
@@ -151,6 +214,14 @@ async fn main() -> ExitCode {
         customer_keys: customer::KeyCache::new(),
         privy,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
+        // The domain a sign-in is bound to. Unset means no customer sign-in,
+        // rather than a guess: a wrong domain here would have wallets sign a
+        // message naming a site this is not, and the signature would then be
+        // valid somewhere Radar does not control.
+        challenges: radar_serve::domain_from(std::env::var("RADAR_CUSTOMER_DOMAIN").ok())
+            .map(radar_serve::challenges::Challenges::new),
     });
 
     println!("radar-serve v{}", env!("CARGO_PKG_VERSION"));
@@ -173,6 +244,8 @@ async fn main() -> ExitCode {
             access::Mode::Off => "OFF — anyone who can reach this can read it".to_owned(),
         }
     );
+    println!("  admission  : {admission_note}");
+    println!("  chat share : {share_note}");
     println!(
         "  customers  : {}",
         match &customer {

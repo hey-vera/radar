@@ -22,6 +22,9 @@ fn configured() -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        admission: radar_serve::admission::Admission::Open,
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: Some(Config {
@@ -37,6 +40,9 @@ fn configured() -> axum::Router {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
+        challenges: None,
     }))
 }
 
@@ -45,6 +51,9 @@ fn unconfigured() -> axum::Router {
     let mut registry = Registry::new();
     registry.register(CreatorHistory);
     app(Arc::new(AppState {
+        admission: radar_serve::admission::Admission::Open,
+        shares: radar_serve::share::Shares::new(radar_serve::share::Allowance::per_day(100)),
+        customer_salt: vec![7u8; 32],
         registry,
         store: Reader::open(std::env::temp_dir().join("radar-paywall-test")),
         x402: None,
@@ -55,6 +64,9 @@ fn unconfigured() -> axum::Router {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
+        challenges: None,
     }))
 }
 

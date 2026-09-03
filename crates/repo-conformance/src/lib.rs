@@ -269,6 +269,57 @@ pub fn code_span_paths(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// Lines of Rust source that reference `needle` as **code**, one-based.
+///
+/// Comments are dropped, and so is everything from the first `#[cfg(test)]`
+/// onward. Both exclusions are deliberate and both are approximations:
+///
+/// - A constant named in a comment is documentation, and the rule this serves is
+///   about what the compiler links, not about what a reader is told.
+/// - Truncating at `#[cfg(test)]` assumes the test module sits at the bottom of
+///   the file, which is this repository's idiom without exception. A test module
+///   in the middle would hide real code below it — so the cost of being wrong is
+///   a check that under-reports, which is the direction a heuristic in a
+///   conformance test should fail in. It never invents a violation.
+///
+/// It does not parse Rust. A `needle` inside a string literal counts, which is
+/// the same direction: over-reporting is visible and under-reporting is not.
+#[must_use]
+pub fn code_references(source: &str, needle: &str) -> Vec<usize> {
+    source
+        .lines()
+        .take_while(|line| !line.trim_start().starts_with("#[cfg(test)]"))
+        .enumerate()
+        .filter(|(_, line)| {
+            let code = line.split("//").next().unwrap_or("");
+            code.contains(needle)
+        })
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+/// Every tracked Rust source file under a crate's `src`, excluding `excluding`.
+///
+/// `tests/` directories are absent by construction: a test may legitimately
+/// name anything, and the rules built on this are about production code.
+#[must_use]
+pub fn crate_sources(excluding: &str) -> Vec<String> {
+    known_files()
+        .into_iter()
+        .filter(|f| f.starts_with("crates/") && f.contains("/src/"))
+        .filter(|f| {
+            // `Path::extension` rather than `ends_with(".rs")`: the string form
+            // is a case-sensitive comparison, and this repository is developed
+            // on a case-insensitive filesystem where `.RS` would be the same
+            // file and would silently escape the rule.
+            Path::new(f)
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("rs"))
+        })
+        .filter(|f| !f.starts_with(excluding))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -640,6 +691,131 @@ mod tests {
         assert!(
             total > 10,
             "only {total} relative links found across the docs"
+        );
+    }
+
+    #[test]
+    fn the_embedded_interface_directory_is_tracked() {
+        // `radar-serve` embeds `web/dist` with `rust-embed`, and the derive
+        // generates no `get` method when the folder does not exist -- so a
+        // checkout without it fails to compile, with an error naming a missing
+        // *method* rather than a missing directory. `embed.rs` is written on the
+        // assumption that an **empty** dist is normal; an **absent** one is not.
+        //
+        // The contents are build output and correctly ignored. The directory is
+        // tracked through one empty file, and that file is easy to lose:
+        // `emptyOutDir: true` deletes it on every build, so anyone who builds and
+        // commits with `git add -A` stages the deletion. That happened, and it
+        // turned five CI jobs red while every local build stayed green -- because
+        // locally the directory was full.
+        //
+        // `vite.config.ts` recreates it after each build. This is the check that
+        // the recreation is still working.
+        assert!(
+            known_files().contains("web/dist/.gitkeep"),
+            "web/dist/.gitkeep is not tracked, so a fresh checkout has no              web/dist and radar-serve will not compile"
+        );
+    }
+
+    #[test]
+    fn only_radar_risk_names_the_closed_policy_in_code() {
+        // The rule: `Policy::CLOSED` is a value, and every other crate must go
+        // through `Policy::SHIPPED` -- the constant the decider uses -- so that
+        // opening the policy moves everything that reports on it.
+        //
+        // This is a structural check because the alternative is discipline, and
+        // discipline is what failed. Three call sites read `Policy::CLOSED`
+        // independently: `radar consider`, which decides; `radar-serve`'s
+        // funnel, which drove the banner "Nothing can be authorised"; and
+        // `radar brief`'s `trading_lane`, which hardcoded `Status::Ok` beside
+        // the words "no proposal can become an authorization". Opening the first
+        // would have left the other two reassuring a reader while Radar traded.
+        //
+        // The third was found by writing this check rather than by reading the
+        // code, which is the argument for having it.
+        let mut offenders: Vec<String> = Vec::new();
+        for file in crate_sources("crates/radar-risk/") {
+            let Ok(text) = std::fs::read_to_string(root().join(&file)) else {
+                continue;
+            };
+            for line in code_references(&text, "Policy::CLOSED") {
+                offenders.push(format!("{file}:{line}"));
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these name Policy::CLOSED in code; use Policy::SHIPPED so the              interface moves when the decider does: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn the_shipped_policy_is_actually_reached_from_outside_radar_risk() {
+        // Guards the check above against passing vacuously. If nothing outside
+        // `radar-risk` referenced a policy constant at all -- because the
+        // extractor broke, or because `crate_sources` returned nothing -- the
+        // assertion would hold while checking nothing.
+        let reached: Vec<String> = crate_sources("crates/radar-risk/")
+            .into_iter()
+            .filter(|file| {
+                std::fs::read_to_string(root().join(file))
+                    .is_ok_and(|t| !code_references(&t, "Policy::SHIPPED").is_empty())
+            })
+            .collect();
+        assert!(
+            reached.len() >= 2,
+            "expected the decider and at least one reporter to use              Policy::SHIPPED, found {reached:?}"
+        );
+    }
+
+    #[test]
+    fn the_reference_extractor_reads_code_and_not_prose() {
+        // The two checks above are only worth having if this is right. Too
+        // greedy and every mention in a doc comment is a failure; too narrow and
+        // both pass by finding nothing.
+        let source = "/// A doc comment naming Policy::CLOSED is documentation.
+// So is a line comment naming Policy::CLOSED.
+let a = Policy::CLOSED;
+let b = Policy::SHIPPED; // Policy::CLOSED here is a trailing comment
+";
+        assert_eq!(
+            code_references(source, "Policy::CLOSED"),
+            vec![3],
+            "only the real binding counts"
+        );
+        assert_eq!(code_references(source, "Policy::SHIPPED"), vec![4]);
+    }
+
+    #[test]
+    fn the_extractor_stops_at_the_test_module() {
+        // A test may name anything. Without this, every crate with a test module
+        // referencing a constant would be a permanent false positive, and a
+        // check that cries wolf is one somebody deletes.
+        let source = "let real = Policy::SHIPPED;
+#[cfg(test)]
+mod tests {
+    let fixture = Policy::CLOSED;
+}
+";
+        assert!(code_references(source, "Policy::CLOSED").is_empty());
+        assert_eq!(code_references(source, "Policy::SHIPPED"), vec![1]);
+    }
+
+    #[test]
+    fn crate_sources_finds_source_and_excludes_what_it_is_told_to() {
+        let all = crate_sources("crates/radar-risk/");
+        assert!(!all.is_empty(), "no crate sources found at all");
+        assert!(
+            all.iter().all(|f| !f.starts_with("crates/radar-risk/")),
+            "the exclusion did not apply"
+        );
+        assert!(
+            all.iter().any(|f| f.starts_with("crates/radar-serve/src/")),
+            "expected radar-serve's sources: {all:?}"
+        );
+        // `tests/` directories are out by construction, not by exclusion.
+        assert!(
+            all.iter().all(|f| f.contains("/src/")),
+            "a non-src file was included"
         );
     }
 }

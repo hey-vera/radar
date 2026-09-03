@@ -1403,6 +1403,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-analyst"
+version = "0.0.1"
+dependencies = [
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "radar-asof"
 version = "0.0.1"
 dependencies = [
@@ -1431,6 +1441,7 @@ dependencies = [
 name = "radar-cli"
 version = "0.0.1"
 dependencies = [
+ "radar-analyst",
  "radar-asof",
  "radar-backfill",
  "radar-decode",

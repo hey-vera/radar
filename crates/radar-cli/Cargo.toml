@@ -28,6 +28,8 @@ radar-onchain.workspace = true
 # The reply pipeline behind `radar roast`. Prints only: it holds no credential
 # and cannot post.
 radar-roast.workspace = true
+# The mention parser, the admission gate and the reply log. Cannot post.
+radar-analyst.workspace = true
 radar-model.workspace = true
 radar-strategy.workspace = true
 radar-research.workspace = true

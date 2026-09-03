@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = ["crates/radar-types", "crates/radar-asof", "crates/radar-provider", "crates/radar-agent",
-    "crates/radar-model", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli", "crates/radar-instruments", "crates/radar-serve", "crates/radar-risk", "crates/radar-sim", "crates/radar-strategy", "crates/radar-research", "crates/radar-graph", "crates/radar-signer", "crates/radar-exec", "crates/radar-customer", "crates/radar-pumpfun", "crates/radar-onchain", "crates/radar-roast", "crates/repo-conformance"]
+    "crates/radar-model", "crates/radar-decode", "crates/radar-store", "crates/radar-backfill", "crates/radar-cli", "crates/radar-instruments", "crates/radar-serve", "crates/radar-risk", "crates/radar-sim", "crates/radar-strategy", "crates/radar-research", "crates/radar-graph", "crates/radar-signer", "crates/radar-exec", "crates/radar-customer", "crates/radar-pumpfun", "crates/radar-onchain", "crates/radar-roast", "crates/radar-analyst", "crates/repo-conformance"]
 
 [workspace.package]
 version = "0.0.1"
@@ -22,6 +22,7 @@ radar-decode = { path = "crates/radar-decode", version = "0.0.1" }
 radar-pumpfun = { path = "crates/radar-pumpfun", version = "0.0.1" }
 radar-onchain = { path = "crates/radar-onchain", version = "0.0.1" }
 radar-roast = { path = "crates/radar-roast", version = "0.0.1" }
+radar-analyst = { path = "crates/radar-analyst", version = "0.0.1" }
 radar-instruments = { path = "crates/radar-instruments", version = "0.0.1" }
 radar-exec = { path = "crates/radar-exec", version = "0.0.1" }
 radar-risk = { path = "crates/radar-risk", version = "0.0.1" }

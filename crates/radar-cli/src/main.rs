@@ -11,6 +11,7 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
+mod analyst;
 mod basis;
 mod brief;
 mod consider;
@@ -91,6 +92,11 @@ commands:
                                  check after generation refuses any number that
                                  is not on the fact sheet, and the deterministic
                                  template ships instead. Prints; never posts
+  analyst --mentions <file.jsonl> [--log <file>]
+                                 the whole summoned-reply loop over mentions
+                                 from a file: strict parse, admission gate,
+                                 dossier, reply, log. Dry run -- it holds no
+                                 credential and posts nothing
   exits --store <dir> [--cost-bps N]
                                  would a stop or a take-profit have beaten
                                  holding; reports both tie-break bounds
@@ -667,6 +673,7 @@ fn main() -> ExitCode {
         "study" => event_study(&args),
         "dossier" => dossier::run(&args),
         "roast" => roast::run(&args),
+        "analyst" => analyst::run(&args),
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
         "control" => control_report(&args),

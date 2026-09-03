@@ -221,8 +221,27 @@ pub enum Denied {
     #[error("the assertion expired")]
     Expired,
     /// The token was issued for a different application.
-    #[error("the assertion is for a different application")]
-    WrongAudience,
+    ///
+    /// Carries both tags, because the message is the whole value of this
+    /// refusal. "For a different application" is true and sends an operator to
+    /// Cloudflare's dashboard to find out *which*; the answer is almost always
+    /// that `RADAR_ACCESS_AUD` in their own env file is stale or was copied
+    /// from another application. On 2026-09-03 that cost a live debugging
+    /// session -- the tag had been wrong since the instance was configured, so
+    /// every login succeeded at Cloudflare and was refused here.
+    ///
+    /// Neither value is a secret. The expected tag is on the application's
+    /// Overview page and is served publicly as `kid` in the Access login
+    /// redirect, and the presented one is the caller's own.
+    #[error(
+        "the assertion is for a different application: it names {presented}, and this instance expects {expected} — that tag is RADAR_ACCESS_AUD, from the Access application's Overview page"
+    )]
+    WrongAudience {
+        /// The audience tags the token actually carries.
+        presented: String,
+        /// The tag this instance was configured with.
+        expected: String,
+    },
     /// The token was issued by a different team.
     #[error("the assertion is from a different issuer")]
     WrongIssuer,
@@ -381,7 +400,10 @@ pub fn verify(token: &str, keys: &Keys, config: &Config, now: u64) -> Result<Ide
     // The audience check is the one most often skipped, and skipping it means
     // any token from any application in the same Cloudflare team opens Radar.
     if !claims.aud.iter().any(|a| a == &config.aud) {
-        return Err(Denied::WrongAudience);
+        return Err(Denied::WrongAudience {
+            presented: claims.aud.join(","),
+            expected: config.aud.clone(),
+        });
     }
     if claims.iss != config.issuer() {
         return Err(Denied::WrongIssuer);
@@ -762,9 +784,22 @@ mod tests {
         // with the same keys, so without this any colleague's access to any
         // other application is access to Radar -- with a signature that
         // verifies perfectly.
-        assert_eq!(
-            verify(WRONG_AUD, &keys(), &config(), NOW),
-            Err(Denied::WrongAudience)
+        let refused = verify(WRONG_AUD, &keys(), &config(), NOW).expect_err("refused");
+        assert!(matches!(refused, Denied::WrongAudience { .. }));
+
+        // The message is the point. A refusal reading only "for a different
+        // application" sends an operator to Cloudflare to find out which, and
+        // the answer is nearly always their own `RADAR_ACCESS_AUD`. This
+        // instance was misconfigured that way for two days and every login
+        // succeeded at Cloudflare and failed here, with nothing saying so.
+        let said = refused.to_string();
+        assert!(
+            said.contains(&config().aud),
+            "the refusal must name what this instance expects: {said}"
+        );
+        assert!(
+            said.contains("RADAR_ACCESS_AUD"),
+            "and the variable to go and look at: {said}"
         );
     }
 

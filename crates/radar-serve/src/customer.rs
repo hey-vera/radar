@@ -349,6 +349,14 @@ enum Audience {
 }
 
 impl Audience {
+    /// The tags, for a refusal that says what was actually presented.
+    fn describe(&self) -> String {
+        match self {
+            Self::One(a) => a.clone(),
+            Self::Many(all) => all.join(","),
+        }
+    }
+
     fn contains(&self, expected: &str) -> bool {
         match self {
             Self::One(a) => a == expected,
@@ -414,7 +422,10 @@ pub fn verify(token: &str, keys: &Keys, config: &Config, now: u64) -> Result<Cus
     // The audience check is the one most often skipped, and skipping it means a
     // token issued for any other Privy application opens Radar.
     if !claims.aud.contains(&config.app_id) {
-        return Err(Denied::WrongAudience);
+        return Err(Denied::WrongAudience {
+            presented: claims.aud.describe(),
+            expected: config.app_id.clone(),
+        });
     }
     if claims.iss != ISSUER {
         return Err(Denied::WrongIssuer);
@@ -568,9 +579,11 @@ mod tests {
             NOW + 3600
         );
         let t = token(&pair, r#"{"alg":"ES256","kid":"test"}"#, &claims);
-        assert_eq!(
-            verify(&t, &keys, &config(), NOW),
-            Err(Denied::WrongAudience)
+        let refused = verify(&t, &keys, &config(), NOW).expect_err("refused");
+        assert!(matches!(refused, Denied::WrongAudience { .. }));
+        assert!(
+            refused.to_string().contains("someone-elses-app"),
+            "the refusal names the tag the token actually carried: {refused}"
         );
     }
 
@@ -597,9 +610,11 @@ mod tests {
             NOW + 3600
         );
         let t = token(&pair, r#"{"alg":"ES256","kid":"test"}"#, &claims);
-        assert_eq!(
-            verify(&t, &keys, &config(), NOW),
-            Err(Denied::WrongAudience)
+        let refused = verify(&t, &keys, &config(), NOW).expect_err("refused");
+        assert!(matches!(refused, Denied::WrongAudience { .. }));
+        assert!(
+            refused.to_string().contains("other,another"),
+            "an array is reported whole, not just its first element: {refused}"
         );
     }
 

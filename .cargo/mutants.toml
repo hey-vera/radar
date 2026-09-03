@@ -118,4 +118,16 @@ exclude_re = [
     # mutation and running the crate's suite, and `radar-types` covers this
     # function at every length class and round-trips all 256 byte values.
     'replace \| with \^ in encode_url',
+    # `LaunchBlockSource::bundle_slots`: the mutation replaces the default trait
+    # method's body with `Ok(vec![])`. The body already *is* `Ok(Vec::new())`,
+    # and those are the same expression written two ways -- `vec![]` expands to
+    # `Vec::new()`. There is no behaviour to distinguish, so no test could.
+    #
+    # The default is deliberate and documented at the trait: a source that only
+    # reads a launch block -- which is every existing one -- keeps working and
+    # contributes nothing to the later sweep. An *implementation* that returned
+    # an empty vec where it should have read would be a real bug, and that is
+    # covered where the implementations live -- the mutation of the CryptoHouse
+    # one is caught.
+    'replace LaunchBlockSource::bundle_slots -> Result<Vec<\(u64, LaunchBlockShape\)>, Self::Error> with Ok\(vec!\[\]\)',
 ]

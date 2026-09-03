@@ -381,10 +381,7 @@ where
                             None
                         }
                     };
-                    // Printed only when the sweep found something the launch
-                    // block did not. A line repeating the launch verdict would
-                    // bury the case this exists for.
-                    if let Some(sighting) = later.filter(|s| s.coordination > at_launch) {
+                    if let Some(sighting) = newly_bundled(later, at_launch) {
                         println!(
                             "  {mint}  bundled after launch: {:?} at {:?}",
                             sighting.coordination, sighting.when
@@ -475,6 +472,26 @@ where
 
 /// The widest bar drawn, in characters.
 const BAR_WIDTH: usize = 28;
+
+/// The later sighting, but only when it says something the launch block did not.
+///
+/// Extracted from the line that prints it because a comparison inside a
+/// `println!` is a comparison no test can reach: mutation testing flipped this
+/// `>` to `==`, `<` and `>=` and every one of them survived. All three are
+/// wrong in the same direction -- `>=` and `==` repeat the launch verdict as
+/// though it were news, and `<` announces a *weaker* later reading as a
+/// strengthening -- and the line exists precisely to surface the case the
+/// launch block missed.
+///
+/// This is only what gets *printed*. The verdict itself takes the stronger of
+/// the two regardless, so a wrong answer here is a silent report rather than a
+/// silent trade.
+fn newly_bundled(
+    later: Option<radar_graph::ongoing::Sighting>,
+    at_launch: radar_graph::Coordination,
+) -> Option<radar_graph::ongoing::Sighting> {
+    later.filter(|seen| seen.coordination > at_launch)
+}
 
 /// Renders what the sampled launch blocks looked like.
 ///
@@ -927,6 +944,46 @@ pub const fn default_cap() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_stronger_later_reading_is_announced() {
+        // Swept rather than sampled, because the interesting case is the
+        // boundary: a later block that merely *matches* the launch verdict is
+        // not news, and printing it would bury the case the sweep exists for.
+        use radar_graph::Coordination;
+        use radar_graph::ongoing::{Sighting, When};
+        let seen = |c| {
+            Some(Sighting {
+                shape: radar_graph::LaunchBlockShape {
+                    recipients: 6,
+                    transactions: 1,
+                },
+                coordination: c,
+                when: When::Later { slots_after: 900 },
+            })
+        };
+
+        let ladder = [
+            Coordination::Unremarkable,
+            Coordination::Suspected,
+            Coordination::Likely,
+        ];
+        for (i, &later) in ladder.iter().enumerate() {
+            for (j, &launch) in ladder.iter().enumerate() {
+                let announced = newly_bundled(seen(later), launch).is_some();
+                assert_eq!(
+                    announced,
+                    i > j,
+                    "later {later:?} against launch {launch:?}: only a strictly \
+                     stronger later reading is news"
+                );
+            }
+        }
+
+        // An unread sweep announces nothing, which is distinct from a sweep that
+        // read clean.
+        assert!(newly_bundled(None, Coordination::Unremarkable).is_none());
+    }
 
     /// A launch-block source that answers however a test needs it to.
     struct StubBlocks(Result<radar_graph::prevalence::Table, String>);

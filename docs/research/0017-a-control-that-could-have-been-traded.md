@@ -2,8 +2,9 @@
 # 0017 — A control that could have been traded
 
 **Date:** 2026-08-30
-**Store:** the live guardian VPS recorder, 1,092 proposals and 121,810 untouched
-tokens priced
+**Store:** the live guardian VPS recorder, **990 proposals and 38,461 untouched
+tokens** priced (~~1,092 and 121,810~~ — the superseded pre-correction run; see
+the correction note below)
 **Status:** measured. **No edge found.** Two of four comparable strata are
 uninformative for a reason this note names and does not solve.
 
@@ -20,7 +21,7 @@ uninformative for a reason this note names and does not solve.
 > a median edge of **0 bps**, and still no edge. The figures below are the
 > superseded run; the corrected table is in *The result, re-measured*.
 
-## What this replaces## What this replaces
+## What this replaces
 
 [`0014`](0014-the-control-was-entirely-tokens-nobody-could-sell.md) compared
 Radar's proposals against its own refusals and found the comparison unusable:

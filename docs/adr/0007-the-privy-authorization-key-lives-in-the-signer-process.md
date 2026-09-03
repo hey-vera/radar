@@ -2,7 +2,14 @@
 # ADR 0007 — The Privy authorization key lives in the signer process
 
 **Date:** 2026-08-31
-**Status:** accepted
+**Status:** accepted — **conditional on Privy, which
+[ADR 0011](0011-one-wallet-system-two-authority-levels-on-turnkey.md) deferred.**
+The reasoning below is about *where a key that moves customer funds may live*,
+and that transfers to any vendor: it belongs in the signer process, not in
+`radar-serve`. What is contingent is the P-256 `privy-authorization-signature`
+specifically. **If Privy is retired rather than deferred, that key comes out of
+the signer** — a real simplification of the most safety-critical process in the
+repository, and a decision that should be recorded rather than drifted into.
 **Decides:** which Radar process holds the key that authorises Privy to sign,
 and what it checks before using it.
 

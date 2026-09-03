@@ -7,13 +7,39 @@ agents can buy over x402.
 **Status: recording, and refusing to trade.** The pipeline runs end to end on a
 live instance — recording launches, measuring what became of them, answering
 questions about both over HTTP and MCP, and running the full decision lane over
-what it has recorded.
+what it has recorded. 479,564 launches, 1,326,862 outcome measurements and 7,543
+replayable decisions as of 2026-09-03.
 
-The trading lane is **built and shut**. Strategy, risk kernel, signer and
-executor all exist and are tested end to end; the policy that ships is
-`Policy::CLOSED`, which refuses every proposal. That is the distinction that
-matters: nothing is missing, and nothing is armed. Turning it on is a deliberate
-change to one value, made by a person, once recorded data shows an edge exists.
+**Nothing has ever traded, and no edge has been found.** The measured selection
+edge is **0 bps** ([0017](docs/research/0017-a-control-that-could-have-been-traded.md))
+against a bar of roughly **456 bps** — the expected edge a strategy must clear
+before a single trade is worth making
+([0022](docs/research/0022-capacity-was-a-budget-not-a-ceiling.md)). The shipped
+`Policy::CLOSED` refuses every proposal, and on that arithmetic it is the correct
+position rather than a placeholder.
+
+The trading lane is **composed and shut**, and an earlier version of this section
+said it was *"built and tested end to end"* with *"nothing missing"*. That
+sentence is exactly what [LEARNINGS](LEARNINGS.md) 10 retracts, so here is the
+distinction it was hiding:
+
+- **Composed** — `radar-exec`'s
+  [`lane_composes.rs`](crates/radar-exec/tests/lane_composes.rs) and
+  [`the_customer_lane_composes.rs`](crates/radar-exec/tests/the_customer_lane_composes.rs)
+  run strategy → kernel → signer → executor, and `Policy::CLOSED` refuses what a
+  permissive policy authorises.
+- **Not exercised** — nothing has been signed by a wallet, sent, or filled. No
+  production crate depends on `radar-exec`; the composition reaches it through a
+  dev-dependency. **There is no production caller for the trading path**, and
+  writing one is a decision about money rather than a wiring task.
+- **`Policy::CLOSED` has never refused a real proposal, because it has never been
+  handed one.** A live run over 41,254 candidates raised zero proposals — the
+  cause was a hardcoded probe size that made a proposal arithmetically
+  impossible, not a market offering nothing (LEARNINGS 10).
+
+**The trading lane is frozen** for the duration of the current work. It unfreezes
+on one condition: a measured edge at or above that 456 bps bar, in a stratum
+Radar can size into, on data that was not used to find it.
 
 `radar consider` prints exactly what the system would have done and why it did
 not do it. On the first live run it considered 3,924 recorded launches, spent
@@ -68,8 +94,8 @@ again. This needs nothing from any vendor and it is the largest saving available
 | Crate | What it does |
 |---|---|
 | `radar-types` | Domain vocabulary. Slots as the only clock, integer money, mutability classes, provenance and trust tiers. |
-| `radar-asof` | Point-in-time correctness. A watermark that makes look-ahead bias a compile-time concern rather than a discipline. |
-| `radar-provider` | The metered, cached, health-aware data plane. Pure policy — no HTTP, no clock, no async — so spend control is exhaustively testable without a network. |
+| `radar-asof` | Point-in-time correctness. A watermark applied at every boundary function that reads the store — four `admits` call sites plus one hand-rolled gate, not a compile-time guarantee. LEARNINGS 9 retracts the stronger claim this row used to make. |
+| `radar-provider` | Spend metering. Pure policy — no HTTP, no clock, no async. Its `Meter`/`Ledger`/`Budget` run: `radar-agent` reserves before every model call and `radar-serve` persists the ledger across restarts. Its `Cache`, `Breaker` and planner have **no caller anywhere** — 712 of 1,876 lines — and are a design rather than a running system. |
 | `radar-agent` | The boundary a reasoning layer sits behind. Pure policy: the model gets read-only tools, observed text is fenced as data, and its answer is text nobody parses into an action. |
 | `radar-model` | Reaching a model provider: the vendor CLI as a subprocess that owns its own credential, or a metered API key. The impure edge `radar-agent` deliberately does not have. |
 | `radar-decode` | Solana program decoders. Matches Anchor discriminator bytes, never logged instruction names; an unrecognised discriminator is a recorded value, never a guess. |
@@ -80,7 +106,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-sim` | Exit analysis. Structural disqualification from the mint account, then a measured sell curve — never a single liquidity number. |
 | `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
 | `radar-strategy` | Deterministic strategies. They emit proposals, which are inert data, and assemble candidates in one place so look-ahead is prevented once rather than per strategy. |
-| `radar-graph` | Coordination detection. Scores what a launch block contained, and refuses on the shape that 68% of instantly-graduating launches share and 5% of ordinary ones do. |
+| `radar-graph` | Coordination detection. Scores what a launch block contained, and refuses on the shape that 68% of instantly-graduating launches share, 16% of organic ones and 5% of ones that never graduated ([0008](docs/research/0008-the-launch-block-gives-the-bundle-away.md), n=80 per population). Quoting "5% otherwise" hides the organic cohort. |
 | `radar-research` | Replay. Re-runs a recorded decision at its original watermark and separates a store that gained history from a strategy that is not a pure function of its inputs. |
 | `radar-signer` | A separate process holding the key. Re-decodes every transaction and trusts nothing the caller said about it. |
 | `radar-exec` | Route, gate, sign, submit, reconcile. The last stage, and the one holding the least authority. |
@@ -88,8 +114,10 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-customer` | The customer model. Pure: a bounded grant derived from the kernel's authorisation, and a signature meter. No account table — see ADR 0006. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
-Further crates (graph, sim, strategy, exec, signer, research) are planned; see
-the architecture plan.
+Every crate in that table exists and is a workspace member; `repo-conformance`
+fails the build if the table and the workspace disagree. (This paragraph
+previously listed graph, sim, strategy, exec, signer and research as *planned*,
+five lines after the table listed them as built.)
 
 ## The safety invariant
 
@@ -131,10 +159,15 @@ The instrument reports `measured=39` rather than 88 because the other 49 have no
 yet reached their first checkpoint. It says what it knows and no more, which is
 the same reason it will not state a rate below five measured launches.
 
-Whether creator history *predicts returns* is a different and larger question,
-and nobody has measured it yet. What exists is the machinery to ask: signals
-computed at a watermark, outcomes measured later, and a replay that must
-reproduce both.
+Whether creator history *predicts returns* has since been measured, and the
+answer is not the encouraging one. A creator with a prior organic graduation
+graduates again at about **1.69× the base rate**
+([0007](docs/research/0007-does-creator-history-predict-anything.md)) — but
+graduation predicts **volatility, not profit**: organic graduations end at a
+median **−3,228 bps** against −853 for tokens that never graduated
+([0011](docs/research/0011-graduation-predicts-volatility-not-profit.md)). A
+creator's graduation history is not a good sign, and nothing built on this data
+may imply that it is.
 
 ## Trying it
 

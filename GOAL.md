@@ -193,9 +193,21 @@ public, whether a coin and its community are sound — and everybody watching se
 the answer at the same time. Being *funny* is a distribution strategy; being
 *right* is the product.
 
-> Six recipients in the launch block. The creator has twelve prior launches and
-> none graduated. Exit capacity at 1% impact is $31, against a 250 bps round
-> trip.
+> The round trip on a $50 position here is about 4.6%, and at Radar's own $1
+> floor it is about 30%. Six recipients in the launch block — 68% of
+> instantly-graduating launches look like that, 16% of organic ones, 5% of the
+> ones that never graduated. The creator has twelve prior launches and none
+> graduated. Exit capacity at Radar's 1% impact budget is $31 — that is Radar's
+> setting, not the venue's ceiling.
+
+Every number in that reply is a measurement with a citation, and the ordering is
+deliberate: **the cost line leads.** "Six recipients" is insidery; "the round
+trip is 30% at the floor" is comprehensible to anyone, is said nowhere else, and
+is the fact most likely to change what somebody does. The three round-trip
+figures in circulation — 250, 456 and 850 bps — are reconciled in one table in
+[docs/STATE.md](docs/STATE.md), and nothing may publish a cost figure without
+resolving it there first. An earlier version of this sample said "250 bps round
+trip", which is the venue *fee* and understated the measured cost by about 3.4×.
 
 Why this belongs in the goal rather than in a marketing plan: **it is the one
 product that works before an edge exists.** Radar can be genuinely useful and
@@ -262,14 +274,25 @@ Each of these is a decision, not an oversight.
   split. A green shield is "unknown rendered as safe".
 - **Something that trades faster than it can explain.** If a decision cannot be
   replayed and justified, it does not get made.
+- **A token.** Radar will not launch one, ever. The roaster's whole credibility
+  rests on naming capital that was committed before a token existed — and every
+  launch has a launch block, so any allocation to a team, a treasury or early
+  supporters **is** that set of recipients. There is no launch design that
+  escapes it, because the signal is structural rather than about intent. It would
+  also make Radar the holder of a token whose price rises with the bot's reach,
+  which is the touting fact pattern above with the bot supplying the attention.
 
 ## The direction of travel
 
-**Venues.** Radar records pump.fun only. The ceiling there is capacity, not
-signal — the median position is about $6. Established tokens on Raydium and
-Whirlpool do not have that ceiling, and route in a form the signer can already
-read. Broadening is worth doing *after* an edge exists, because venues make a
-working edge bigger and do not create one.
+**Venues.** Radar records pump.fun only. An earlier version of this paragraph
+said the ceiling there is *capacity*; that is superseded by
+[research 0022](docs/research/0022-capacity-was-a-budget-not-a-ceiling.md), which
+found the ~$31 is the output of Radar's own 1% impact budget rather than a venue
+wall — the same curve supports roughly $500 at an impact equal to the round trip.
+**The binding constraint is the bar, not the depth**: 456 bps, against a measured
+0. Established tokens on Raydium and Whirlpool do route in a form the signer can
+already read, and broadening is still worth doing *after* an edge exists, because
+venues make a working edge bigger and do not create one.
 
 **The AI.** Today the strategy is deterministic rules. The next step is a model
 reasoning over the same evidence and proposing what the rules do not see — held

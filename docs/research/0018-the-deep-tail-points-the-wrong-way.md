@@ -2,8 +2,9 @@
 # 0018 — The deep tail points the wrong way
 
 **Date:** 2026-08-30
-**Store:** the live guardian VPS recorder, 1,100 proposals banded by measured
-exit capacity
+**Store:** the live guardian VPS recorder, **990 proposals** banded by measured
+exit capacity (~~1,100~~ — the superseded pre-correction run; the corrected table
+below sums to 990)
 **Status:** measured and re-measured. The band that matters carries **25 rows**,
 which clears the cohort floor — but only just. Directional, not settled, and
 recorded because the direction is the opposite of the one the plan was hoping
@@ -114,13 +115,26 @@ rows and with two prior measurements, and it has not been tested.
 The plan asked Phase 1 to decide whether pump.fun pre-graduation can host
 $10k–$100k. On this evidence it looks unlikely from both directions at once:
 
-- **Capacity is a venue constant.** 80% of tokens offer ~$31, so a $10k position
-  is three hundred times what the median token supports.
-- **The tokens that offer more appear to be worse**, at n=25.
+- ~~**Capacity is a venue constant.** 80% of tokens offer ~$31, so a $10k position
+  is three hundred times what the median token supports.~~ **Superseded by
+  [`0022`](0022-capacity-was-a-budget-not-a-ceiling.md)**, which read the curves
+  off mainnet and found the ~$31 is the output of Radar's own
+  `Search::DEFAULT { max_impact_bps: 100 }` — a **policy setting, not a venue
+  wall**. The same curve supports roughly **$500** at an impact equal to the
+  round trip: a factor of about sixteen, and "$10k is three hundred times the
+  median" becomes twenty times. 0022's own words: *"Capacity was never the reason
+  this does not work."*
+- **The tokens that offer more appear to be worse**, at n=25. This one stands.
 
 Neither settles it. Together they say the burden of proof has moved: the case for
 staying on this venue now needs evidence, where before it only needed no evidence
 against.
+
+**What replaces the capacity half.** 0022 turns this note's finding into a *bar*
+rather than a ceiling: roughly **456 bps** of expected edge before a single trade
+is worth making, and roughly **850** before a position larger than about $59
+does. [`0017`](0017-a-control-that-could-have-been-traded.md) measures the edge at
+**0 bps**. The constraint was never the depth.
 
 ## What this does not establish
 

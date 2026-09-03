@@ -2,7 +2,15 @@
 # ADR 0010 — Entitlement is read from Stripe, never recorded
 
 **Date:** 2026-09-01
-**Status:** accepted
+**Status:** accepted, and **its identity primitive is contingent.** Entitlement
+below is keyed on a **verified Privy DID**, and
+[ADR 0011](0011-one-wallet-system-two-authority-levels-on-turnkey.md) deferred
+the vendor that issues it. So `Privy DID → Stripe customer` should be read as
+*"the account identity"* → Stripe customer; which vendor mints that identity is
+undecided, and the mapping's shape does not depend on the answer.
+
+This ADR is also **not a statement that billing should be switched on.** Nothing
+in it is live, and no customer has ever existed.
 **Decides:** how Radar knows whether a customer has paid, and what it keeps
 about that.
 

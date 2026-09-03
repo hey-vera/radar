@@ -43,23 +43,93 @@ every scoreable refusal is `CapacityBelowFloor`, so the control is composed
 entirely of tokens Radar measured and found it could not sell.
 
 [`0017`](../docs/research/0017-a-control-that-could-have-been-traded.md) builds the
-control that comparison lacked, against 121,810 tokens Radar never decided on,
+control that comparison lacked, against **38,461** tokens Radar never decided on,
 priced the same way on both sides and matched on token age and holding period.
 It finds **no edge** — a median edge of 0 bps across four matched strata. Both
 that note and [`0018`](../docs/research/0018-the-deep-tail-points-the-wrong-way.md)
 were re-measured after LEARNINGS 19 corrected the pairing gate, and both
 conclusions survived it.
 
+The figures are the **corrected** run: 990 proposals against 38,461 control
+tokens. An earlier version of this paragraph carried 121,810, which is 0017's
+superseded pre-correction control and is ~3.2× the real one. 0017's own header
+line still carried the superseded pair until 2026-09-03; both are now fixed.
+
 0018 is the one to read next. Radar sizes every position as a share of measured
 exit capacity, and 80% of proposals sit in a ±13% band around $31 because every
 pre-graduation pump.fun token rides the same curve — so the median position is
 **$6.21**, needing a +8.5% move to clear the round trip. The one band where a
-real position fits, $60+, is **down 68% on 25 rows**. The binding constraint is
-capacity, not signal, and the deep tail does not look like an escape from it.
+real position fits, $60+, is **down 68% on 25 rows**.
+
+**0018 concluded from that "the binding constraint is capacity, not signal", and
+that conclusion is superseded.** This file said it too, and it was wrong for as
+long as 0022 has existed.
+[`0022`](../docs/research/0022-capacity-was-a-budget-not-a-ceiling.md) reads four
+bonding curves off mainnet and finds the ~$31 is the output of Radar's own
+`Search::DEFAULT { max_impact_bps: 100 }` — a **policy setting, not a venue
+wall**. The same curve supports roughly **$500** at an impact equal to the round
+trip, a factor of about sixteen. 0022 struck its own recommendation to raise the
+budget and said why in one line:
+
+> "**Capacity was never the reason this does not work.**"
+
+**The binding constraint is the bar, not the depth.** A strategy has to clear
+roughly **456 bps** of expected edge before a single trade is worth making, and
+roughly **850 bps** before a position larger than about $59 makes sense.
+[`0017`](../docs/research/0017-a-control-that-could-have-been-traded.md) measures
+the edge at **0 bps**, so the arithmetically correct size is not small but
+negative — which is what `Policy::CLOSED` already is. `max_impact_bps` should not
+move until something measures an edge above that bar; raising it first would only
+spend money faster in the direction 0017 says there is nothing in.
 
 Read that before adding a filter. The gross median says the selection is not
-finding an edge, and the 850 bps says the round trip is currently larger than
-anything the filter has found.
+finding an edge, and the round trip is currently larger than anything the filter
+has found.
+
+## The round trip is three numbers, and they are not in conflict
+
+Three figures circulate in this repository and **no document reconciled them
+until this one did**. They measure different things, and quoting the wrong one
+understates cost by up to 3.4×. Anything that publishes a cost figure — the
+kernel, a research note, the roaster — resolves it here.
+
+| bps | what it is | measured in | scope |
+|---|---|---|---|
+| **250** | the pump.fun **venue fee**, round trip — 125 bps a side, read off the on-chain `FeeConfig` | [`0023`](../docs/research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md) | the fee alone. Excludes impact, rent and failed transactions. |
+| **456** | the **bar**: expected edge a strategy must clear before one trade is worth making | [`0022`](../docs/research/0022-capacity-was-a-budget-not-a-ceiling.md) | all-in round trip for a position in the **$20–$200** band, used as the fee rate `a` in `s* = (r − a) / 2b` |
+| **850** | the **measured all-in round trip** the kernel assumes, `creator_edge::Thresholds::assumed_round_trip_bps` | [`0019`](../docs/research/0019-the-round-trip-is-not-one-number.md) | fresh-launch pump.fun tokens — the cohort Radar's own trades belong to. Every net figure in this repository rests on it. |
+
+**Why they differ, precisely.** 0019 measured 183,647 legs and found cost is
+**size-dependent, and the dependence is at the bottom**:
+
+```
+notional band   median bps / leg   round trip
+$0.20 – $2                 1,521       3,042
+$2 – $20                     125         250
+$20 – $200                   228         456
+$200 – $2,000                225         450
+$2,000+                      130         260
+```
+
+So 250 and 456 are the same measurement read in two different bands, and 0022's
+"fees rt" column is this table doubled rather than a fee schedule. That 250
+coincides with 0023's venue fee is a real finding rather than a clash: in the
+$2–$20 band the measured all-in cost is **the venue fee and essentially nothing
+else**.
+
+**850 is none of these bands and is not superseded by them.** 0019 measured *all*
+pump.fun trades in an hour; the 850 came from trades on 200 tokens launched in
+that hour — the fresh-launch cohort, where a new associated token account is rent
+and early curve positions carry more slippage. 0019 **explicitly declines to
+lower the constant** on that evidence, because the population is wrong and the
+error direction is the dangerous one: a cost estimate rounded down launders a
+trade past the gate that should have refused it.
+
+**The number nobody else publishes.** `min_notional` is `MicroUsd::DOLLAR` —
+$1.00 — which lands in the 1,521 bps band. **A position at Radar's own floor
+faces a round trip of roughly 30%.** That is measured, it is about the venue
+rather than a prediction, and it is the strongest single fact this repository
+holds.
 
 The trading lane exists and is shut, and it is worth being exact about *where*
 it is shut, because an earlier version of this paragraph was not.
@@ -154,11 +224,24 @@ nothing has ever tested.
 - `crates/radar-provider` — the metered, cached, health-aware data plane. Pure
   policy: no HTTP, no clock, no async.
 
-  **Read it as a design, not as the running system.** Nothing depends on this
-  crate. The economics that actually run are a separate, static cost model in
+  **Read most of it as a design, not as the running system**, and be exact about
+  which half — this file said "nothing depends on this crate" until 2026-09-03,
+  and that has been stale since `radar-agent` was metered.
+
+  What runs: `radar-agent` depends on this crate and uses `Budget`, `Ledger`,
+  `Meter` and `Commitment` — all of [`cost.rs`](../crates/radar-provider/src/cost.rs),
+  484 lines — for every model call, and
+  [`radar-serve`'s ledger](../crates/radar-serve/src/ledger.rs) persists it across
+  a restart. That is rule 8 enforced in the running system.
+
+  What does not: `Cache`, `Breaker` and the planner are exported and **called
+  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 712 of
+  its 1,876 lines. This is the third documented-as-central layer with no caller
+  ([LEARNINGS](../LEARNINGS.md) 1 and 9 are the same shape), and it should be
+  wired to a real caller or deleted rather than left a third time.
+
+  The economics that actually run for *pricing* are a separate, static cost model in
   [`radar-instruments`](../crates/radar-instruments/src/spec.rs), where each
   instrument *declares* its cost by hand ("a promise, not a measurement") and the
   x402 price is derived from that declaration. So the price Radar charges is not
-  connected to what Radar spends, and nothing notices if the two diverge. This is
-  the second time a documented-as-central economics layer has turned out to be
-  unreachable; see [LEARNINGS](../LEARNINGS.md) entries 1 and 9 for the pattern.
+  connected to what Radar spends, and nothing notices if the two diverge.

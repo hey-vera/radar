@@ -103,10 +103,39 @@ pub enum Unbuildable {
     Empty,
 }
 
+/// The most bytes a compact-u16 can occupy.
+///
+/// The format is defined over a `u16` at seven bits a byte, so three is the
+/// whole range: `16_383` is the largest two-byte value and `65_535` the largest
+/// encodable one.
+const COMPACT_U16_MAX_BYTES: usize = 3;
+
 /// Solana's compact-u16 length prefix.
+///
+/// # The loop is bounded, and that is not a style choice
+///
+/// This was `loop { .. }`, and mutation testing turned `remaining == 0` into
+/// `remaining != 0`. For a value of zero that never terminates -- and every
+/// iteration pushes a byte, so it is an unbounded *allocation*, not a spin. It
+/// took a CI runner out of memory and killed the whole job three minutes in,
+/// before `cargo mutants`' own 300s per-mutant timeout could fire, which
+/// presented as one shard being mysteriously cancelled on every run while the
+/// other three passed.
+///
+/// A tool cannot time out a mutant that kills the machine it is running on. So
+/// the bound is the fix: with it, that mutation produces a wrong prefix instead
+/// of an OOM, and `compact_u16_matches_solanas_encoding` catches it.
+///
+/// # Panics
+///
+/// Debug builds only, when `value` does not fit the format. Every call site
+/// passes a count the message builder has already bounded -- accounts at 255 by
+/// [`Unbuildable::TooManyAccounts`], and the rest by what a transaction can
+/// hold -- so a value past `u16::MAX` here means a caller changed, not that
+/// input got large.
 fn compact_u16(value: usize, out: &mut Vec<u8>) {
     let mut remaining = value;
-    loop {
+    for _ in 0..COMPACT_U16_MAX_BYTES {
         let byte = u8::try_from(remaining & 0x7f).unwrap_or(0);
         remaining >>= 7;
         if remaining == 0 {
@@ -115,6 +144,10 @@ fn compact_u16(value: usize, out: &mut Vec<u8>) {
         }
         out.push(byte | 0x80);
     }
+    debug_assert!(
+        remaining == 0,
+        "{value} does not fit a compact-u16; the prefix written is truncated"
+    );
 }
 
 /// Builds the legacy message bytes for `instructions`, paid for by `payer`.
@@ -370,6 +403,30 @@ mod tests {
         out.clear();
         compact_u16(16_384, &mut out);
         assert_eq!(out, vec![0x80, 0x80, 0x01]);
+        out.clear();
+        // The top of the format's range, and the reason the loop's bound is
+        // three rather than two. A bound one too small would truncate here
+        // rather than looping, which is the failure this test exists to name.
+        compact_u16(65_535, &mut out);
+        assert_eq!(out, vec![0xff, 0xff, 0x03]);
+    }
+
+    #[test]
+    fn the_prefix_is_never_longer_than_the_format_allows() {
+        // The bound, asserted rather than trusted. An unbounded loop here is
+        // an unbounded *allocation* -- every iteration pushes -- and it killed
+        // a CI runner outright when a mutant made the exit condition never
+        // fire. A tool cannot time out a mutant that takes the machine with it.
+        for value in [0usize, 1, 127, 128, 16_383, 16_384, 65_535] {
+            let mut out = Vec::new();
+            compact_u16(value, &mut out);
+            assert!(
+                out.len() <= COMPACT_U16_MAX_BYTES,
+                "{value} encoded to {} bytes",
+                out.len()
+            );
+            assert!(!out.is_empty(), "{value} encoded to nothing");
+        }
     }
 
     #[test]

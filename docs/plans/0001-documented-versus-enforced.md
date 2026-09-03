@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Plan 0001 — Close the gaps design 0004 found
 
-Status: in progress
+Status: landed — see the handback
 Branch: phase-2-3-roast-and-analyst
 Base:   9c41555
 Planned by: Opus 5, 2026-09-03
@@ -165,12 +165,30 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       with no commit created, allowed on a branch with the diffstat printed,
       and the deletion warning shown. Installed here (`core.hooksPath` was
       unset before); `git config --unset core.hooksPath` undoes it.
-- [ ] 10. P2.1 — trim `AGENTS.md` §4 rule 1's status prose into STATE.md
-- [ ] 11. P2.2 — backfill the nine `LEARNINGS.md` entries that name a habit
-      rather than an artefact
-- [ ] 12. P2.3 — `radar-serve/src/lib.rs`: 1,366 code lines against 79 of test,
-      in the internet-facing crate. Lift SIWS out. The test ratio is the
-      finding, not the line count.
+- [x] 10. P2.1 — done as item 5d, raised. Left here so the roadmap's own
+      numbering still resolves.
+- [x] 11. P2.2 — done as item 8+11, together with the index, because an index
+      over entries that do not share a shape is an index of nothing.
+- [x] 12. P2.3 — `radar-serve/src/lib.rs`
+      done: Sign-In With Solana lifted into
+      [`crates/radar-serve/src/siws.rs`](../../crates/radar-serve/src/siws.rs) —
+      both handlers, both request bodies, `nonce_in`, `domain_from`,
+      `random_nonce`, and the four tests that were theirs. `lib.rs` goes
+      1,366 code lines to 1,216; the new module is 182 code against 57 of test,
+      and its tests are visibly its tests rather than four of twenty-six in a
+      file about everything.
+      **It exposed a defect that was already there.** Two doc-comment blocks —
+      one for `guard`, one for `customer_wallet` — were stacked with no item
+      between them and were being silently absorbed onto `ChallengeBody`. So
+      the auth layer and the wallet endpoint, the two things in this crate most
+      worth documenting, had their documentation attached to a struct that is
+      three fields of deserialisation. Both reattached.
+      `-p radar-serve` 196 passed; workspace 89 test binaries green, clippy
+      clean `--all-targets`, `cargo fmt --check` clean.
+      **Not claimed:** `lib.rs` is still 1,216 code lines against 26 of test.
+      0004 §3.5's finding was the ratio in the internet-facing crate, and
+      lifting SIWS improves it without fixing it. `api.rs` at 1,784 lines and
+      `access.rs` at 1,279 are the next two, and neither is in this plan.
 
 ## Open questions for Josh
 
@@ -183,13 +201,26 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
 
 ## Handback
 
-Stopped at: item 6. Items 1–5 and half of 9 are on disk and green; **nothing is
-committed** — Josh asked to be asked first. `repo-conformance` is 24 tests, up
-from 21, and each of the five new rows was verified to fail when the thing it
-asserts is broken.
-Next action: item 6, `required-checks.txt` (0004 §5 item 3, ~40 lines) — read
-`required-checks.txt` against the justfile recipe names and `ci.yml`'s job
-names, and assert they agree. Then item 7, which fails on four rows today and so
-needs the four collisions resolved before the check can go green.
-Do not: touch `Policy::CLOSED`, and do not commit onto local `main` — this work
-belongs on `phase-2-3-roast-and-analyst`.
+Stopped at: **nothing outstanding in this plan.** Items 1 through 12 are done,
+committed and pushed on `phase-2-3-roast-and-analyst`. Design 0004's roadmap is
+complete, P0 through P3, plus three items that came out of `0025` and were not
+in it.
+
+What exists now that did not: `repo-conformance` is 28 tests, up from 21. Each
+of the seven new ones was verified by breaking the thing it asserts and watching
+it fail, and two of them found real defects on their first run — an elided path
+in this plan file, and a parser fault in the check itself, which is recorded in
+the commit rather than quietly fixed.
+
+Next action: nothing here. If picking this up cold, the open work is elsewhere —
+`docs/STATE.md`'s "Where to start", and the three blockers on
+`fix/interface-truth-repairs` that need Josh.
+
+Do not: touch `Policy::CLOSED`. Do not commit onto local `main` — `just hooks`
+now refuses it, but the hook can be bypassed and the refusal is the point.
+
+**The one date to keep.** `docs/plans/` carries design 0002's kill condition and
+this plan is its first and only instance. **By 2026-09-17, if handback blocks are
+being written and not read, delete the directory.** Nothing about having built it
+makes it worth keeping — that is the whole argument of LEARNINGS 1, 9 and 10, and
+this file is not exempt from it.

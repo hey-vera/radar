@@ -100,7 +100,23 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       re-tested. AGENTS.md rule 3 updated to say which half is type-enforced and
       which is still four call sites. `-p radar-provider` 38 passed, clippy
       clean, workspace `--all-targets` builds.
-- [ ] 6. P1.2 — `required-checks.txt` consistency check (~40 lines)
+- [x] 6. P1.2 — `required-checks.txt` consistency check
+      done: `the_required_checks_file_agrees_with_the_justfile_and_the_workflow`
+      plus three parsers (`required_checks`, `justfile_recipes`,
+      `workflow_contexts`) with their own unit test, because an empty parse
+      would make the whole assertion vacuous. Checks both directions: every
+      required context is one a job can produce, every command is a real recipe
+      or an explicit `github-only:`, and every recipe in the `check` matrix is
+      required — the last catches the failure the file's own comment records
+      about `web`, a check that ran and gated nothing for days.
+      Verified to bite in both directions. 26 passed.
+      **The first run reported a false positive and that is the useful part.**
+      It claimed `just mutants` had no recipe. It does, at `justfile`:98 — it
+      takes parameters (`mutants base="origin/main" shard="":`) and the parser
+      read everything before the colon as the name. It also read
+      `cargo := env(...)` as a recipe. Both fixed and pinned in the parser test.
+      Under the 10% effective-false-positive bar this check would have been
+      deleted, not tuned, had the fault been in the rule rather than the parser.
 - [ ] 7. P1.3 — one test file, one owning document. Fails on four rows today.
 - [ ] 8. P1.4 — the `LEARNINGS.md` index table (~30 lines)
 - [~] 9. P1.5, second half — the invisible-document hole

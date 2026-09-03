@@ -376,6 +376,90 @@ pub fn untracked_documents() -> Vec<String> {
         .collect()
 }
 
+/// Parses `.github/required-checks.txt` into `(context, command)` pairs.
+///
+/// Left of the first `=` is the status-check context exactly as the branch
+/// ruleset names it; right of it is how the job runs. Comments and blank lines
+/// are dropped. Split out from the test because a parser can be tested and a
+/// file read cannot.
+#[must_use]
+pub fn required_checks(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(c, r)| (c.trim().to_string(), r.trim().to_string()))
+        .collect()
+}
+
+/// Recipe names defined in the justfile.
+///
+/// A recipe is a line beginning at column zero with a name and a colon. Two
+/// shapes have to be told apart from it, and the first version of this function
+/// got both wrong:
+///
+/// - **`name := value` is a variable**, not a recipe. `cargo := env(...)` read
+///   as a recipe called `cargo`.
+/// - **A recipe may take parameters**, and they sit between the name and the
+///   colon: `mutants base="origin/main" shard="":`. Taking everything before
+///   the colon read that as a recipe nobody could ever have named, so the check
+///   reported a real recipe as missing.
+///
+/// Recipes starting with `_` are internal and are not checks.
+#[must_use]
+pub fn justfile_recipes(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter(|l| !l.starts_with([' ', '\t', '#']))
+        .filter_map(|l| {
+            let (head, rest) = l.split_once(':')?;
+            if rest.starts_with('=') {
+                return None;
+            }
+            head.split_whitespace().next()
+        })
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with('_')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Status-check contexts a workflow can actually produce.
+///
+/// Two sources, because the workflow has two shapes. A job's `name:` at four
+/// spaces of indentation is a context directly; a step's `- name:` is not, and
+/// the indentation is what tells them apart. A `matrix.recipe` list fans one
+/// job out into one context per entry, which is where five of the nine come
+/// from.
+#[must_use]
+pub fn workflow_contexts(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("    name: ") {
+            let name = name.trim();
+            // A templated job name names no context on its own; the matrix
+            // below it does.
+            if !name.contains(TEMPLATE_OPEN) {
+                out.insert(name.to_string());
+            }
+        }
+        if let Some(list) = line.trim().strip_prefix("recipe: [")
+            && let Some(list) = list.strip_suffix(']')
+        {
+            out.extend(list.split(',').map(|r| r.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// The opening of a GitHub Actions expression, spelled out so this file does
+/// not contain a literal one for a workflow linter to trip over.
+const TEMPLATE_OPEN: &str = "${{";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -660,6 +744,127 @@ mod tests {
                 "{c} depends on radar-signer outside [dev-dependencies]; only radar-exec may, and only through the signer process (AGENTS.md rule 1)"
             );
         }
+    }
+
+    #[test]
+    fn the_required_checks_file_agrees_with_the_justfile_and_the_workflow() {
+        // The file says it itself: "Adding a check means adding it in three
+        // places: the ruleset, a workflow job, and here." Two of those three are
+        // in this repository and can be compared. The ruleset is not, which is
+        // why the file writes the `gh api` query rather than the answer -- and
+        // why LEARNINGS 13 happened, where the document describing the
+        // enforcement was the only evidence the enforcement existed.
+        //
+        // So this checks the half that is checkable: every context the file
+        // requires is one a workflow can actually produce, and every command it
+        // names is a recipe that exists.
+        let checks = std::fs::read_to_string(root().join(".github/required-checks.txt"))
+            .expect("required-checks.txt");
+        let justfile = std::fs::read_to_string(root().join("justfile")).expect("justfile");
+        let workflow =
+            std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+
+        let checks = required_checks(&checks);
+        assert!(
+            !checks.is_empty(),
+            "required-checks.txt parsed to nothing, which would make every assertion below vacuous"
+        );
+        let recipes = justfile_recipes(&justfile);
+        let contexts = workflow_contexts(&workflow);
+
+        for (context, command) in &checks {
+            assert!(
+                contexts.contains(context),
+                "required-checks.txt requires the context {context:?}, and no job in ci.yml produces it. A required check no workflow reports is a check that never turns green. Produced: {contexts:?}"
+            );
+
+            // `github-only:` is the escape hatch and it is used once, for msrv,
+            // whose toolchain the host may not have. It is spelled out rather
+            // than inferred so that adding a second one is a deliberate act.
+            if command.starts_with("github-only:") {
+                continue;
+            }
+            let recipe = command.strip_prefix("just ").unwrap_or_else(|| {
+                panic!(
+                    "required-checks.txt maps {context:?} to {command:?}, which is neither `just <recipe>` nor `github-only: <reason>`. The point of the file is that the workflow holds no copy of the command"
+                )
+            });
+            assert!(
+                recipes.contains(recipe),
+                "required-checks.txt maps {context:?} to `just {recipe}`, and the justfile has no such recipe. Recipes: {recipes:?}"
+            );
+        }
+
+        // And the other direction, for the fan-out only. A job may exist without
+        // being required -- `mutants-shards` is one, deliberately, since
+        // `mutants` gates on it. But a recipe added to the `check` matrix is a
+        // check somebody meant to run, and one that runs while gating nothing is
+        // the quieter failure the file's own comment records about `web`.
+        let required: BTreeSet<&str> = checks.iter().map(|(c, _)| c.as_str()).collect();
+        for line in workflow.lines() {
+            if let Some(list) = line.trim().strip_prefix("recipe: [")
+                && let Some(list) = list.strip_suffix(']')
+            {
+                for recipe in list.split(',').map(str::trim) {
+                    assert!(
+                        required.contains(recipe),
+                        "ci.yml runs {recipe:?} in the check matrix and required-checks.txt does not require it. A check that runs and gates nothing looks like a gate and is not one -- require it, or take it out of the matrix"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_required_checks_parsers_read_what_the_files_actually_say() {
+        // Three parsers, three ways to be silently empty -- and an empty result
+        // makes the assertions above pass for any repository at all. Each is
+        // pinned against the shape it must not misread.
+        let parsed = required_checks(
+            "# a comment = not a check\n\n  build = just build\nmsrv = github-only: no local recipe\n",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ("build".to_string(), "just build".to_string()),
+                (
+                    "msrv".to_string(),
+                    "github-only: no local recipe".to_string()
+                ),
+            ],
+            "a comment containing `=` must not read as a check, and the value keeps its own colons"
+        );
+
+        // Every shape this has to tell apart, including the two that were wrong
+        // on the first run: a variable assignment, and a recipe with parameters.
+        let recipes = justfile_recipes(concat!(
+            "cargo := env(\"RADAR_CARGO\", \"cargo\")\n",
+            "check: _disk build\n",
+            "    cargo test --cfg a:b\n",
+            "_disk:\n",
+            "mutants base=\"origin/main\" shard=\"\":\n",
+            "web:\n",
+        ));
+        assert_eq!(
+            recipes,
+            ["check", "mutants", "web"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "`:=` is a variable, a parameterised recipe is named by its first word, an indented body line is not a recipe, and an underscore recipe is not a check"
+        );
+
+        let templated = format!("    name: {TEMPLATE_OPEN} matrix.recipe }}}}");
+        let workflow = format!(
+            "  check:\n{templated}\n        recipe: [build, tests]\n  web:\n    name: web\n    steps:\n      - name: every shard passed\n"
+        );
+        assert_eq!(
+            workflow_contexts(&workflow),
+            ["build".to_string(), "tests".to_string(), "web".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "a step name is not a context and a templated job name names none by itself"
+        );
     }
 
     #[test]

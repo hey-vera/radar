@@ -63,7 +63,7 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       Not in 0004's roadmap; folded in because it is the same class of fix —
       a standard that lived in a chat message now lives in the file agents read.
 - [x] 5c. Hold the roadmap against published evidence
-      done: `docs/research/0025-...md`. Josh asked whether any of this actually
+      done: [`0025`](../research/0025-what-the-evidence-says-about-how-this-repository-is-run.md). Josh asked whether any of this actually
       works or merely reads well. Three habits do not survive: `AGENTS.md` at
       519 lines against a study finding context files give no success-rate lift
       and cost 20% more; mutation testing on changed *lines* against Google
@@ -72,14 +72,20 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       earlier the same day were reverted to one line by their own argument.
       `AGENTS.md` §5 gained the enforcement ladder and the 10% bar; §6 gained
       the arid-code carve-out.
-- [ ] 5d. P2.1, raised — the real `AGENTS.md` reduction
-      next: 0004 proposed a 30-line trim. `0025` §1b argues for far more, with
-      a rule for what belongs: `AGENTS.md` holds what an agent must know
-      *before* it can safely act. Status moves to `docs/STATE.md`; anything a
-      check enforces becomes a pointer, not a restatement. **Rule 1 and the
-      money-touching invariants do not move.** The file is 532 lines today —
-      it went *up* by 13 while writing the note that says to cut it, which is
-      the argument's own evidence.
+- [x] 5d. P2.1, raised — the real `AGENTS.md` reduction
+      done: 519 -> 361 lines, 338 deletions against 167 insertions. Every rule
+      kept; three status blocks relocated — the customer-lane composition to
+      `docs/STATE.md` (which already says it exists to hold what AGENTS.md
+      should not), the spend-meter wiring, which STATE.md already carried, and
+      the claw-net documentation story, which LEARNINGS already carried.
+      Verified by grepping the new file for each dropped headline phrase.
+      `repo-conformance` caught an elided path in this very plan file while
+      checking it, which is the check earning its place.
+      **Stopped at 361, not the ~150 a secondary source suggested.** Rule 1 and
+      rule 3 keep their long precise forms on purpose: both paragraphs record
+      that an earlier, terser version of themselves was read as claiming more
+      than it did. Cutting those is the exact failure the file exists to stop,
+      and the 150 figure is a blog-post number, not one from the paper.
 - [ ] 5e. Close the `Observed<T>` gap or downgrade the claim
       next: `AGENTS.md` invariant 3 says the watermark cannot be unwrapped;
       enforcement is a hand-written `as_of.admits()` filter in `reader.rs`.

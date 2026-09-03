@@ -202,6 +202,25 @@ inert.
 the pipeline, for the local wallet or a customer's. Writing one is opening the
 trading path, and it is a decision about money rather than a wiring task.
 
+**The customer lane also composes, as of 2026-09-01**, in
+[`the_customer_lane_composes.rs`](../crates/radar-exec/tests/the_customer_lane_composes.rs),
+and its shape differs from the local one in the way that matters: **no process in
+Radar can produce a signature on its own.** Three parties hold one thing each —
+the executor an application credential that authorises nothing, `radar-signer` a
+P-256 key that authorises one request it has checked, and Privy the wallet key.
+Moved here from AGENTS.md rule 1 on 2026-09-03: it is status, and rule 1 is a
+rule.
+
+**What that test establishes.** An authorised trade reaches Privy signed. A trade
+for another token stops **inside Radar** and never reaches the network. A
+`Policy::CLOSED` in the signer's own file refuses the identical request a
+permissive one allows. The body Privy receives is the body the signer authorised.
+A spent signature allowance refuses before anything is signed. The signer in it
+is the real `verify::check`, not a stub.
+
+**What it does not.** Nothing has been signed by Privy, sent, or filled, and no
+customer has ever existed. `Policy::CLOSED` is still what ships.
+
 `radar route` is the first thing that runs any of it. It builds a swap
 transaction and describes it, holding no key and no RPC endpoint, so it cannot
 sign and cannot send. Every cost and failure rate in that composition is supplied

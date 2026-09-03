@@ -33,13 +33,14 @@ Every proposal below is aimed at one of those seven.
 
 ## 1. Where plans, todos and progress live
 
-**Proposed: in the repository, at `docs/plans/NNNN-slug.md`, on the branch that
+**Proposed: in the repository, under `docs/plans/` as a numbered slug, on the branch that
 implements them.** One file per unit of work. It is the plan, the todo list, the
 progress log and the handback note — not four files.
 
 They are in `C:\Users\Josh\.claude\plans\` today, and that location fails on its
-own evidence. The directory currently holds `cozy-sauteeing-lagoon.md`,
-`we-are-calling-this-abundant-shannon.md` and eight more like them, from at
+own evidence. The directory currently holds eleven files with generated
+three-word slugs for names -- `cozy-sauteeing-lagoon`, `abundant-shannon` and
+nine more like them -- from at
 least two different projects. The filenames are machine slugs, so you cannot
 find the plan for a commit; nothing links a plan to the branch it produced; a
 plan cannot be read in a PR diff; `repo-conformance` cannot see it; and the
@@ -285,7 +286,7 @@ this project money: LEARNINGS 11, 12, 18, 19 and 24 would each pass every one of
 them. The author-agent cannot review its own diff, because the reasoning that
 produced the bug is the reasoning that would review it. **This is the one place
 where a context boundary is worth paying for.** Propose
-`.claude/agents/reviewer.md` with `model: sonnet`, invoked before a PR leaves
+a reviewer agent definition under `.claude/agents/` with `model: sonnet`, invoked before a PR leaves
 draft, given exactly two things: the plan file and `git diff origin/main`. Not
 the transcript. Its question is "does this diff do what the plan says, and
 nothing else". Cheap, isolated, and the missing half of the loop.

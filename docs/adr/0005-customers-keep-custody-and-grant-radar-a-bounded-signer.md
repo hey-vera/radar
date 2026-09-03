@@ -2,7 +2,18 @@
 # ADR 0005 — Customers keep custody, and grant Radar a bounded signer
 
 **Date:** 2026-08-31
-**Status:** accepted
+**Status:** accepted — **vendor choice superseded by
+[ADR 0011](0011-one-wallet-system-two-authority-levels-on-turnkey.md)**, whose
+own amendment then *deferred* the vendor question entirely. The custody model
+below, the bounded signer, and the rule that a connected wallet is
+authentication rather than authority all transfer intact and are what rule 1
+cites. What no longer stands is the choice of *which* vendor holds a customer
+wallet: nothing is chosen, and neither Privy nor the Turnkey spike is live.
+
+**Precondition 3 — the disclosure, in the product, in the terms — is the one
+precondition in this ADR with no resolution note, and it is still open.** There
+is no terms of service, no privacy policy and no "not financial advice" text
+anywhere in this repository.
 **Decides:** how a customer's capital is held and how Radar is permitted to move
 it, for the public product.
 

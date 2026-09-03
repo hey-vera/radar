@@ -94,8 +94,17 @@ Four supporting reasons:
 4. **Solana is first-class.** Privy's depth is EVM and Solana is secondary — a
    real mismatch for a Solana-only product, and the risk that ruled it out.
 
-**Cost is not a constraint.** A free tier for development, then roughly
-$99/month for unlimited signatures across up to 2,000 wallets.
+~~**Cost is not a constraint.** A free tier for development, then roughly
+$99/month for unlimited signatures across up to 2,000 wallets.~~
+
+> **Wrong, and corrected in this ADR's own amendment below** — repeated here
+> because a reader who stops at this section would carry the error away. Neither
+> free tier had been looked up. Privy's is **50,000 monthly signatures** under
+> 499 monthly active wallets; Turnkey's is **25 signatures**, then $0.10 per
+> transaction or $99/month. Twenty-five signatures is a few minutes of a trading
+> bot, so cost *was* a constraint and the error ran in the direction that would
+> have cost money. AGENTS.md §2's "check a number before deciding on it" is this
+> paragraph.
 
 ### What Privy was better at, stated because it is true
 

@@ -23,11 +23,11 @@ said it was *"built and tested end to end"* with *"nothing missing"*. That
 sentence is exactly what [LEARNINGS](LEARNINGS.md) 10 retracts, so here is the
 distinction it was hiding:
 
-- **Composed** — `radar-exec`'s
-  [`lane_composes.rs`](crates/radar-exec/tests/lane_composes.rs) and
-  [`the_customer_lane_composes.rs`](crates/radar-exec/tests/the_customer_lane_composes.rs)
-  run strategy → kernel → signer → executor, and `Policy::CLOSED` refuses what a
-  permissive policy authorises.
+- **Composed** — `radar-exec`'s composition tests run strategy → kernel →
+  signer → executor, and `Policy::CLOSED` refuses what a permissive policy
+  authorises. [docs/STATE.md](docs/STATE.md) owns the account of what those
+  tests do and do not establish, for the local lane and the customer one, and
+  names them.
 - **Not exercised** — nothing has been signed by a wallet, sent, or filled.
   One production crate depends on `radar-exec`: `radar-cli`, which reaches
   `radar_exec::route` for `radar route` and prints unsigned bytes. Nothing in

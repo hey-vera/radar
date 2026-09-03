@@ -460,8 +460,43 @@ pub fn workflow_contexts(text: &str) -> BTreeSet<String> {
 /// not contain a literal one for a workflow linter to trip over.
 const TEMPLATE_OPEN: &str = "${{";
 
+/// Integration-test paths named anywhere in a document.
+///
+/// Normalised so that `../crates/x/tests/y.rs` from inside `docs/` and
+/// `crates/x/tests/y.rs` from the root are recognised as the same file --
+/// otherwise the rule built on this would pass precisely when the collision is
+/// between a document in `docs/` and one at the root, which is the common case.
+#[must_use]
+pub fn test_paths(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let bytes: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = "/tests/".chars().collect();
+    for start in 0..bytes.len() {
+        if !bytes[start..].starts_with(needle.as_slice()) {
+            continue;
+        }
+        let is_path = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
+        let mut from = start;
+        while from > 0 && is_path(bytes[from - 1]) {
+            from -= 1;
+        }
+        let mut to = start;
+        while to < bytes.len() && is_path(bytes[to]) {
+            to += 1;
+        }
+        let path: String = bytes[from..to].iter().collect();
+        if let Some(path) = path.strip_suffix(".rs") {
+            let path = path.trim_start_matches("../");
+            out.insert(format!("{path}.rs"));
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -724,6 +759,21 @@ mod tests {
             }
         }
 
+        // Row 2b -- the other pinned edge, and the reason it is here rather
+        // than in a rule of its own: docs/STATE.md describes `radar-provider` as
+        // the crate `radar-agent` meters through, and that sentence has already
+        // been stale once. Design 0004 §5 named this edge alongside the other
+        // two.
+        let provider_dependents: BTreeSet<String> = crate_directories()
+            .into_iter()
+            .filter(|c| c != "radar-provider")
+            .filter(|c| production_dependency(c, "radar-provider"))
+            .collect();
+        assert!(
+            provider_dependents.contains("radar-agent"),
+            "docs/STATE.md says radar-agent meters through radar-provider and the manifest does not agree; production dependents of radar-provider are {provider_dependents:?}"
+        );
+
         // Row 3 — nothing outside `radar-exec` binds a key. Rows 1 and 2 are
         // about a graph and a symbol; this one is about the sentence's actual
         // subject, which is that no shipped process can sign. It is cheap and
@@ -744,6 +794,38 @@ mod tests {
                 "{c} depends on radar-signer outside [dev-dependencies]; only radar-exec may, and only through the signer process (AGENTS.md rule 1)"
             );
         }
+    }
+
+    #[test]
+    fn one_test_file_is_accounted_for_by_one_document() {
+        // Three documents make claims about behaviour: AGENTS.md says what the
+        // rules are, README.md is the front page, docs/STATE.md is what has
+        // actually been built. When two of them name the same test file, two of
+        // them are describing the same evidence -- and design 0004 §3.1 is the
+        // case for why that matters: the sentence about radar-exec was wrong in
+        // both README.md and docs/STATE.md, because it had been written twice
+        // and corrected in neither.
+        //
+        // The rule is ownership, not silence. A document that wants to mention
+        // a test links the document that owns the account instead, which is what
+        // README.md now does for the composition tests.
+        const CLAIMANTS: &[&str] = &["AGENTS.md", "README.md", "docs/STATE.md"];
+
+        let mut owner: BTreeMap<String, &str> = BTreeMap::new();
+        let mut collisions: Vec<String> = Vec::new();
+        for document in CLAIMANTS {
+            let text = std::fs::read_to_string(root().join(document))
+                .unwrap_or_else(|e| panic!("cannot read {document}: {e}"));
+            for path in test_paths(&text) {
+                if let Some(first) = owner.insert(path.clone(), document) {
+                    collisions.push(format!("{path} in both {first} and {document}"));
+                }
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "these test files are accounted for by more than one document: {collisions:?} -- pick the one that owns the account and have the other link that document instead. Two documents describing one test is how the same sentence gets corrected in one place and not the other"
+        );
     }
 
     #[test]

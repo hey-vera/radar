@@ -117,7 +117,21 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       `cargo := env(...)` as a recipe. Both fixed and pinned in the parser test.
       Under the 10% effective-false-positive bar this check would have been
       deleted, not tuned, had the fault been in the rule rather than the parser.
-- [ ] 7. P1.3 — one test file, one owning document. Fails on four rows today.
+- [x] 7. P1.3 — one test file, one owning document
+      done: `one_test_file_is_accounted_for_by_one_document`, over AGENTS.md,
+      README.md and docs/STATE.md. `test_paths` normalises `../crates/...` from
+      inside `docs/` against `crates/...` from the root — without that the rule
+      would pass exactly when the collision is between a root document and a
+      `docs/` one, which is every case that has actually occurred.
+      0004 counted four violations. Two of them were resolved by the AGENTS.md
+      trim in item 5d; the remaining two were `lane_composes.rs` and
+      `the_customer_lane_composes.rs` in both README.md and docs/STATE.md.
+      README now links docs/STATE.md, which owns the account, rather than the
+      tests. Verified to bite. 27 passed, clippy clean.
+      Also added the third dependency row 0004 §5 item 1 named and item 2 had
+      missed: `radar-provider` must have `radar-agent` among its production
+      dependents, because docs/STATE.md says so and that sentence has been
+      stale once already.
 - [ ] 8. P1.4 — the `LEARNINGS.md` index table (~30 lines)
 - [~] 9. P1.5, second half — the invisible-document hole
       done: `untracked_documents()` and

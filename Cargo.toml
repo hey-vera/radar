@@ -36,7 +36,7 @@ radar-store = { path = "crates/radar-store", version = "0.0.1" }
 # compromised into a process that will eventually hold a signing key, so the bar
 # for adding one is "the alternative is writing it ourselves and getting it wrong".
 blake3 = "1.5"
-ed25519-dalek = "2.1"
+ed25519-dalek = "3.0"
 bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }

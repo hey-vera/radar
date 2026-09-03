@@ -149,15 +149,22 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       `every_learnings_entry_names_what_catches_a_recurrence_and_is_indexed`
       holds both halves. Verified to bite on a new entry with no mechanism line
       and on an entry with no index row. 28 passed, clippy clean.
-- [~] 9. P1.5, second half — the invisible-document hole
-      done: `untracked_documents()` and
-      `no_markdown_document_is_invisible_to_these_checks` refuse when a
-      markdown file exists that `git ls-files` cannot see; `.gitignore` is the
-      escape hatch. Verified to bite with a scratch file. 24 passed, clippy
-      clean.
-      next: the other half — `scripts/hooks/pre-commit` plus
-      `git config core.hooksPath scripts/hooks`, refusing a commit on `main`
-      and printing the staged diffstat. Design 0002 §5 specifies it.
+- [x] 9. P1.5 — both halves
+      done (first half, earlier): `untracked_documents()` and
+      `no_markdown_document_is_invisible_to_these_checks`.
+      done (second half): `scripts/hooks/pre-commit` plus a `just hooks` recipe
+      that sets `core.hooksPath` — the hook is the file in the tree, so
+      reviewing it is reviewing a diff and changing it needs no reinstall.
+      It refuses a commit on `main` and prints the staged diffstat, with
+      deletions listed separately because that is the change least likely to
+      look wrong in a diffstat nobody opened — the one that lost `AGENTS.md` on
+      2026-09-02. **It fails open** on everything else; a hook that refuses for
+      its own reasons is worse than no hook, and this one runs on Josh's
+      machine.
+      Verified in a throwaway repository, all three paths: refused on `main`
+      with no commit created, allowed on a branch with the diffstat printed,
+      and the deletion warning shown. Installed here (`core.hooksPath` was
+      unset before); `git config --unset core.hooksPath` undoes it.
 - [ ] 10. P2.1 — trim `AGENTS.md` §4 rule 1's status prose into STATE.md
 - [ ] 11. P2.2 — backfill the nine `LEARNINGS.md` entries that name a habit
       rather than an artefact

@@ -272,8 +272,11 @@ decisions about a trade-off that belongs to the owner. LEARNINGS 26.
   likely to look wrong in a diffstat nobody opened, and that is exactly how
   `AGENTS.md` was deleted on 2026-09-02.
 - **Stage by path, and know your branch.** `git add -A` does not appear in this
-  repository. Run `git branch --show-current` before the first commit of a
-  session; a commit that lands on local `main` has to be moved by hand.
+  repository. A commit that lands on local `main` has to be moved by hand, so
+  `just hooks` installs a versioned `pre-commit` that refuses one and prints the
+  staged diffstat — deletions separately, because that is the change least
+  likely to look wrong in a diffstat nobody opened. It fails open on anything
+  else: a hook that refuses for its own reasons is worse than no hook.
 - **Production is not yours to restart.** `guardian` has full sudo but no
   NOPASSWD entry for radar, so installing `radar-serve` needs a human at an
   interactive terminal. That is deliberate.
@@ -355,6 +358,7 @@ The repository is the source of truth, not the conversation.
 ## Build and test
 
 ```bash
+just hooks   # once per clone: refuse a commit on `main`, show the staged diff
 just check   # build, tests, lint, fmt — the edit-compile loop
 just ci      # everything a runner can do
 ```

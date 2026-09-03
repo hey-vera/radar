@@ -317,6 +317,18 @@ tidy:
     rm -rf target/debug mutants.out mutants.out.old
     echo "freed ~${before}GB of build cache; the next build starts cold."
 
+# Points git at the versioned hooks. Run once per clone.
+hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `core.hooksPath` rather than copying into `.git/hooks`: the hook is then
+    # the file in the tree, so a change to it takes effect without reinstalling
+    # and a review of the hook is a review of the diff.
+    git config core.hooksPath scripts/hooks
+    chmod +x scripts/hooks/* 2>/dev/null || true
+    echo "hooks: $(git config --get core.hooksPath)"
+    echo "undo with: git config --unset core.hooksPath"
+
 # --- operator commands --------------------------------------------------------
 
 # What the system is doing right now: ingestion lag, store contents, the serving

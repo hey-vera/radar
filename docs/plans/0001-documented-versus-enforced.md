@@ -62,6 +62,29 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       `feedback-talk-to-josh-plainly` so it applies outside this repo.
       Not in 0004's roadmap; folded in because it is the same class of fix —
       a standard that lived in a chat message now lives in the file agents read.
+- [x] 5c. Hold the roadmap against published evidence
+      done: `docs/research/0025-...md`. Josh asked whether any of this actually
+      works or merely reads well. Three habits do not survive: `AGENTS.md` at
+      519 lines against a study finding context files give no success-rate lift
+      and cost 20% more; mutation testing on changed *lines* against Google
+      cutting 450 mutants to under 20 by skipping arid code; and a missing
+      false-positive bar for `repo-conformance`. The §9 style paragraphs added
+      earlier the same day were reverted to one line by their own argument.
+      `AGENTS.md` §5 gained the enforcement ladder and the 10% bar; §6 gained
+      the arid-code carve-out.
+- [ ] 5d. P2.1, raised — the real `AGENTS.md` reduction
+      next: 0004 proposed a 30-line trim. `0025` §1b argues for far more, with
+      a rule for what belongs: `AGENTS.md` holds what an agent must know
+      *before* it can safely act. Status moves to `docs/STATE.md`; anything a
+      check enforces becomes a pointer, not a restatement. **Rule 1 and the
+      money-touching invariants do not move.** The file is 532 lines today —
+      it went *up* by 13 while writing the note that says to cut it, which is
+      the argument's own evidence.
+- [ ] 5e. Close the `Observed<T>` gap or downgrade the claim
+      next: `AGENTS.md` invariant 3 says the watermark cannot be unwrapped;
+      enforcement is a hand-written `as_of.admits()` filter in `reader.rs`.
+      By the ladder this is a level-4 claim about a level-1 guarantee. Either
+      make it true in the type or stop saying it.
 - [ ] 6. P1.2 — `required-checks.txt` consistency check (~40 lines)
 - [ ] 7. P1.3 — one test file, one owning document. Fails on four rows today.
 - [ ] 8. P1.4 — the `LEARNINGS.md` index table (~30 lines)

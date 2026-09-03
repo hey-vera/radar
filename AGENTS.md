@@ -306,6 +306,17 @@ compiles and the tests pass — in which case the tests are also wrong.
 - **A crate nothing depends on is not a design, it is a document that compiles.**
   This project has produced three, and LEARNINGS 1, 9 and 10 are all that shape.
   Before building a layer, name its caller.
+- **Enforce a property at the cheapest level that can hold it, and only there.**
+  In order: (1) make it impossible — a type, a private field, an absent API;
+  (2) one mechanical check, in one place; (3) a test, when it is a behaviour and
+  not a shape; (4) prose, only when 1-3 genuinely cannot carry it. **A guarantee
+  the type system already makes must not also be tested.** That is the redundancy
+  to refuse: proving what is already true costs real time and real attention, and
+  it is why `Amount` carries its unit in the type rather than in an assertion.
+  See [`0025`](docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md) §2.
+- **A check that fires on a change a reasonable person would make is worse than
+  no check** — it spends the credibility of every other check. Google's bar is an
+  effective false-positive rate under 10%. Delete such a check; do not tune it.
 - Use existing project tools and patterns before inventing a workaround.
 - Add comments, validation or abstraction where they carry real value. Comments
   here explain *why*, and especially why an obvious alternative is wrong.
@@ -320,7 +331,14 @@ compiles and the tests pass — in which case the tests are also wrong.
 Two standards specific to here.
 
 **A test that cannot fail is not a test.** Mutation testing (`just mutants`) is
-required on changed code, and it keeps finding assertions that were vacuous: a
+required on changed *behaviour* — not on every changed line. Google's run of this
+at scale produced over 450 mutants for a typical change and got it under twenty
+by refusing to generate them for uncovered and *arid* code, lines where a
+mutation teaches nothing; 87% of their mutants died, so most of that work only
+confirmed what was already true
+([`0025`](docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md) §2).
+Mutate the logic. Skip the plumbing, and say so rather than writing a test to
+protect it. Where it does run it keeps finding assertions that were vacuous: a
 row count that passed with a broken key, `a + (b - a) == b`, a truncation cut at
 a point where the data was padding. When a mutant survives, either write the test
 or record in [`.cargo/mutants.toml`](.cargo/mutants.toml) *why* it is equivalent —
@@ -472,17 +490,12 @@ alive on the owner's machine, and buys nothing that checking later would not.
   at the end.
 - Correct a material mistake plainly and briefly, then continue.
 
-**Write for a tired reader.** Josh asked for this on 2026-09-03 and it is not a
-mood, it is the standard. Small words. Short sentences. Short paragraphs. If a
-big word is needed, explain it in the next breath. Say what you did and why you
-did it, and stop.
-
-**Keep paths, commands and shas exact.** Prose gets simpler; identifiers never
-do. A rounded-off path costs more than a long sentence saves.
-
-**Every decision comes with a recommendation.** If Josh has to choose, give him
-the two or three real options, one line each, and say which one you would take
-and why. A question without a recommendation hands the work back.
+- Write for a tired reader: small words, short paragraphs, exact paths, and a
+  recommendation with every decision that is Josh's to make. This is a
+  preference about output rather than a rule about the codebase, so it is one
+  line here and the rest is in auto-memory
+  (`feedback-talk-to-josh-plainly`). See
+  [`0025`](docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md) §1a.
 
 ## 10. Persistent project state
 

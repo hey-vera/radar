@@ -626,11 +626,24 @@ async fn scoreboard(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     };
+    // A recent-enough answer is served rather than recomputed, labelled with the
+    // watermark it was computed at. See `MAX_STALE_SLOTS`.
+    if let Some((as_of, report)) = state.scoreboard.recent(watermark, &(), MAX_STALE_SLOTS) {
+        return Json(WithWatermark {
+            as_of: as_of.get(),
+            body: &*report,
+        })
+        .into_response();
+    }
     let computed = state.scoreboard.get_or_compute(watermark, (), || {
         api::scoreboard(&state.store, AsOf::at(watermark), api::ASSUMED_COST_BPS)
     });
     match computed {
-        Ok(report) => Json(&*report).into_response(),
+        Ok(report) => Json(WithWatermark {
+            as_of: watermark.get(),
+            body: &*report,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -723,6 +736,38 @@ fn watermark_of(state: &AppState) -> Result<radar_types::Slot, NoWatermark> {
         Ok(None) => Err(NoWatermark::Empty),
         Err(e) => Err(NoWatermark::Unreadable(e.to_string())),
     }
+}
+
+/// How far behind the current watermark a cached answer may be and still be
+/// served.
+///
+/// 150 slots is about a minute. The recorder advances the watermark roughly
+/// every fifty seconds, so keyed exactly, the cache missed about half the time
+/// and each miss cost 4.4 to 5.2 seconds against a 500ms budget. An answer
+/// about thousands of historical decisions does not change in a minute --
+/// outcomes are measured hourly -- so this trades a minute of staleness, stated
+/// on every response, for the budget.
+///
+/// It is deliberately not a duration. The store counts in slots, and converting
+/// would need a clock the read path does not have and a slot time that is a
+/// property of the network rather than of Radar.
+const MAX_STALE_SLOTS: u64 = 150;
+
+/// A response, with the watermark it was actually computed at.
+///
+/// `flatten` so the body keeps its shape and only gains a field: existing
+/// readers are unaffected, and every reader can now tell how old the answer is.
+///
+/// This type exists so that serving a stale answer without saying so is not
+/// something a handler can do by forgetting. An older answer rendered as the
+/// current one is rule 9's shape -- unknown presented as fresh -- and the whole
+/// argument for serving one at all is that it is labelled.
+#[derive(Serialize)]
+struct WithWatermark<'a, T> {
+    /// The watermark the body was computed at, which may be behind the store's.
+    as_of: u64,
+    #[serde(flatten)]
+    body: &'a T,
 }
 
 /// What Radar has decided, and where it stopped.
@@ -1073,11 +1118,22 @@ async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> 
     };
     // Keyed on the mint as well as the watermark, so a hit can never be another
     // token's evidence.
+    if let Some((as_of, evidence)) = state.token.recent(watermark, &mint, MAX_STALE_SLOTS) {
+        return Json(WithWatermark {
+            as_of: as_of.get(),
+            body: &*evidence,
+        })
+        .into_response();
+    }
     let computed = state.token.get_or_compute(watermark, mint.clone(), || {
         api::token_evidence(&state.store, &mint, AsOf::at(watermark))
     });
     match computed {
-        Ok(evidence) => Json(&*evidence).into_response(),
+        Ok(evidence) => Json(WithWatermark {
+            as_of: watermark.get(),
+            body: &*evidence,
+        })
+        .into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),

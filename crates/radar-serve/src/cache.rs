@@ -32,6 +32,29 @@
 //! look-ahead would be invisible, and it would be in the direction that flatters
 //! a result.
 //!
+//! # Exact is not enough on a store that is always moving
+//!
+//! Keyed exactly on the watermark, this cache missed about half the time in
+//! production. The recorder advances the watermark roughly every fifty seconds,
+//! so an answer is only reusable inside one flush window, and measured on the
+//! box a miss costs 4.4 to 5.2 seconds against a 500ms budget:
+//!
+//! ```text
+//! 0.148s  4.790s  0.216s  0.213s  4.386s  0.181s  5.193s  0.175s
+//! ```
+//!
+//! So [`Cache::recent`] will offer an answer computed at a slightly older
+//! watermark, and the caller serves it **labelled with the watermark it was
+//! actually computed at**. That is staleness, not look-ahead: rule 3 forbids
+//! reading *past* a watermark, and this reads further behind one. An answer
+//! about 7,543 historical decisions does not change in a minute, and outcomes
+//! are measured hourly.
+//!
+//! The labelling is the part that makes it honest, and it is not optional. An
+//! older answer served as though it were current is rule 9's shape — unknown
+//! rendered as fresh — so the response carries its own `as_of` and the caller
+//! has no way to serve one without it.
+//!
 //! # One entry, not a map
 //!
 //! Almost every request asks about the current watermark. A map would hold every
@@ -104,6 +127,32 @@ impl<T, K: PartialEq> Cache<T, K> {
         // the next request at the newer watermark simply recomputes.
         *entry = Some((at, key, Arc::clone(&value)));
         Ok(value)
+    }
+
+    /// The cached value if it answers this question at a watermark no more than
+    /// `max_lag` slots behind `at`.
+    ///
+    /// Returns the watermark it was computed at as well, because a caller that
+    /// cannot say how old the answer is must not serve it. That is why this
+    /// returns a pair rather than a value: the label is not an extra the caller
+    /// may forget.
+    ///
+    /// A cached entry from the *future* is never offered. It cannot arise from
+    /// this endpoint, whose watermark only advances, but a saturating
+    /// subtraction would silently treat one as fresh rather than as the bug it
+    /// would be.
+    #[must_use]
+    pub fn recent(&self, at: Slot, key: &K, max_lag: u64) -> Option<(Slot, Arc<T>)> {
+        let entry = self
+            .entry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        entry
+            .as_ref()
+            .filter(|(cached, asked, _)| {
+                asked == key && cached.get() <= at.get() && at.get() - cached.get() <= max_lag
+            })
+            .map(|(cached, _, value)| (*cached, Arc::clone(value)))
     }
 
     /// The cached value, if it answers exactly this question at exactly this
@@ -235,6 +284,63 @@ mod tests {
             .expect("ok");
         let b = cache.peek(Slot(1), &()).expect("hit");
         assert!(Arc::ptr_eq(&a, &b));
+    }
+
+    #[test]
+    fn a_recent_enough_answer_is_offered_with_the_watermark_it_was_computed_at() {
+        // The production fix. Keyed exactly, this missed about half the time --
+        // the recorder advances the watermark every ~50s -- and a miss measured
+        // 4.4 to 5.2 seconds against a 500ms budget.
+        let cache: Cache<u64> = Cache::new();
+        let runs = AtomicUsize::new(0);
+        cache
+            .get_or_compute(Slot(1000), (), counting(&runs, 7))
+            .expect("ok");
+
+        // Inside the allowance: offered, and it says how old it is. The label is
+        // returned rather than left to the caller, because an older answer
+        // served as though it were current is rule 9's shape.
+        let (as_of, value) = cache
+            .recent(Slot(1100), &(), 150)
+            .expect("within the allowance");
+        assert_eq!(*value, 7);
+        assert_eq!(as_of, Slot(1000), "labelled with when it was computed");
+
+        // The exact boundary, swept from both sides.
+        assert!(
+            cache.recent(Slot(1150), &(), 150).is_some(),
+            "exactly at it"
+        );
+        assert!(cache.recent(Slot(1151), &(), 150).is_none(), "one past it");
+
+        // And the allowance does not weaken the key.
+        let mints: Cache<u64, String> = Cache::new();
+        mints
+            .get_or_compute(Slot(1000), "mint-a".to_owned(), counting(&runs, 1))
+            .expect("ok");
+        assert!(
+            mints
+                .recent(Slot(1010), &"mint-b".to_owned(), 150)
+                .is_none(),
+            "a different mint is still a miss, however recent"
+        );
+    }
+
+    #[test]
+    fn an_answer_from_the_future_is_never_offered_as_recent() {
+        // Cannot arise from an endpoint whose watermark only advances, but a
+        // saturating subtraction would report a future entry as zero slots old
+        // -- treating the one genuinely alarming case as the freshest possible
+        // answer. Rule 3 in the direction that actually matters.
+        let cache: Cache<u64> = Cache::new();
+        let runs = AtomicUsize::new(0);
+        cache
+            .get_or_compute(Slot(2000), (), counting(&runs, 7))
+            .expect("ok");
+        assert!(
+            cache.recent(Slot(1000), &(), 150).is_none(),
+            "an entry 1000 slots ahead is not a recent answer"
+        );
     }
 
     #[test]

@@ -330,6 +330,18 @@ fn nonce_in(message: &str) -> Option<String> {
         .filter(|n| !n.is_empty())
 }
 
+/// The sign-in domain an instance is configured with, if any.
+///
+/// Extracted from `main` so it can be tested. Inline, the emptiness guard could
+/// be deleted and nothing noticed -- and what it guards is not cosmetic: a blank
+/// domain would have wallets sign a message naming no site at all, and the
+/// binding that stops a signature being replayed from another application is
+/// exactly that name.
+#[must_use]
+pub fn domain_from(raw: Option<String>) -> Option<String> {
+    raw.filter(|d| !d.trim().is_empty())
+}
+
 /// Thirty-two random bytes.
 fn random_nonce() -> [u8; 32] {
     use ring::rand::SecureRandom as _;
@@ -1297,5 +1309,58 @@ mod tests {
         // there is no `WWW-Authenticate` scheme to name.
         let response = denied(&access::Denied::Missing);
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn a_nonce_line_that_is_blank_is_not_a_nonce() {
+        // The guard exists because an empty nonce would be looked up in the
+        // challenge store, miss, and refuse -- but only by luck. A message
+        // carrying `Nonce: ` and nothing else is malformed, and saying so here
+        // keeps the store from being asked about the empty string at all.
+        assert_eq!(nonce_in("Nonce: abc123"), Some("abc123".to_owned()));
+        assert_eq!(nonce_in("Nonce:    spaced   "), Some("spaced".to_owned()));
+        assert_eq!(nonce_in("Nonce: "), None);
+        assert_eq!(nonce_in("Nonce:    "), None);
+        assert_eq!(nonce_in("no nonce here"), None);
+        assert_eq!(nonce_in(""), None);
+    }
+
+    #[test]
+    fn the_nonce_is_read_from_the_line_that_names_it() {
+        // Multi-line, because the message a wallet signs is multi-line and the
+        // nonce is not the first field.
+        let message = "site wants you to sign in:\naddress\n\nNonce: n-1\nIssued At: 5";
+        assert_eq!(nonce_in(message), Some("n-1".to_owned()));
+    }
+
+    #[test]
+    fn a_nonce_is_actually_random() {
+        // The mutation that prompted this replaced the whole function with a
+        // constant, and nothing failed. A fixed nonce defeats the entire
+        // anti-replay mechanism: every challenge would carry the same value, so
+        // one captured signature would authenticate forever.
+        let a = random_nonce();
+        let b = random_nonce();
+        assert_ne!(a, b, "two nonces must not be equal");
+        assert_ne!(a, [0u8; 32], "and must not be a fixed constant");
+        assert_ne!(a, [1u8; 32]);
+        // Not a randomness test -- that is the system source's job. This asserts
+        // the bytes were written at all, which is what the mutation removed.
+        assert!(a.iter().any(|byte| *byte != a[0]), "not all one value");
+    }
+
+    #[test]
+    fn a_blank_customer_domain_is_no_domain() {
+        // Rule 8. An instance that does not know its own site cannot bind a
+        // signature to it, and a blank string is not a site -- it is a missing
+        // setting that happens to be present.
+        assert_eq!(
+            domain_from(Some("radar.heyvera.org".to_owned())),
+            Some("radar.heyvera.org".to_owned())
+        );
+        assert_eq!(domain_from(None), None);
+        assert_eq!(domain_from(Some(String::new())), None);
+        assert_eq!(domain_from(Some("   ".to_owned())), None);
+        assert_eq!(domain_from(Some("\t\n".to_owned())), None);
     }
 }

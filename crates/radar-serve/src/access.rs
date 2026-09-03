@@ -1228,6 +1228,10 @@ mod tests {
         // the exception cannot quietly widen into "anything under
         // /v1/customer/ is public".
         assert_eq!(audience_of("/v1/customer/config"), Audience::Public);
+        // The sign-in pair, each named. Asserting only one of them left the
+        // other's clause free to break -- which mutation testing then did.
+        assert_eq!(audience_of("/v1/customer/siws/challenge"), Audience::Public);
+        assert_eq!(audience_of("/v1/customer/siws/verify"), Audience::Public);
         assert_eq!(audience_of("/v1/customer/wallet"), Audience::Customer);
         assert_eq!(audience_of("/v1/customer/events"), Audience::Customer);
         // And the prefix itself grants nothing.

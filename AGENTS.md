@@ -59,6 +59,12 @@ This is the value the repository is built on. Everything else is downstream of i
 - Surface uncertainty that materially affects a decision rather than resolving it
   silently in your own favour.
 
+**Check a number before deciding on it.** ADR 0011 chose a wallet vendor partly
+on cost, comparing free tiers neither of which had been looked up; the owner
+supplied the real figures and it was amended the same day. A decision that turns
+on a price, a quota or a limit is a decision that needs that value verified
+first, not a decision to make quickly and correct later.
+
 **Say when you were wrong — once, plainly, then continue.** Some of the most
 useful documents here are corrections: `0022`'s addendum reverses its own
 recommendation, and `0016` corrects `0014`'s headline by six times the signal it
@@ -294,6 +300,29 @@ having applied it by hand and understood the answer.
 put the wrong behaviour back, confirm a test fails, put it right. Otherwise you
 have a test that passes rather than a test that catches.
 
+### Working with CI
+
+**Do not push while a check you are waiting on is in flight.** The workflow sets
+`cancel-in-progress`, so every push kills the run before it. The fast jobs finish
+in a minute or two and go green either way; the slow one never finishes at all,
+which reads exactly like a broken check.
+
+On 2026-09-02 that cost most of a session. The mutation job was cancelled on
+every attempt for hours, was diagnosed as a reclaimed runner, then as a job too
+slow to finish, and was finally worked around by running it on the owner's
+workstation — to solve a problem created by pushing every few minutes.
+
+So, before concluding a check is broken:
+
+- **Establish that it ran.** `The operation was canceled` is not a failure
+  message, it is a statement that something cancelled it. `gh run list` with
+  timestamps against your own commits answers it in one command.
+- **A fast job passing while a slow one dies is evidence about duration**, not
+  about the slow job.
+- **If it genuinely cannot run, say so and stop.** Do not substitute your own
+  local run, and do not quietly drop the check. Both are decisions about a
+  trade-off that belongs to the owner.
+
 ## 7. Safety and reversibility
 
 - Prefer local, reversible actions. Never use a destructive one as a shortcut
@@ -352,6 +381,20 @@ plainly that the required check could not run, and let the owner decide.
 
 Silently skipping a check and silently burning somebody's computer are the same
 mistake — acting on a trade-off that was not yours to make.
+
+**Spend the machine sparingly the rest of the time, too:**
+
+- **One cargo process at a time.** Never two at once, and never a background
+  build alongside a foreground one.
+- **Scope to what you are editing.** `cargo clippy -p <crate>` and
+  `cargo test -p <crate>` while iterating. The workspace-wide gate is for once,
+  before committing — not after every edit.
+- **`just check` is the defined loop.** Prefer it to ad-hoc combinations:
+  alternating `cargo clippy` and `cargo test` with different flags gives them
+  different fingerprints, so each invalidates the other and rebuilds far more
+  than it needs to.
+- **Do not leave anything running when you finish.** Kill background jobs and
+  remove `mutants.out/` rather than leaving the disk full.
 
 ## 9. Communication
 

@@ -33,7 +33,7 @@ _default:
     @just --list --unsorted
 
 # The four fast checks, for the edit-compile loop. Not a substitute for `just ci`.
-check: build tests lint fmt
+check: _disk build tests lint fmt
 
 # Everything runnable off a GitHub runner.
 ci: build tests lint fmt cargo-deny licence-headers
@@ -246,6 +246,76 @@ web:
     fi
     echo "--- $passed web tests passed ---"
     npm run build
+
+
+# --- keeping the machine usable ----------------------------------------------
+#
+# `target/` only ever grows. Cargo never garbage-collects it, every distinct set
+# of flags keeps its own artefacts, and a mutation run multiplies both. On
+# 2026-09-03 it reached 127GB on a disk with 130GB free and the machine froze
+# hard enough to need a forced power-off.
+#
+# So the tooling enforces this rather than a document asking someone to remember.
+
+# Gigabytes of `target/` that trigger a warning, and a refusal.
+warn_gb := "20"
+stop_gb := "40"
+
+# Refuses to build on top of a `target/` that is about to fill the disk.
+#
+# A prerequisite of `check` rather than advice, because the failure it prevents
+# is one where the machine stops responding -- at which point nobody is reading
+# advice. Fixing it is one command and costs only a rebuild.
+_disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d target ]; then exit 0; fi
+    gb=$(du -sk target 2>/dev/null | awk '{print int($1/1048576)}')
+    if [ "${gb:-0}" -ge {{ stop_gb }} ]; then
+        echo "target/ is ${gb}GB, at or past the {{ stop_gb }}GB ceiling." >&2
+        echo "" >&2
+        echo "Cargo never prunes this directory: every distinct set of flags keeps" >&2
+        echo "its own artefacts and nothing removes the stale ones. Run:" >&2
+        echo "" >&2
+        echo "  just tidy" >&2
+        echo "" >&2
+        echo "It costs a rebuild and nothing else." >&2
+        exit 1
+    fi
+    if [ "${gb:-0}" -ge {{ warn_gb }} ]; then
+        echo "note: target/ is ${gb}GB. Run 'just tidy' before it becomes a problem." >&2
+    fi
+
+# What this checkout is costing the disk.
+disk:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for d in target target/debug target/release mutants.out mutants.out.old; do
+        [ -e "$d" ] && du -sh "$d" 2>/dev/null || true
+    done
+    echo ""
+    df -h . 2>/dev/null | tail -1 || true
+
+# Reclaims the build cache and stops anything left running.
+tidy:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Only ever touches build output -- `target/debug` and the mutation scratch
+    # directories -- all gitignored and regenerable. Nothing here can lose work.
+    # Stray cargo and rustc processes outlive the command that started them,
+    # especially a backgrounded one, and they hold both CPU and the files below.
+    # Killed first, or the removal races them.
+    if command -v taskkill >/dev/null 2>&1; then
+        taskkill //F //IM cargo.exe //T >/dev/null 2>&1 || true
+        taskkill //F //IM rustc.exe //T >/dev/null 2>&1 || true
+        taskkill //F //IM cargo-mutants.exe //T >/dev/null 2>&1 || true
+    else
+        pkill -f cargo-mutants >/dev/null 2>&1 || true
+        pkill -x rustc >/dev/null 2>&1 || true
+    fi
+    before=$(du -sk target 2>/dev/null | awk '{print int($1/1048576)}' || echo 0)
+    rm -rf target/debug mutants.out mutants.out.old
+    echo "freed ~${before}GB of build cache; the next build starts cold."
 
 # --- operator commands --------------------------------------------------------
 

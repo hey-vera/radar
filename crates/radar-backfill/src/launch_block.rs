@@ -140,6 +140,42 @@ pub fn query_for_shape(mint: &Address, slot: Slot, since: &str) -> String {
     )
 }
 
+/// Every slot in the window where a mint's transfers look like a bundle.
+///
+/// **One query for a token's whole life, not one per slot.** The obvious way to
+/// look for coordination after launch is to ask `query_for_shape` about each
+/// block in turn, and that is thousands of paid queries for one token — for a
+/// question the database can answer by grouping.
+///
+/// The band is applied in the `HAVING` rather than in Rust for the same reason:
+/// a query that returned every slot would return the token's entire history, of
+/// which almost none is interesting.
+///
+/// Bounded by `since` like every other query here, and for the reason
+/// [`LOOKBACK_HOURS`] gives: the width of that bound *is* the cost.
+#[must_use]
+pub fn query_for_bundle_slots(mint: &Address, since: &str) -> String {
+    let quotes = QUOTE_MINTS
+        .iter()
+        .map(|m| format!("'{m}'"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "SELECT toString(block_slot) AS slot,                 toString(uniqExact(destination)) AS recipients,                 toString(uniqExact(tx_signature)) AS transactions          FROM solana.token_transfers          WHERE block_timestamp >= '{since}'            AND mint = '{mint}' AND mint NOT IN ({quotes})          GROUP BY block_slot          HAVING uniqExact(destination) BETWEEN {low} AND {high}          ORDER BY block_slot          LIMIT {cap}",
+        low = radar_graph::BUNDLE_BAND.start(),
+        high = radar_graph::BUNDLE_BAND.end(),
+        cap = BUNDLE_SLOT_CAP,
+    )
+}
+
+/// The most bundle-shaped slots one query will return.
+///
+/// A cap rather than an unbounded read, and the number is not load-bearing:
+/// [`radar_graph::ongoing::strongest`] takes the strongest sighting, and a
+/// token with more than this many bundle-shaped blocks is already answered by
+/// the first few. It exists so a pathological mint cannot return a million rows.
+pub const BUNDLE_SLOT_CAP: usize = 256;
+
 /// How far back a launch-block query looks, in hours.
 ///
 /// # Why this replaced a fixed date, and what that cost
@@ -189,6 +225,14 @@ pub fn since(now: &str) -> String {
     crate::prices::shift_hours(now, -LOOKBACK_HOURS).unwrap_or_else(|| now.to_owned())
 }
 
+/// One bundle-shaped slot, as the query returns it.
+#[derive(serde::Deserialize)]
+struct BundleSlotRow {
+    slot: String,
+    recipients: String,
+    transactions: String,
+}
+
 impl LaunchBlockSource for CryptoHouseBlocks {
     type Error = QueryError;
 
@@ -214,6 +258,34 @@ impl LaunchBlockSource for CryptoHouseBlocks {
                     .map(|count| (row.authority, count))
             }),
         ))
+    }
+
+    fn bundle_slots(
+        &self,
+        mint: &Address,
+        launch: Slot,
+    ) -> Result<Vec<(u64, LaunchBlockShape)>, Self::Error> {
+        let rows: Vec<BundleSlotRow> = self
+            .client
+            .query(&query_for_bundle_slots(mint, &self.since))?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|row| {
+                // A slot that will not parse is dropped rather than read as
+                // zero. Zero is the launch slot, so an unparseable row would
+                // arrive as a *launch-block* sighting -- and a launch sighting
+                // carries research 0008's measured odds, which a row nobody
+                // could read has no claim to. Rule 9.
+                let slot: u64 = row.slot.parse().ok()?;
+                Some((
+                    slot.saturating_sub(launch.get()),
+                    LaunchBlockShape {
+                        recipients: row.recipients.parse().unwrap_or(0),
+                        transactions: row.transactions.parse().unwrap_or(0),
+                    },
+                ))
+            })
+            .collect())
     }
 
     fn shape_at(&self, mint: &Address, slot: Slot) -> Result<LaunchBlockShape, Self::Error> {

@@ -362,7 +362,39 @@ where
             Some(facts) => match blocks.shape_at(mint, facts.slot) {
                 Ok(shape) => {
                     shapes.observe(shape);
-                    Some(radar_graph::assess(shape).coordination)
+                    let at_launch = radar_graph::assess(shape).coordination;
+
+                    // The launch block is not the only place a bundle can
+                    // appear. A token can sit dormant for years and be bundled
+                    // by whoever picks it up, and reading only the launch leaves
+                    // it labelled clean on exactly the day that matters.
+                    //
+                    // One query for the token's whole window, not one per slot.
+                    // A failure here is *not* counted as `look_failed`: the
+                    // launch block was read, so the coordination gate is not
+                    // silently off, and conflating the two would make a broken
+                    // sweep look like an unread launch.
+                    let later = match blocks.bundle_slots(mint, facts.slot) {
+                        Ok(rows) => radar_graph::ongoing::strongest(rows),
+                        Err(e) => {
+                            eprintln!("  {mint}  later blocks unreadable: {e}");
+                            None
+                        }
+                    };
+                    // Printed only when the sweep found something the launch
+                    // block did not. A line repeating the launch verdict would
+                    // bury the case this exists for.
+                    if let Some(sighting) = later.filter(|s| s.coordination > at_launch) {
+                        println!(
+                            "  {mint}  bundled after launch: {:?} at {:?}",
+                            sighting.coordination, sighting.when
+                        );
+                    }
+
+                    // The stronger of the two verdicts. A launch that read clean
+                    // and a later block that did not is a token to refuse, and
+                    // taking the launch alone would refuse nothing.
+                    Some(later.map_or(at_launch, |s| s.coordination.max(at_launch)))
                 }
                 Err(e) => {
                     look_failed += 1;
@@ -902,6 +934,101 @@ mod tests {
     /// The same, plus a shape to return -- for the tests that reach the
     /// coordination read rather than only the prevalence table.
     struct ShapedBlocks(radar_graph::LaunchBlockShape);
+
+    /// A source whose launch block reads clean and whose later blocks do not.
+    ///
+    /// The year-three case: nothing about the launch was remarkable, and the
+    /// token was bundled long afterwards by whoever picked it up.
+    struct BundledLater {
+        launch: radar_graph::LaunchBlockShape,
+        later: Vec<(u64, radar_graph::LaunchBlockShape)>,
+    }
+
+    impl LaunchBlockSource for BundledLater {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Ok(self.launch)
+        }
+
+        fn bundle_slots(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<(u64, radar_graph::LaunchBlockShape)>, Self::Error> {
+            Ok(self.later.clone())
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            Err("not used by this test".to_owned())
+        }
+    }
+
+    /// A source whose launch block reads, and whose sweep does not.
+    struct SweepFails(radar_graph::LaunchBlockShape);
+
+    impl LaunchBlockSource for SweepFails {
+        type Error = String;
+
+        fn shape_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<radar_graph::LaunchBlockShape, Self::Error> {
+            Ok(self.0)
+        }
+
+        fn bundle_slots(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<(u64, radar_graph::LaunchBlockShape)>, Self::Error> {
+            Err("the sweep timed out".to_owned())
+        }
+
+        fn authorities_at(
+            &self,
+            _: &radar_types::Address,
+            _: radar_types::Slot,
+        ) -> Result<Vec<String>, Self::Error> {
+            Ok(Vec::new())
+        }
+
+        fn prevalence_table(&self) -> Result<radar_graph::prevalence::Table, Self::Error> {
+            Err("not used by this test".to_owned())
+        }
+    }
+
+    /// A universe holding one launch, for the sweep tests.
+    fn one_launch(mint: Address, slot: radar_types::Slot) -> Universe {
+        let mut launches = std::collections::BTreeMap::new();
+        launches.insert(
+            mint,
+            radar_strategy::assemble::LaunchFacts {
+                creator: Address::new([9u8; 32]),
+                slot,
+                observed_at: slot,
+            },
+        );
+        Universe {
+            launches,
+            creators: std::collections::BTreeMap::new(),
+            creators_observed_at: std::collections::BTreeMap::new(),
+            as_of: AsOf::at(slot),
+        }
+    }
 
     impl LaunchBlockSource for ShapedBlocks {
         type Error = String;
@@ -1657,6 +1784,98 @@ mod tests {
         assert!(
             pass.proposals.is_empty(),
             "nothing with no measurable exit should be proposed"
+        );
+    }
+
+    #[test]
+    fn a_token_bundled_after_launch_is_refused_even_though_its_launch_was_clean() {
+        // The whole point of wiring the ongoing detector. Before this the launch
+        // block was read once and the verdict stood forever -- so a token that
+        // sat dormant and was bundled years later stayed labelled clean on
+        // precisely the day it mattered.
+        //
+        // `UnusedQuoter` carries the second half of the claim: it panics if the
+        // exit is probed, so this asserts the candidate is refused *before*
+        // anything is paid for.
+        let mint = Address::new([4u8; 32]);
+        let slot = radar_types::Slot(1_000);
+        let blocks = BundledLater {
+            // Three recipients is unremarkable, and `assess` reads it as clean.
+            launch: radar_graph::LaunchBlockShape {
+                recipients: 3,
+                transactions: 3,
+            },
+            // Six, five million slots later: the bundle centre.
+            later: vec![(
+                5_000_000,
+                radar_graph::LaunchBlockShape {
+                    recipients: radar_graph::BUNDLE_CENTRE,
+                    transactions: 6,
+                },
+            )],
+        };
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &one_launch(mint, slot),
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &UnusedQuoter,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(
+            pass.refused_on_shape, 1,
+            "a bundle after launch must refuse the candidate"
+        );
+        assert_eq!(examined.len(), 1, "and the refusal is still recorded");
+        assert!(pass.proposals.is_empty());
+    }
+
+    #[test]
+    fn a_sweep_that_fails_does_not_read_as_an_unread_launch_block() {
+        // The two failures mean different things and are counted apart. An
+        // unreadable *launch* block leaves the coordination gate silently off,
+        // which is what `look_failed` exists to surface. An unreadable *sweep*
+        // leaves the launch verdict intact, so the gate is still doing its
+        // original job -- and counting it there would report a working gate as a
+        // broken one.
+        let mint = Address::new([5u8; 32]);
+        let slot = radar_types::Slot(1_000);
+        // The launch itself is bundled, so the candidate is refused on that
+        // alone and the exit is never probed.
+        let blocks = SweepFails(radar_graph::LaunchBlockShape {
+            recipients: radar_graph::BUNDLE_CENTRE,
+            transactions: 6,
+        });
+
+        let mints = [mint];
+        let mut examined = Vec::new();
+        let pass = paid_tier(
+            &one_launch(mint, slot),
+            &CreatorEdge::default(),
+            mints.iter(),
+            &Sources {
+                blocks: &blocks,
+                structures: &NoStructures,
+                quoter: &UnusedQuoter,
+            },
+            radar_types::MicroUsd::from_dollars(200.0),
+            slot,
+            &mut examined,
+        );
+
+        assert_eq!(pass.refused_on_shape, 1, "the launch block still decided");
+        assert_eq!(
+            pass.look_failed, 0,
+            "a failed sweep is not an unread launch block"
         );
     }
 }

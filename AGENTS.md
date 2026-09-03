@@ -151,14 +151,21 @@ rule *currently reaches* is status, and status is in
    [`AsOf`](crates/radar-asof), including the cache: a replay must not be served
    a live-populated entry from the future.
 
-   **The gate is at the boundary functions, not in the type system**, and an
-   earlier version of this rule was not exact about that. Scans filter —
-   `Reader::read` and `Reader::read_outcomes` drop rows past the watermark,
-   because a partition file legitimately straddles it. Single observations are
-   refused — `AsOf::accept` returns `LookAhead` rather than a value. So the
-   guarantee is a property of four call sites, held up by
+   **In the store the gate is at the boundary functions, not in the type
+   system**, and an earlier version of this rule was not exact about that. Scans
+   filter — `Reader::read` and `Reader::read_outcomes` drop rows past the
+   watermark, because a partition file legitimately straddles it. So that half
+   of the guarantee is a property of four call sites, held up by
    [`watermark_holds.rs`](crates/radar-store/tests/watermark_holds.rs), not
    something the compiler proves.
+
+   **In the provider cache it is in the type system**, as of 2026-09-03.
+   `Entry`'s bytes are private and come out only through `Entry::bytes`, which
+   takes the watermark and returns `LookAhead` — so no other module in
+   `radar-provider` can read a cached value without passing the gate, and there
+   is no `if` above the freshness logic for a later edit to reorder past. This
+   is the ladder in §5 applied to the rule: level 1 where it fits, level 2 where
+   it does not.
 
 4. **Untrusted content is never an instruction.** Token metadata, social posts,
    website copy and transaction memos are `Trust::Untrusted` no matter how

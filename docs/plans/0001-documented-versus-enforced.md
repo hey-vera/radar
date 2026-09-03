@@ -86,11 +86,20 @@ development. That is the whole of 0004 §7, P0 through P2 — not P0 alone.
       that an earlier, terser version of themselves was read as claiming more
       than it did. Cutting those is the exact failure the file exists to stop,
       and the 150 figure is a blog-post number, not one from the paper.
-- [ ] 5e. Close the `Observed<T>` gap or downgrade the claim
-      next: `AGENTS.md` invariant 3 says the watermark cannot be unwrapped;
-      enforcement is a hand-written `as_of.admits()` filter in `reader.rs`.
-      By the ladder this is a level-4 claim about a level-1 guarantee. Either
-      make it true in the type or stop saying it.
+- [x] 5e. Close the `Observed<T>` gap
+      done: `Observed<T>` and `AsOf::accept` had no caller outside their own
+      crate's tests — LEARNINGS 1/9/10's shape, a mechanism with no caller.
+      They had one available: `radar-provider`'s cache hand-wrote the same gate
+      as `if !as_of.admits(entry.observed_at)`, an `if` a later edit could
+      reorder past the freshness logic without breaking a test.
+      `Entry::bytes` is now private and readable only through
+      `Entry::bytes(as_of) -> Result<&[u8], LookAhead>`, so the read *is* the
+      check. Verified by compiling a violation from another module in the crate:
+      `error[E0616]: field `bytes` of struct `cache::Entry` is private`.
+      No runtime test added for it — per the ladder, a compiler guarantee is not
+      re-tested. AGENTS.md rule 3 updated to say which half is type-enforced and
+      which is still four call sites. `-p radar-provider` 38 passed, clippy
+      clean, workspace `--all-targets` builds.
 - [ ] 6. P1.2 — `required-checks.txt` consistency check (~40 lines)
 - [ ] 7. P1.3 — one test file, one owning document. Fails on four rows today.
 - [ ] 8. P1.4 — the `LEARNINGS.md` index table (~30 lines)

@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use radar_asof::AsOf;
+use radar_asof::{AsOf, LookAhead, Observed};
 use radar_types::{Latch, MicroUsd, Mutability, Revalidation, Slot};
 use serde_json::Value;
 
@@ -70,7 +70,13 @@ fn write_canonical(v: &Value, out: &mut String) {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Entry {
     /// The serialised value.
-    pub bytes: Vec<u8>,
+    ///
+    /// Private, and readable only through [`Entry::bytes`], which requires a
+    /// watermark. AGENTS.md rule 3 says nothing reads past its watermark; this
+    /// is that rule held by the type rather than by a call site remembering to
+    /// ask. The check below used to be an `if` in `decide` that a later edit
+    /// could have reordered past the freshness logic without breaking a test.
+    bytes: Vec<u8>,
     /// Content hash, used as the validator in a conditional request.
     pub hash: [u8; 32],
     /// The slot this value was true at.
@@ -85,6 +91,17 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// The cached value, if this entry is admissible at `as_of`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LookAhead`] when the entry was observed after the watermark.
+    /// Callers deciding whether to serve treat that as a miss rather than an
+    /// error; callers that expected the value are looking at a bug.
+    pub fn bytes(&self, as_of: AsOf) -> Result<&[u8], LookAhead> {
+        as_of.accept(Observed::new(self.bytes.as_slice(), self.observed_at))
+    }
+
     /// Builds an entry, hashing the value.
     #[must_use]
     pub fn new(
@@ -184,10 +201,9 @@ impl Cache {
 
     /// Decides what to do about a request as of a watermark.
     ///
-    /// A cached value observed *after* the watermark is unusable — that is the
-    /// point-in-time guarantee reaching into the cache. Without this check a
-    /// replay would happily serve a live-populated entry from the future and
-    /// silently reintroduce the look-ahead the whole design exists to prevent.
+    /// A cached value observed *after* the watermark is unusable, and reading
+    /// one is not possible here: the bytes come out of [`Entry::bytes`], which
+    /// takes the watermark. See the comment at the call site.
     pub fn decide(&mut self, key: CacheKey, mutability: Mutability, as_of: AsOf) -> Decision {
         if !mutability.is_cacheable() {
             self.stats.fetched += 1;
@@ -199,10 +215,15 @@ impl Cache {
             return Decision::Fetch;
         };
 
-        if !as_of.admits(entry.observed_at) {
+        // The point-in-time guarantee reaching into the cache. A replay served a
+        // live-populated entry from the future would silently reintroduce the
+        // look-ahead the whole design exists to prevent -- so reading the value
+        // *is* the check, rather than an `if` above it that a later edit could
+        // reorder past the freshness logic without breaking a test.
+        let Ok(bytes) = entry.bytes(as_of) else {
             self.stats.fetched += 1;
             return Decision::Fetch;
-        }
+        };
 
         let serve = match mutability.revalidation() {
             Revalidation::Never => true,
@@ -212,7 +233,7 @@ impl Cache {
         };
 
         if serve {
-            let bytes = entry.bytes.clone();
+            let bytes = bytes.to_vec();
             let cost = entry.refetch_cost;
             if let Some(e) = self.entries.get_mut(&key) {
                 e.hits += 1;

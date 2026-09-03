@@ -5,6 +5,27 @@
 **Store:** the live guardian VPS recorder, slots 441,040,080 – 441,520,140 (~2 days)
 **Source:** CryptoHouse `solana.token_transfers`, one query per batch of forty mints
 
+> **Superseded on 2026-09-03 by
+> [`0024`](0024-the-spike-became-a-hump-and-the-signal-moved.md), which re-ran
+> this on 18,268 launches instead of 80 per population.** Two things did not
+> survive, and this note's own warning is what caught them.
+>
+> - ~~68% of instantly-graduating launches have exactly six recipients~~ —
+>   **25.6%** [20.1–32.0]. The enrichment over the 5.2% control is real; the
+>   magnitude was wrong by 2.7×.
+> - ~~"a spike at six and holes on both sides"~~ — **the upper holes were
+>   sampling, not structure.** At n=207 the instant column carries 10.1%, 10.1%
+>   and 4.8% at seven, eight and nine.
+>
+> The real holes are at the *bottom*, and they are stronger than anything here:
+> **one to three recipients covers 71.6% of launches and graduates instantly in
+> 0.02% of them.** The 11.7× predictive figure below has also moved off six to
+> the **ten-to-thirteen** band. The method changed too — this note's launch block
+> was a first-seen heuristic that overstates the launch population by about four
+> times, and 0024 joins on the `create`/`create_v2` discriminators instead.
+>
+> Read this note for the argument and 0024 for the numbers.
+
 [0006](0006-the-graduation-table-was-empty-for-a-structural-reason.md) found that
 graduations are bimodal: 27–39% complete within three slots of launch, which
 means the whole bonding curve was bought by capital committed before the token

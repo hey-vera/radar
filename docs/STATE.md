@@ -86,6 +86,35 @@ Read that before adding a filter. The gross median says the selection is not
 finding an edge, and the round trip is currently larger than anything the filter
 has found.
 
+## The two measured signals, re-measured
+
+Both were measured on a two-day window at 72,193 launches. The store now holds
+483,629, and [`0024`](../docs/research/0024-the-spike-became-a-hump-and-the-signal-moved.md)
+re-ran both on 2026-09-03.
+
+**The launch-block signal did not survive intact.** `0008`'s headline — 68% of
+instantly-graduating launches have exactly six recipients — is **25.6%** on
+18,268 launches. The enrichment over the 5.2% control is real; the magnitude was
+wrong by 2.7×, and the "spike with holes either side" that made the structural
+argument was sampling rather than structure. The strongest band has moved off six
+to **ten to thirteen** (11.0× base). `0008` predicted exactly this failure — *"six
+is a tool's default, not a law"* — and nothing was built to notice it, so it was
+found nine days later by hand.
+
+What replaces it is stronger and points the same way the project already points:
+**one to three recipients covers 71.6% of launches and graduates instantly in
+0.02% of them.** The reliable signal is the refusal.
+
+**The creator signal strengthened.** `0007`'s separation holds on 2,957 creators
+against its original 638, at **3.37×** band-to-band (0007 had 2.12×) and **1.59×**
+against the base rate — and it survives controlling for launch frequency in all
+three bands. Neither is a reason to buy: `0011` still says graduation predicts
+volatility rather than profit, at a median −3,228 bps.
+
+The numbers a consumer should read are in
+[`data/0024-base-rates.json`](../docs/research/data/0024-base-rates.json), each
+carrying the date it was measured.
+
 ## The round trip is three numbers, and they are not in conflict
 
 Three figures circulate in this repository and **no document reconciled them

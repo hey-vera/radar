@@ -1437,6 +1437,7 @@ dependencies = [
  "radar-exec",
  "radar-graph",
  "radar-instruments",
+ "radar-onchain",
  "radar-research",
  "radar-risk",
  "radar-sim",
@@ -1520,6 +1521,19 @@ name = "radar-model"
 version = "0.0.1"
 dependencies = [
  "radar-agent",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "radar-onchain"
+version = "0.0.1"
+dependencies = [
+ "radar-decode",
+ "radar-pumpfun",
  "radar-types",
  "serde",
  "serde_json",

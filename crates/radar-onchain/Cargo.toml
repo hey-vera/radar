@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "radar-onchain"
+description = "Reads a token's launch block and curve from RPC on demand, for a question asked about a mint that may be forty seconds old."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The discriminator table and the argument decoders. Never a logged instruction
+# name (LEARNINGS 3), and the token program varies by mint (ADR 0009).
+radar-decode.workspace = true
+# The curve, its fee schedule and the PDA derivations. Pure arithmetic: this
+# crate supplies the bytes and that one says what they mean.
+radar-pumpfun.workspace = true
+radar-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[lints]
+workspace = true

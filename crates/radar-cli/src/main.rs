@@ -16,6 +16,7 @@ mod brief;
 mod consider;
 mod control;
 mod cost;
+mod dossier;
 mod exits;
 mod graduations;
 mod replay;
@@ -75,6 +76,13 @@ commands:
   cost --from <ts> --to <ts>     what a round trip costs, bucketed by notional;
                                  re-derives the 850 bps constant and says
                                  whether it is fixed or proportional
+  dossier <mint> [--rpc URL] [--seconds N]
+                                 everything Radar can say about one token, read
+                                 from the chain on demand rather than from the
+                                 store. Works for a mint forty seconds old, which
+                                 the store cannot: it is minutes behind by design
+                                 and holds the launch-block verdict rather than
+                                 the number. Read-only, holds no key
   exits --store <dir> [--cost-bps N]
                                  would a stop or a take-profit have beaten
                                  holding; reports both tie-break bounds
@@ -649,6 +657,7 @@ fn main() -> ExitCode {
         "route" => route::run(&args),
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
+        "dossier" => dossier::run(&args),
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
         "control" => control_report(&args),

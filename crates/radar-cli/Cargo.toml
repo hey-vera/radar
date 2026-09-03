@@ -22,6 +22,9 @@ radar-instruments.workspace = true
 radar-exec.workspace = true
 radar-risk.workspace = true
 radar-sim.workspace = true
+# The on-demand chain read behind `radar dossier`. Read-only: it holds no key,
+# has no signer in its tree, and cannot reach the execution path.
+radar-onchain.workspace = true
 radar-strategy.workspace = true
 radar-research.workspace = true
 radar-store.workspace = true

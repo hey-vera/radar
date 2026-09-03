@@ -99,6 +99,8 @@ fn router(keys: Keys) -> axum::Router {
         }),
         customer_keys: KeyCache::preloaded(keys),
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         challenges: None,
         privy: None,
     }))
@@ -203,6 +205,8 @@ async fn the_wallet_route_refuses_a_request_carrying_no_customer_identity() {
         }),
         customer_keys: KeyCache::preloaded(keys),
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         challenges: None,
         privy: None,
     }));

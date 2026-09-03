@@ -53,6 +53,8 @@ fn state_with_a_store() -> (Arc<AppState>, tempfile::TempDir) {
             customer_keys: radar_serve::customer::KeyCache::new(),
             privy: None,
             linker: radar_serve::link::Linker::new(),
+            scoreboard: radar_serve::cache::Cache::new(),
+            token: radar_serve::cache::Cache::new(),
             challenges: None,
         }),
         dir,
@@ -155,6 +157,8 @@ async fn an_empty_store_does_not_stall_the_stream_open() {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         challenges: None,
     });
 

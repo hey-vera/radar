@@ -14,6 +14,7 @@
 pub mod access;
 pub mod admission;
 pub mod api;
+pub mod cache;
 pub mod challenges;
 pub mod chat;
 pub mod customer;
@@ -109,6 +110,20 @@ pub struct AppState {
     pub customer_salt: Vec<u8>,
     /// The one credential-linking flow that may be in progress.
     pub linker: link::Linker,
+    /// The scoreboard, computed once per watermark.
+    ///
+    /// It scans the whole store -- 6,185 decisions against 1,147,649 outcomes
+    /// when measured -- for an answer identical for every caller at a given
+    /// watermark. Keyed on that watermark, so a replay at an older `AsOf` is
+    /// never handed today's answer (rule 3).
+    pub scoreboard: cache::Cache<radar_research::selection::Report>,
+    /// One mint's evidence, computed once per watermark.
+    ///
+    /// Keyed on the watermark **and** the mint, holding the most recently asked
+    /// one only. A map keyed on the mint would be unbounded and reachable by
+    /// anyone who can name one, and the page this serves is read one token at a
+    /// time.
+    pub token: cache::Cache<api::TokenEvidence, String>,
     /// Outstanding sign-in challenges, or `None` when no customer domain is set.
     ///
     /// `None` is rule 8's shape: an instance that does not know its own domain
@@ -611,8 +626,11 @@ async fn scoreboard(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     };
-    match api::scoreboard(&state.store, AsOf::at(watermark), api::ASSUMED_COST_BPS) {
-        Ok(report) => Json(report).into_response(),
+    let computed = state.scoreboard.get_or_compute(watermark, (), || {
+        api::scoreboard(&state.store, AsOf::at(watermark), api::ASSUMED_COST_BPS)
+    });
+    match computed {
+        Ok(report) => Json(&*report).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),
@@ -1053,8 +1071,13 @@ async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> 
         Ok(w) => w,
         Err(e) => return e.into_response(),
     };
-    match api::token_evidence(&state.store, &mint, AsOf::at(watermark)) {
-        Ok(evidence) => Json(evidence).into_response(),
+    // Keyed on the mint as well as the watermark, so a hit can never be another
+    // token's evidence.
+    let computed = state.token.get_or_compute(watermark, mint.clone(), || {
+        api::token_evidence(&state.store, &mint, AsOf::at(watermark))
+    });
+    match computed {
+        Ok(evidence) => Json(&*evidence).into_response(),
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({ "error": e.to_string() })),

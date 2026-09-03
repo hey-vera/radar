@@ -103,6 +103,8 @@ fn router(admission: Admission, keys: Keys) -> axum::Router {
         customer_keys: KeyCache::preloaded(keys),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         challenges: None,
     }))
 }

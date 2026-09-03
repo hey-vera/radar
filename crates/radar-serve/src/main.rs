@@ -214,6 +214,8 @@ async fn main() -> ExitCode {
         customer_keys: customer::KeyCache::new(),
         privy,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         // The domain a sign-in is bound to. Unset means no customer sign-in,
         // rather than a guess: a wrong domain here would have wallets sign a
         // message naming a site this is not, and the signature would then be

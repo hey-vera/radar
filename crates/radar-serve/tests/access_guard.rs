@@ -36,6 +36,8 @@ fn router(access: Mode) -> axum::Router {
         customer_keys: radar_serve::customer::KeyCache::new(),
         privy: None,
         linker: radar_serve::link::Linker::new(),
+        scoreboard: radar_serve::cache::Cache::new(),
+        token: radar_serve::cache::Cache::new(),
         challenges: None,
     }))
 }

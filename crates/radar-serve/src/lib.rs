@@ -212,7 +212,17 @@ pub fn app(state: Arc<AppState>) -> Router {
 /// The domain comes from the server, never from the request. A caller who could
 /// choose the domain could have a wallet sign a message naming somebody else's
 /// site, which is the replay this binds against.
-async fn siws_challenge(State(state): State<Arc<AppState>>) -> Response {
+#[derive(serde::Deserialize)]
+struct ChallengeBody {
+    /// The wallet about to sign. Needed because the message names it, and the
+    /// message is rendered here rather than by the client.
+    address: String,
+}
+
+async fn siws_challenge(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<ChallengeBody>,
+) -> Response {
     let Some(challenges) = state.challenges.as_ref() else {
         // Rule 8: an instance with no customer domain configured cannot bind a
         // signature to itself, so it does not pretend to.
@@ -221,15 +231,21 @@ async fn siws_challenge(State(state): State<Arc<AppState>>) -> Response {
             "this instance has no customer sign-in configured",
         );
     };
+    let Ok(address) = body.address.parse::<radar_types::Address>() else {
+        return chat::refuse(StatusCode::BAD_REQUEST, "that is not a Solana address");
+    };
     let nonce = radar_types::b64::encode_url(&random_nonce());
     match challenges.issue(nonce, now_unix()) {
         Ok(challenge) => Json(serde_json::json!({
-            "domain": challenge.domain,
-            "nonce": challenge.nonce,
-            "issued_at": challenge.issued_at,
-            // The exact text to sign, rendered by the server. The client must
-            // not build its own: two renderings of one message can drift, and
-            // the drift would look like a wallet bug rather than a mismatch.
+            // The exact text to sign, rendered **here**. The client must not
+            // build its own: two renderings of one message can drift, and the
+            // drift would surface as a signature that will not verify, which
+            // reads like a wallet bug rather than a mismatch.
+            //
+            // The address is in it because `siws::verify` requires the signed
+            // text to name the key that signed -- see that module for the
+            // attack it stops.
+            "message": challenge.message(&address),
             "expires_in_seconds": radar_customer::siws::MAX_AGE_SECONDS,
         }))
         .into_response(),

@@ -11,6 +11,14 @@ The point of running this before writing decoders was to find out which
 assumptions in the plan were wrong while they were still cheap to change. Three
 were.
 
+**Status:** measured, and **half of it is superseded.** The block economics are
+robust and confirm ADR 0001. The launch base rates are calibration from one
+window, exactly as the paragraph above asks — and the creator question they
+opened was re-asked properly on two days of recorder history in
+[`0007`](0007-does-creator-history-predict-anything.md), after
+[`0006`](0006-the-graduation-table-was-empty-for-a-structural-reason.md) fixed
+the capture bug that would have poisoned it.
+
 ## Block economics — ADR 0001 confirmed, with a caveat that changes the design
 
 | Measured over 45 blocks | |

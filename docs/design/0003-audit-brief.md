@@ -10,6 +10,11 @@ than written from scratch.
 `~/.claude/plans/` under a generated slug for a filename and could not be linked to the
 work it produced. See [`0002`](0002-the-development-workflow.md) §1.
 
+**Status:** accepted, and used once — [`0004`](0004-documented-versus-enforced.md)
+is its output. The next audit should be a diff against that rather than a fresh
+run. Three of this brief's own premises did not survive checking; `0004`'s
+opening section says which, and this brief has not been rewritten around them.
+
 ---
 
 You are auditing this repository's **structure, documentation architecture and

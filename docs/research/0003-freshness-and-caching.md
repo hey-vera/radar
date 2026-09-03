@@ -5,6 +5,11 @@ When every call costs money, the cheapest call is the one you do not make. This 
 is the discipline for that, and it is worth more to radar than any single data source
 negotiation.
 
+**Status:** reasoning, not measurement. The ClawNet figures below are read from
+ClawNet's own design notes and have never been timed here, against clawapis or
+against anything else. What it argues for is a discipline; what it reports is
+somebody else's benchmark.
+
 ## The insight from ClawNet
 
 ClawNet's internal design (`claw-net:internal/active/cache-layers-distinction.md`,

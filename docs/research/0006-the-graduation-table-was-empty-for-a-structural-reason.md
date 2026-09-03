@@ -3,6 +3,10 @@
 
 **Date:** 2026-08-24
 **Reproduce:** `radar graduations --store <store>`, and the CryptoHouse queries quoted below.
+**Status:** measured, and **corrective**. The 0.0133% graduation rate is wrong
+wherever it still appears; the measured rate is about 3%. Anything that reasoned
+from the old figure — including the argument that graduation is inherently an
+instant event — has to be re-read against this.
 
 Radar reported a pump.fun graduation rate of **0.0133%** — four graduations in
 30,574 recorded launches, every one of them completing within three slots of its

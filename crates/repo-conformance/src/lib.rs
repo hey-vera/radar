@@ -327,6 +327,55 @@ pub fn crate_sources(excluding: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `crate_name` lists `dependency` outside `[dev-dependencies]`.
+///
+/// The distinction is load-bearing rather than pedantic. `radar-pumpfun`
+/// depends on `radar-signer` under `[dev-dependencies]` so that the signer can
+/// check what the builder produces; a rule that read the whole manifest would
+/// forbid the very test that enforces rule 1. What ships is what sits above
+/// that header.
+#[must_use]
+pub fn production_dependency(crate_name: &str, dependency: &str) -> bool {
+    let manifest = root().join("crates").join(crate_name).join("Cargo.toml");
+    std::fs::read_to_string(&manifest).is_ok_and(|text| {
+        text.lines()
+            .take_while(|l| !l.trim_start().starts_with("[dev-dependencies]"))
+            .any(|l| l.split('#').next().unwrap_or("").contains(dependency))
+    })
+}
+
+/// Markdown files present in the working tree that `git` does not know about.
+///
+/// Every check in this crate reads [`known_files`], which is `git ls-files`. A
+/// markdown document is therefore checked by *nothing* until it is added to the
+/// index -- its links are not resolved, the paths it names are not verified, its
+/// status field is not required. This was found by verifying design `0004`,
+/// which passed only once it had been `git add -N`'d, and it is the same hole
+/// the justfile already closes for Rust.
+///
+/// `--exclude-standard` means `.gitignore` is the escape hatch: a scratch file
+/// that should not be checked should say so there.
+#[must_use]
+pub fn untracked_documents() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_ls_files(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter(|f| {
+            Path::new(f.as_str())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -530,6 +579,153 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_documented_dependency_claims_are_true() {
+        const NOT_REACHABLE: &[&str] = &[
+            "radar_exec::pipeline::execute",
+            "radar_exec::signer_client",
+            "radar_exec::submit",
+            "radar_exec::customer_signing",
+        ];
+
+        // `README.md` and `docs/STATE.md` each carried the sentence "No
+        // production crate depends on `radar-exec`; the composition reaches it
+        // through a dev-dependency" from 2026-09-03. It was false when it was
+        // written: `radar-cli` had listed `radar-exec` under `[dependencies]`
+        // since 2026-08-31, for `radar route`.
+        //
+        // The sentence mattered more than most, because it is the one that says
+        // the shipped dependency graph cannot reach the trading path — the
+        // property AGENTS.md rule 1 exists to hold. A claim of that shape is
+        // exactly what this crate is for, so it is pinned rather than merely
+        // corrected. Three rows, deliberately: enough to make the prose
+        // falsifiable, narrow enough that ordinary manifest edits do not trip
+        // it. When one of them does trip, the fix is to re-read the paragraphs
+        // it names before editing the row.
+
+        // Row 1 — exactly one crate outside `radar-exec` depends on it.
+        // The documents may say "one production caller, and it is the router";
+        // they may not say "none".
+        let dependents: BTreeSet<String> = crate_directories()
+            .into_iter()
+            .filter(|c| c != "radar-exec")
+            .filter(|c| production_dependency(c, "radar-exec"))
+            .collect();
+        let expected: BTreeSet<String> = ["radar-cli".to_string()].into_iter().collect();
+        assert_eq!(
+            dependents, expected,
+            "the set of production crates depending on radar-exec changed. \
+             README.md and docs/STATE.md both describe this set in prose; \
+             re-read those paragraphs, correct them, then update this row"
+        );
+
+        // Row 2 — and that one caller reaches the router only. `execute` is the
+        // function that signs and sends; the crates that lead to it are its
+        // siblings. A production `use` of any of them is the trading path
+        // acquiring a caller, which is a decision about money and not a wiring
+        // change.
+        for source in crate_sources("crates/radar-exec/") {
+            let text = std::fs::read_to_string(root().join(&source))
+                .unwrap_or_else(|e| panic!("cannot read {source}: {e}"));
+            for symbol in NOT_REACHABLE {
+                assert!(
+                    code_references(&text, symbol).is_empty(),
+                    "{source} names {symbol}. Production code reaching the send \
+                     path is what README.md's \"there is no production caller \
+                     for the trading path\" denies -- correct the documents \
+                     first, or do not add the call"
+                );
+            }
+        }
+
+        // Row 3 — nothing outside `radar-exec` binds a key. Rows 1 and 2 are
+        // about a graph and a symbol; this one is about the sentence's actual
+        // subject, which is that no shipped process can sign. It is cheap and
+        // it fails for a reason the other two would miss -- a new crate that
+        // depends on `radar-signer` directly rather than through the executor.
+        //
+        // It is a *production* dependency that is forbidden, not any mention.
+        // `radar-pumpfun` lists `radar-signer` under `[dev-dependencies]` on
+        // purpose and says why in its manifest: the builder is checked by the
+        // signer, and the direction is the point. A rule that read the whole
+        // file would forbid the test that enforces rule 1.
+        for c in crate_directories() {
+            if c == "radar-exec" || c == "radar-signer" {
+                continue;
+            }
+            assert!(
+                !production_dependency(&c, "radar-signer"),
+                "{c} depends on radar-signer outside [dev-dependencies]; only radar-exec may, and only through the signer process (AGENTS.md rule 1)"
+            );
+        }
+    }
+
+    #[test]
+    fn no_markdown_document_is_invisible_to_these_checks() {
+        // The hole this closes is not hypothetical and was not found by
+        // reasoning: design 0004 was written, run against this suite, and
+        // passed -- because the suite could not see it. It passed for real only
+        // after `git add -N`. Everything in this crate reads `git ls-files`, so
+        // an unstaged document is checked by nothing at the moment when its
+        // links and its claims are most likely to be wrong.
+        //
+        // The justfile already guards the identical hole for Rust. This is that
+        // guard for prose.
+        let untracked = untracked_documents();
+        assert!(
+            untracked.is_empty(),
+            "these markdown files exist but git does not know about them, so every check in this crate silently skipped them: {untracked:?} -- run `git add -N <path>` to make them visible, or add them to .gitignore to say they are not documents"
+        );
+    }
+
+    #[test]
+    fn every_numbered_document_declares_a_status() {
+        // Design 0004 measured this convention at 38 of 48: every ADR carried
+        // `**Status:**` and ten research notes did not -- and the ten were the
+        // oldest, which is to say the ones most likely to have been overtaken.
+        // A reader cannot tell an old note that still holds from one that was
+        // corrected two months ago, and the notes that were corrected are
+        // exactly the ones a fresh session is most likely to reason from.
+        //
+        // The field is deliberately free text rather than an enum. In
+        // `docs/adr/` it says accepted or superseded; in `docs/research/` it
+        // says how strongly the thing was measured, which is a sentence and not
+        // a keyword. What is checkable is that the question was answered at all,
+        // near the top, where somebody skimming will see it.
+        const HEADER_LINES: usize = 15;
+
+        let mut missing = Vec::new();
+        for dir in ["docs/adr", "docs/design", "docs/research"] {
+            let path = root().join(dir);
+            let entries = std::fs::read_dir(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            for entry in entries {
+                let file = entry.expect("directory entry").path();
+                if file.extension().is_none_or(|e| e != "md") {
+                    continue;
+                }
+                // `README.md` describes a directory rather than making a claim
+                // in it, so there is nothing for a status to be about.
+                if file.file_name().is_some_and(|n| n == "README.md") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&file)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+                if !text
+                    .lines()
+                    .take(HEADER_LINES)
+                    .any(|l| l.contains("**Status:**"))
+                {
+                    missing.push(format!("{dir}/{}", file.file_name().unwrap().display()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these documents do not declare a status in their first {HEADER_LINES} lines: {missing:?} -- a numbered document without one cannot be told apart from a superseded one, and the oldest are the likeliest to have been overtaken; say what it is worth now, in a sentence, not a keyword"
+        );
     }
 
     #[test]

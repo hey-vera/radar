@@ -8,6 +8,9 @@ not be taken as best-in-class yet".
 **Method:** the same as [`0010`](0010-the-considerations-document-classified.md) —
 source kept unedited under `vendor/`, verdict as a separate numbered note that can
 be cited and superseded on its own.
+**Status:** a verdict, not a measurement. Same method as
+[`0010`](0010-the-considerations-document-classified.md), and the same standing:
+it records why advice was taken or refused, not a fact about the chain.
 
 ## The headline, and it corrects an expectation
 

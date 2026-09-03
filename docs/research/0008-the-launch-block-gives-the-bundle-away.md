@@ -4,6 +4,12 @@
 **Date:** 2026-08-25
 **Store:** the live guardian VPS recorder, slots 441,040,080 – 441,520,140 (~2 days)
 **Source:** CryptoHouse `solana.token_transfers`, one query per batch of forty mints
+**Status:** **superseded in its headline by
+[`0024`](0024-the-spike-became-a-hump-and-the-signal-moved.md)** (2026-09-03),
+which re-ran it on 17,497 launches instead of 80 per population. The
+coordination signal is real; the magnitude and the shape were not. The
+qualifications are in the block below, and this note's own warning is what
+caught them.
 
 > **Superseded on 2026-09-03 by
 > [`0024`](0024-the-spike-became-a-hump-and-the-signal-moved.md), which re-ran

@@ -4,6 +4,13 @@
 Researched 2026-08-22. Every price and status here needs re-checking before it is relied on;
 this market moves monthly. Prices are list prices, not negotiated.
 
+**Status:** survey, and **the prices are stale by design** — the paragraph above
+says so and nothing here has been re-checked since 2026-08-22. Read it for the
+problem set, not for the numbers. The decisions it fed are
+[ADR 0001](../adr/0001-decode-locally-never-buy-parsed-transactions.md) and
+[ADR 0002](../adr/0002-historical-data-comes-from-cryptohouse-not-a-vendor-archive.md),
+and ADR 0002 replaced the vendor archive priced here outright.
+
 Four problems stand between radar and a working recorder. This document is what exists to
 solve each one.
 

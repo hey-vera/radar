@@ -326,6 +326,11 @@ a point where the data was padding. When a mutant survives, either write the tes
 or record in [`.cargo/mutants.toml`](.cargo/mutants.toml) *why* it is equivalent —
 having applied it by hand and understood the answer.
 
+**Mutate the file when you finish the file, not the branch when you finish the
+branch.** `cargo mutants -f <one file>` takes a couple of minutes and is the one
+form of this check §8 permits locally. Twenty-one survivors reported on an open
+PR is the same information, arriving after it is expensive to act on.
+
 **Verify a fix by re-applying the bug.** The standard `watermark_holds.rs` sets:
 put the wrong behaviour back, confirm a test fails, put it right. Otherwise you
 have a test that passes rather than a test that catches.
@@ -368,6 +373,10 @@ describing something else means the message is not a description of the commit. 
 deleted file is the change least likely to look wrong in a diffstat nobody
 opened, and that is exactly how `AGENTS.md` was deleted on 2026-09-02.
 
+**Stage by path, and know your branch.** `git add -A` does not appear in this
+repository. Run `git branch --show-current` before the first commit of a
+session; a commit that lands on local `main` has to be moved by hand.
+
 **Production is not yours to restart.** `guardian` has full sudo but no NOPASSWD
 entry for radar, so installing `radar-serve` needs a human at an interactive
 terminal. That is deliberate: an agent that cannot restart a production service
@@ -381,6 +390,16 @@ on its own is a feature, not a gap.
   network accepted**, not documentation describing one.
 - Investigate directly rather than delegating. Use a subagent only when the work
   is genuinely large, independent, and benefits from isolated context.
+
+**A sub-agent is a context boundary, not a discount.** Use one when isolation is
+the point. Use `/model sonnet` — same session, same context — when the work is
+merely mechanical.
+
+**The test for both:** is there a command whose output decides whether this is
+right, *and* can it be done seeing only the files named in the request? Both
+yes, it is cheap work. Either no, it stays with the expensive model in the
+session that holds the context. The defect in `docs/research/0024` was found by
+neither half of a split alone.
 
 **This repository is checked out on a workstation, not a build farm.** Somebody
 is using that machine while you work on it, and a long parallel Rust job makes it
@@ -453,6 +472,18 @@ alive on the owner's machine, and buys nothing that checking later would not.
   at the end.
 - Correct a material mistake plainly and briefly, then continue.
 
+**Write for a tired reader.** Josh asked for this on 2026-09-03 and it is not a
+mood, it is the standard. Small words. Short sentences. Short paragraphs. If a
+big word is needed, explain it in the next breath. Say what you did and why you
+did it, and stop.
+
+**Keep paths, commands and shas exact.** Prose gets simpler; identifiers never
+do. A rounded-off path costs more than a long sentence saves.
+
+**Every decision comes with a recommendation.** If Josh has to choose, give him
+the two or three real options, one line each, and say which one you would take
+and why. A question without a recommendation hands the work back.
+
 ## 10. Persistent project state
 
 The repository is the source of truth, not the conversation.
@@ -460,6 +491,10 @@ The repository is the source of truth, not the conversation.
 - Record decisions in an ADR, findings in `docs/research/`, and things that went
   wrong in [LEARNINGS.md](LEARNINGS.md). A decision that lives only in a chat log
   did not happen.
+- Plans, their task lists and their handback notes live in
+  [`docs/plans/`](docs/plans/), committed on the branch they describe. A task is
+  complete when the line says which command proved it and at which commit. A
+  session ends by writing the handback block.
 - After a compaction or a fresh session, read the relevant state before
   continuing substantial work.
 - Do not recreate knowledge that can be recovered from the repository.

@@ -28,10 +28,15 @@ distinction it was hiding:
   [`the_customer_lane_composes.rs`](crates/radar-exec/tests/the_customer_lane_composes.rs)
   run strategy → kernel → signer → executor, and `Policy::CLOSED` refuses what a
   permissive policy authorises.
-- **Not exercised** — nothing has been signed by a wallet, sent, or filled. No
-  production crate depends on `radar-exec`; the composition reaches it through a
-  dev-dependency. **There is no production caller for the trading path**, and
-  writing one is a decision about money rather than a wiring task.
+- **Not exercised** — nothing has been signed by a wallet, sent, or filled.
+  One production crate depends on `radar-exec`: `radar-cli`, which reaches
+  `radar_exec::route` for `radar route` and prints unsigned bytes. Nothing in
+  production reaches `pipeline::execute`, the signer client or the submitter, so
+  **there is no production caller for the trading path**, and writing one is a
+  decision about money rather than a wiring task. `repo-conformance`'s
+  `the_documented_dependency_claims_are_true` pins all three statements; the
+  earlier claim that *nothing* depended on `radar-exec` was false from
+  2026-08-31 and went uncaught for three days (LEARNINGS 29).
 - **`Policy::CLOSED` has never refused a real proposal, because it has never been
   handed one.** A live run over 41,254 candidates raised zero proposals — the
   cause was a hardcoded probe size that made a proposal arithmetically

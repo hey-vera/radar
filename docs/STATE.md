@@ -181,9 +181,12 @@ does not pay for itself never reaches the process holding the key. And
 which is what makes the other tests statements about the lane rather than about
 the fixture.
 
-**What it does not.** No production crate depends on `radar-exec`; the
-composition reaches it through a dev-dependency, so the shipped dependency graph
-is unchanged. Nothing has been signed, sent, or filled.
+**What it does not.** One production crate depends on `radar-exec`:
+`radar-cli` reaches `radar_exec::route` for `radar route`, which prints unsigned
+bytes. Nothing in production reaches `pipeline::execute`, the signer client or
+the submitter — the composition reaches *those* through a dev-dependency, so the
+shipped graph still cannot sign. Nothing has been signed, sent, or filled.
+`repo-conformance`'s `the_documented_dependency_claims_are_true` pins it.
 
 **As of 2026-09-01 the pipeline's traits have real implementations**, which they
 did not before: `Routing` and `Sending` were satisfied only by stubs inside

@@ -63,6 +63,22 @@ pub fn safe(raw: &str, limit: usize) -> String {
     out
 }
 
+/// The mint, positionally or behind `--mint`.
+///
+/// Extracted so the `!` in the filter is testable — deleting it survived
+/// mutation, and the consequence is that `radar dossier --mint X` reads the
+/// **flag name** `--mint` as the address instead of `X`. `radar-cli` has been
+/// bitten by this exact class before: `flag`'s doc records a `+ 1` that could
+/// be turned into a `- 1` with every test still passing, giving a flag the
+/// previous argument's value.
+#[must_use]
+pub fn mint_arg_of(args: &[String]) -> Option<String> {
+    args.get(1)
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .or_else(|| flag(args, "--mint"))
+}
+
 /// Runs the command.
 ///
 /// # Errors
@@ -71,18 +87,17 @@ pub fn safe(raw: &str, limit: usize) -> String {
 /// history cannot be read at all. A dossier that is merely *partial* is a
 /// success — it prints what it has and names what it could not read.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let mint_arg = args
-        .get(1)
-        .filter(|a| !a.starts_with("--"))
-        .cloned()
-        .or_else(|| flag(args, "--mint"))
+    let mint_arg = mint_arg_of(args)
         .ok_or_else(|| "usage: radar dossier <mint> [--rpc URL] [--seconds N]".to_owned())?;
 
     let mint: Address = mint_arg
         .parse()
         .map_err(|_| format!("not a valid address: {}", safe(&mint_arg, 64)))?;
 
-    let client = flag(args, "--rpc").map_or_else(RpcClient::from_env, RpcClient::new);
+    let client = flag(args, "--rpc").map_or_else(
+        || RpcClient::from_vars(&|k| std::env::var(k).ok()),
+        RpcClient::new,
+    );
     let seconds = flag(args, "--seconds")
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
@@ -97,11 +112,6 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Formats a dossier.
-///
-/// Split from [`run`] so the output can be asserted without a network. Every
-/// number it prints is one the public analyst may later publish, so the shape
-/// of this text is the shape of the claim.
 /// The curve half of the report.
 ///
 /// Split out because `render` was over the line limit, and because these are the
@@ -163,6 +173,11 @@ curve
     }
 }
 
+/// Formats a dossier.
+///
+/// Split from [`run`] so the output can be asserted without a network. Every
+/// number it prints is one the public analyst may later publish, so the shape
+/// of this text is the shape of the claim.
 #[must_use]
 pub fn render(d: &Dossier) -> String {
     let mut out = String::new();
@@ -273,6 +288,146 @@ mod tests {
         );
         // Ordinary text survives unchanged, or the rendering is useless.
         assert_eq!(safe("Doge Killer 2", 64), "Doge Killer 2");
+    }
+
+    #[test]
+    fn run_refuses_without_a_mint_rather_than_succeeding_silently() {
+        // `run -> Ok(())` survived, and this kills it without a network: the
+        // argument check happens before any client is built, so a command
+        // invoked wrongly must fail rather than exit zero having done nothing.
+        //
+        // That matters beyond the mutant. `radar dossier` is meant to be
+        // scriptable, and a command that returns success when it was given no
+        // token is one whose exit code cannot be trusted by whatever runs it.
+        let err = run(&["dossier".to_owned()]).expect_err("no mint is an error");
+        assert!(err.contains("usage"), "{err}");
+
+        // An unparseable mint is also an error, and also decided before any
+        // network call -- so this stays offline too.
+        let err = run(&["dossier".to_owned(), "not-an-address".to_owned()])
+            .expect_err("a bad mint is an error");
+        assert!(err.contains("not a valid address"), "{err}");
+    }
+
+    #[test]
+    fn sol_renders_lamports_by_integer_arithmetic() {
+        // Replacing `sol` with an empty string survived. It is how every SOL
+        // figure in the dossier reaches a reader, and the reason it does not go
+        // through a float is that a u64 of lamports is past f64's exact range:
+        // a figure that has silently rounded is the one thing this account must
+        // not publish.
+        assert_eq!(sol(1_000_000_000), "1.0000");
+        assert_eq!(sol(303_000_000), "0.3030");
+        assert_eq!(sol(6_186_150_833), "6.1861");
+        assert_eq!(sol(0), "0.0000");
+        // Sub-precision dust rounds down rather than up: a capacity reported
+        // larger than it is would be the expensive direction.
+        assert_eq!(sol(1), "0.0000");
+    }
+
+    #[test]
+    fn the_curve_section_renders_its_numbers_and_their_caveats() {
+        // Replacing `render_curve` with `()` survived -- the whole section
+        // could vanish and nothing noticed. Both caveats are asserted, not just
+        // the numbers: they are what keep the figures honest, and dropping one
+        // turns a Radar setting into a claim about the venue.
+        let mut out = String::new();
+        render_curve(
+            &mut out,
+            &radar_onchain::CurveFacts {
+                complete: false,
+                real_sol_reserves: 6_186_150_833,
+                capacity_lamports: Some(303_000_000),
+                fees: None,
+            },
+        );
+        assert!(out.contains("6.1861"), "{out}");
+        assert!(out.contains("0.3030"), "{out}");
+        assert!(out.contains("graduated   : no"), "{out}");
+        assert!(out.contains("NOT a venue ceiling"), "{out}");
+        assert!(out.contains("could not be read (not assumed)"), "{out}");
+    }
+
+    #[test]
+    fn a_graduated_curve_reports_no_capacity_rather_than_zero() {
+        // Rule 9 at the rendering layer: "cannot size into this" and "capacity
+        // is zero" read very differently to somebody deciding what to do.
+        let mut out = String::new();
+        render_curve(
+            &mut out,
+            &radar_onchain::CurveFacts {
+                complete: true,
+                real_sol_reserves: 0,
+                capacity_lamports: None,
+                fees: None,
+            },
+        );
+        assert!(out.contains("graduated   : yes"), "{out}");
+        assert!(out.contains("cannot size into this"), "{out}");
+        assert!(!out.contains("0.0000 SOL at"), "{out}");
+    }
+
+    #[test]
+    fn text_of_exactly_the_limit_is_not_marked_truncated() {
+        // `>` survived being turned into `>=`. The consequence is an ellipsis
+        // on text that was shown in full -- a reply claiming it withheld
+        // something it did not, which is a small lie in a product whose whole
+        // claim is that it does not tell them.
+        assert_eq!(safe("abcde", 5), "abcde");
+        assert_eq!(safe("abcd", 5), "abcd");
+        assert_eq!(safe("abcdef", 5), "abcde…");
+    }
+
+    #[test]
+    fn the_mint_argument_is_read_positionally_or_from_the_flag() {
+        // Deleting the `!` survived, and the consequence is that
+        // `radar dossier --mint X` reads the flag NAME as the address. This is
+        // the same class `flag`'s own doc records: a `+ 1` turned into a `- 1`
+        // with every test still passing.
+        let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            mint_arg_of(&args(&["dossier", "MintOne"])),
+            Some("MintOne".to_owned())
+        );
+        assert_eq!(
+            mint_arg_of(&args(&["dossier", "--mint", "MintOne"])),
+            Some("MintOne".to_owned()),
+            "the flag's value, never the flag's name"
+        );
+        assert_eq!(
+            mint_arg_of(&args(&[
+                "dossier", "--rpc", "http://x", "--mint", "MintOne"
+            ])),
+            Some("MintOne".to_owned())
+        );
+        assert_eq!(mint_arg_of(&args(&["dossier"])), None);
+        assert_eq!(mint_arg_of(&args(&["dossier", "--rpc", "http://x"])), None);
+    }
+
+    #[test]
+    fn the_unavailable_section_appears_only_when_something_is_unavailable() {
+        // Deleting the `!` survived. The consequence is every complete dossier
+        // printing an empty "not available" heading -- which reads as "we could
+        // not check" on an answer where everything was checked.
+        let mut d = Dossier {
+            mint: Address::new([1u8; 32]),
+            read_at: None,
+            launch: None,
+            curve: None,
+            creator_transactions: None,
+            unavailable: Vec::new(),
+            calls: 0,
+            elapsed_ms: 0,
+        };
+        assert!(!render(&d).contains("not available"));
+
+        d.unavailable.push(radar_onchain::dossier::Unavailable {
+            fact: "curve",
+            why: "no bonding-curve account".to_owned(),
+        });
+        let text = render(&d);
+        assert!(text.contains("not available"));
+        assert!(text.contains("no bonding-curve account"));
     }
 
     #[test]

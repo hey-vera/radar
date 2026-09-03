@@ -236,6 +236,30 @@ mod tests {
     }
 
     #[test]
+    fn elapsed_reports_real_time_rather_than_zero() {
+        // `Budget::elapsed` -> Default::default() survived: nothing asserted the
+        // value, and it is reported on every dossier as the cost of an answer.
+        // A figure nobody checks is a figure nobody notices doubling.
+        let budget = Budget::new(10, 3, Duration::from_secs(60));
+        std::thread::sleep(Duration::from_millis(5));
+        assert!(
+            budget.elapsed() >= Duration::from_millis(5),
+            "elapsed must measure something: {:?}",
+            budget.elapsed()
+        );
+    }
+
+    #[test]
+    fn lower_bound_returns_the_count_it_was_given() {
+        // Replacing this with 0 or 1 survived. It is what a threshold reads, so
+        // a constant here would make every refusal a refusal about nothing.
+        assert_eq!(Count::Exactly(6).lower_bound(), 6);
+        assert_eq!(Count::AtLeast(11).lower_bound(), 11);
+        assert_eq!(Count::Exactly(0).lower_bound(), 0);
+        assert_eq!(Count::AtLeast(1).lower_bound(), 1);
+    }
+
+    #[test]
     fn a_truncated_count_never_presents_itself_as_exact() {
         // The whole reason `Count` exists. `lower_bound` is equal for both, so
         // a consumer reading only that cannot tell them apart -- which is why

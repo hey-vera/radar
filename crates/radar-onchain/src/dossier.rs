@@ -227,7 +227,7 @@ fn oldest_launch(
     let mut stopped = false;
     for sig in signatures
         .iter()
-        .filter(|s| s.slot == launch_slot && s.err.is_none() && s.signature != oldest.signature)
+        .filter(|s| also_in_block(s, launch_slot, &oldest.signature))
     {
         match client.transaction(budget, &sig.signature) {
             Ok(Some(tx)) => block.push(tx),
@@ -244,6 +244,23 @@ fn oldest_launch(
 
     crate::launch::assemble(&launch_tx, &block, mint, stopped)
         .map_err(|e: NotALaunch| e.to_string())
+}
+
+/// Whether a signature belongs to the launch block, other than the launch
+/// itself.
+///
+/// Extracted from the loop so each of its three conditions can be tested. All
+/// three were surviving mutants: `just mutants` flipped `&&` to `||`, `==` to
+/// `!=` and `!=` to `==` here and every test still passed, which meant the
+/// filter was doing nothing any assertion could see.
+///
+/// Each condition is load-bearing in a different way. The **slot** is what makes
+/// this the launch *block* rather than the token's whole history. The **error**
+/// check keeps failed transactions out, which 0006 records as worth a third of
+/// a label. And excluding the **launch signature** stops the launch transaction
+/// being fetched and counted twice.
+fn also_in_block(sig: &crate::rpc::SignatureInfo, launch_slot: u64, launch_sig: &str) -> bool {
+    sig.slot == launch_slot && sig.err.is_none() && sig.signature != launch_sig
 }
 
 /// Reads the bonding curve and the fee schedule.
@@ -286,13 +303,26 @@ fn fee_schedule(client: &RpcClient, budget: &mut Budget, curve: &BondingCurve) -
     let address = pda::fee_config()?;
     let data = client.account(budget, &address).ok()??;
     let config = radar_pumpfun::FeeConfig::parse(&data).ok()?;
-    // The tier depends on where the token is on the curve, which is why this is
-    // a schedule rather than a rate. Virtual SOL reserves are what
-    // `the_fee_is_what_mainnet_charges` looks the tier up by -- 30 SOL, "a curve
-    // at launch reserves" -- so this asks the schedule the same question the
-    // crate's own mainnet test asks it.
-    let market_cap = u128::from(curve.virtual_sol_reserves);
-    config.fees_at_market_cap(market_cap)
+    fees_for(&config, curve)
+}
+
+/// Which tier of the schedule this curve pays.
+///
+/// The pure half of [`fee_schedule`], split out so it can be tested — the outer
+/// function is three network calls deep and mutating it to return `None` or a
+/// default survived, because nothing without an endpoint could observe it.
+///
+/// The tier depends on where the token sits on the curve, which is the whole of
+/// 0023's finding: **the fee is a schedule, not a rate.** Virtual SOL reserves
+/// are what `radar-pumpfun`'s own mainnet test looks the tier up by — 30 SOL,
+/// "a curve at launch reserves" — so this asks the schedule the same question
+/// that test asks it.
+///
+/// `None` when no tier covers the curve, and never a remembered 125 bps: 0023
+/// also found the program's published interface incomplete, so substituting a
+/// constant here would be asserting a number the chain was not asked for.
+fn fees_for(config: &radar_pumpfun::FeeConfig, curve: &BondingCurve) -> Option<Fees> {
+    config.fees_at_market_cap(u128::from(curve.virtual_sol_reserves))
 }
 
 #[cfg(test)]
@@ -317,6 +347,190 @@ mod tests {
         assert_eq!(dossier.unavailable[0].why, "no bonding-curve account");
         // And the fact itself stays absent rather than becoming a default.
         assert!(dossier.curve.is_none());
+    }
+
+    fn sig(signature: &str, slot: u64, failed: bool) -> crate::rpc::SignatureInfo {
+        crate::rpc::SignatureInfo {
+            signature: signature.to_owned(),
+            slot,
+            err: failed.then(|| serde_json::json!("boom")),
+        }
+    }
+
+    #[test]
+    fn the_launch_block_filter_needs_all_three_of_its_conditions() {
+        // Every one of these was a surviving mutant. Asserted separately so a
+        // failure names which condition stopped working rather than only that
+        // the filter did.
+        assert!(also_in_block(&sig("other", 100, false), 100, "launch"));
+        // A different slot is a different block -- this is what keeps the read
+        // to the launch block rather than the token's whole history.
+        assert!(!also_in_block(&sig("other", 101, false), 100, "launch"));
+        // A failed transaction is not an event (0006).
+        assert!(!also_in_block(&sig("other", 100, true), 100, "launch"));
+        // The launch itself is already in the block; including it again would
+        // fetch and count it twice.
+        assert!(!also_in_block(&sig("launch", 100, false), 100, "launch"));
+    }
+
+    fn curve_at(virtual_sol: u64) -> BondingCurve {
+        BondingCurve {
+            virtual_token_reserves: 889_566_950_293_959,
+            virtual_sol_reserves: virtual_sol,
+            real_token_reserves: 609_666_950_293_959,
+            real_sol_reserves: 6_186_150_833,
+            token_total_supply: 1_000_000_000_000_000,
+            complete: false,
+            creator: Address::new([1u8; 32]),
+        }
+    }
+
+    #[test]
+    fn the_fee_comes_from_the_tier_the_curve_is_in() {
+        // Two tiers with different fees, so the lookup has something to get
+        // wrong. Returning `None` or a default here survived mutation because
+        // the only caller is three network calls deep.
+        let config = radar_pumpfun::FeeConfig {
+            flat: Fees {
+                lp_bps: 0,
+                protocol_bps: 0,
+                creator_bps: 0,
+            },
+            tiers: vec![
+                radar_pumpfun::fees::Tier {
+                    threshold_lamports: 0,
+                    fees: Fees {
+                        lp_bps: 0,
+                        protocol_bps: 95,
+                        creator_bps: 30,
+                    },
+                },
+                radar_pumpfun::fees::Tier {
+                    threshold_lamports: 100_000_000_000,
+                    fees: Fees {
+                        lp_bps: 0,
+                        protocol_bps: 10,
+                        creator_bps: 5,
+                    },
+                },
+            ],
+        };
+
+        // A curve at launch reserves pays the low tier: 125 bps a side, which
+        // is exactly what 0023 measured off mainnet.
+        let low = fees_for(&config, &curve_at(30_130_000_000)).expect("a tier");
+        assert_eq!(low.total_bps(), 125);
+        assert_eq!(low.round_trip_bps(), 250);
+
+        // A curve further along pays the other one, so the schedule is being
+        // read rather than the first row returned.
+        let high = fees_for(&config, &curve_at(200_000_000_000)).expect("a tier");
+        assert_eq!(high.total_bps(), 15);
+        assert_ne!(low, high);
+    }
+
+    /// A fee-config account, built to the layout `FeeConfig::parse` reads.
+    ///
+    /// Synthesised rather than captured, because what is under test here is
+    /// that [`fee_schedule`] reads the chain at all — `radar-pumpfun` already
+    /// asserts the parse against real mainnet bytes, and duplicating that
+    /// capture would be two places to update when the layout moves.
+    fn fee_config_account(threshold: u128, protocol_bps: u64, creator_bps: u64) -> Vec<u8> {
+        let mut data = radar_pumpfun::fees::FEE_CONFIG_DISCRIMINATOR.to_vec();
+        data.push(0); // bump
+        data.extend_from_slice(&[0u8; 32]); // admin
+        // The flat fees, three u64.
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data.extend_from_slice(&1u32.to_le_bytes()); // one tier
+        data.extend_from_slice(&threshold.to_le_bytes());
+        data.extend_from_slice(&0u64.to_le_bytes()); // lp
+        data.extend_from_slice(&protocol_bps.to_le_bytes());
+        data.extend_from_slice(&creator_bps.to_le_bytes());
+        data
+    }
+
+    /// A transport that answers every call with the same body.
+    struct Always(String);
+
+    impl crate::rpc::Transport for Always {
+        fn post(&self, _: &str, _: String) -> Result<String, String> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn account_response(data: &[u8]) -> String {
+        // The node returns account data base64-encoded.
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut encoded = String::new();
+        for chunk in data.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    encoded.push(ALPHABET[((n >> (18 - i * 6)) & 0x3F) as usize] as char);
+                } else {
+                    encoded.push('=');
+                }
+            }
+        }
+        format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"value":{{"data":["{encoded}","base64"]}}}}}}"#
+        )
+    }
+
+    #[test]
+    fn the_fee_schedule_is_read_from_the_chain_rather_than_assumed() {
+        // Mutating `fee_schedule` to `None` or a default survived until the
+        // transport became injectable. Both consequences are bad in opposite
+        // directions: `None` silently drops the fee from every reply, and a
+        // default asserts a fee nobody read.
+        let response = account_response(&fee_config_account(0, 95, 30));
+        let client = RpcClient::with_transport("http://test.invalid", Box::new(Always(response)));
+        let mut budget = Budget::new(60, 3, std::time::Duration::from_secs(30));
+
+        let fees =
+            fee_schedule(&client, &mut budget, &curve_at(30_130_000_000)).expect("a fee schedule");
+        // 125 bps a side is what 0023 measured off mainnet.
+        assert_eq!(fees.total_bps(), 125);
+        assert_eq!(fees.round_trip_bps(), 250);
+    }
+
+    #[test]
+    fn a_missing_fee_config_account_is_no_fee_rather_than_a_remembered_one() {
+        // Rule 9 through the whole path: a fee that could not be read is a
+        // refusal to price, never a constant recalled from a research note.
+        let client = RpcClient::with_transport(
+            "http://test.invalid",
+            Box::new(Always(
+                r#"{"jsonrpc":"2.0","id":1,"result":{"value":null}}"#.to_owned(),
+            )),
+        );
+        let mut budget = Budget::new(60, 3, std::time::Duration::from_secs(30));
+        assert_eq!(
+            fee_schedule(&client, &mut budget, &curve_at(30_130_000_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_schedule_that_covers_nothing_is_no_fee_rather_than_a_free_trade() {
+        // Rule 9. A fee that could not be read is a refusal to price, never a
+        // zero -- a trade priced at no fee is a trade that looks profitable.
+        let config = radar_pumpfun::FeeConfig {
+            flat: Fees {
+                lp_bps: 0,
+                protocol_bps: 0,
+                creator_bps: 0,
+            },
+            tiers: Vec::new(),
+        };
+        assert_eq!(fees_for(&config, &curve_at(30_130_000_000)), None);
     }
 
     #[test]

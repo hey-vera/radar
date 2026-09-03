@@ -93,7 +93,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
     };
     let mut gate = Gate::new(limits, vec!["radar".to_owned()]);
 
-    let client = flag(args, "--rpc").map_or_else(RpcClient::from_env, RpcClient::new);
+    let client = flag(args, "--rpc").map_or_else(
+        || RpcClient::from_vars(&|k| std::env::var(k).ok()),
+        RpcClient::new,
+    );
     let rates = BaseRates::load(radar_roast::baserates::DEFAULT_PATH).ok();
     if rates.is_none() {
         eprintln!("no base rates; replies will carry no population context");

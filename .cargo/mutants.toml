@@ -130,4 +130,17 @@ exclude_re = [
     # covered where the implementations live -- the mutation of the CryptoHouse
     # one is caught.
     'replace LaunchBlockSource::bundle_slots -> Result<Vec<\(u64, LaunchBlockShape\)>, Self::Error> with Ok\(vec!\[\]\)',
+    # `radar-onchain`'s `decode_base64`: the accumulator is
+    # `buffer = (buffer << 6) | value`, where `value` is a position in a
+    # 64-character alphabet and so is always under 64. Shifting left by six
+    # leaves the low six bits of `buffer` zero, and `value` sets only those six
+    # bits, so the two operands share no set bit and `|` and `^` are the same
+    # value. Nothing a test could distinguish.
+    #
+    # Same argument as `encode_url` above, and verified the same way: the
+    # mutation was applied by hand and the crate's suite -- which round-trips
+    # all 256 byte values through the decoder and sweeps every padding class --
+    # passes identically, because the two expressions are equal rather than
+    # because the tests are weak.
+    'replace \| with \^ in decode_base64',
 ]

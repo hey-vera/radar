@@ -391,6 +391,116 @@ mod tests {
         assert_eq!(dev_buy_lamports(&[member], &creator), None);
     }
 
+    /// A `buy_exact_sol_in` payload for a given number of lamports.
+    fn buy_data(lamports: u64) -> Vec<u8> {
+        let mut data = vec![0x38, 0xfc, 0x74, 0x08, 0x9e, 0xdf, 0xcd, 0x5f];
+        data.extend_from_slice(&lamports.to_le_bytes());
+        // The slippage bound on the other side.
+        data.extend_from_slice(&0u64.to_le_bytes());
+        data
+    }
+
+    fn buy_tx(payer: &str, lamports: u64) -> Transaction {
+        let mut t = tx(&[payer]);
+        t.instructions = vec![RawInstruction {
+            program: pumpfun_program(),
+            data: buy_data(lamports),
+            accounts: Vec::new(),
+        }];
+        t
+    }
+
+    #[test]
+    fn a_dev_buy_is_found_and_summed() {
+        // The positive case, which was missing entirely -- every dev-buy test
+        // asserted `None`, so `just mutants` could delete the whole filter chain
+        // and nothing noticed. Four surviving mutants lived in here.
+        let creator = Address::new([9u8; 32]);
+        let key = creator.to_string();
+        let block = [buy_tx(&key, 30_000_000), buy_tx(&key, 5_000_000)];
+        assert_eq!(dev_buy_lamports(&block, &creator), Some(35_000_000));
+    }
+
+    #[test]
+    fn somebody_elses_buy_is_not_the_creators() {
+        // The fee payer is what attributes the buy. Without this check every
+        // sniper in the launch block would be reported as the creator's own
+        // spend -- a number published about a person, and the wrong one.
+        let creator = Address::new([9u8; 32]);
+        let block = [buy_tx("SomeoneElse", 30_000_000)];
+        assert_eq!(dev_buy_lamports(&block, &creator), None);
+    }
+
+    #[test]
+    fn a_failed_dev_buy_is_not_a_spend() {
+        let creator = Address::new([9u8; 32]);
+        let mut t = buy_tx(&creator.to_string(), 30_000_000);
+        t.failed = true;
+        assert_eq!(dev_buy_lamports(&[t], &creator), None);
+    }
+
+    #[test]
+    fn an_instruction_from_another_program_is_not_a_pumpfun_buy() {
+        // The same discriminator bytes under a different program are a
+        // different instruction entirely.
+        let creator = Address::new([9u8; 32]);
+        let mut t = buy_tx(&creator.to_string(), 30_000_000);
+        t.instructions[0].program = "SomeOtherProgram".to_owned();
+        assert_eq!(dev_buy_lamports(&[t], &creator), None);
+    }
+
+    #[test]
+    fn a_creator_sell_is_not_a_buy() {
+        // `is_buy` is what separates them, and it was a surviving mutant.
+        let creator = Address::new([9u8; 32]);
+        let mut t = buy_tx(&creator.to_string(), 30_000_000);
+        // The `sell` discriminator in place of the buy.
+        t.instructions[0].data[..8]
+            .copy_from_slice(&[0x33, 0xe6, 0x85, 0xa4, 0x01, 0x7f, 0x83, 0xad]);
+        assert_eq!(dev_buy_lamports(&[t], &creator), None);
+    }
+
+    #[test]
+    fn a_failed_transaction_is_not_counted_in_the_block() {
+        // `assemble`'s transaction count had the same surviving `!t.failed`.
+        //
+        // **Two successes and one failure, not one of each.** The first version
+        // of this test used one and one, so deleting the `!` inverted the filter
+        // and still counted exactly one transaction -- the assertion passed
+        // either way and the mutant survived. A count that is equal under the
+        // mutation proves nothing about the predicate.
+        let launch = launch_tx_for_test();
+        let second = tx(&["Payer", "Wallet"]);
+        let mut failed = tx(&["Payer", "Other"]);
+        failed.failed = true;
+
+        let whole =
+            assemble(&launch, &[launch.clone(), second, failed], "M", false).expect("a launch");
+        assert_eq!(whole.transactions, Count::Exactly(2));
+    }
+
+    fn launch_tx_for_test() -> Transaction {
+        let mut t = tx(&["Payer"]);
+        t.instructions = vec![RawInstruction {
+            program: pumpfun_program(),
+            data: launch_data(),
+            accounts: Vec::new(),
+        }];
+        t
+    }
+
+    #[test]
+    fn a_pre_balance_of_another_mint_does_not_mask_a_receipt() {
+        // The `b.mint == mint` in the pre-balance lookup was a surviving
+        // mutant. Without it, an account that already held a *different* token
+        // at the same index has that balance read as its prior balance of the
+        // subject -- and a real receipt is silently dropped.
+        let mut t = tx(&["Payer", "Holder"]);
+        t.pre_token_balances = vec![balance(1, "OTHER", 1_000)];
+        t.post_token_balances = vec![balance(1, "M", 10)];
+        assert_eq!(recipients_in(&[t], "M"), 1);
+    }
+
     /// A `create` payload: the discriminator, then three length-prefixed
     /// strings, then the creator.
     fn launch_data() -> Vec<u8> {

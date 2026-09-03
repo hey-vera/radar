@@ -47,7 +47,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .parse()
         .map_err(|_| format!("not a valid address: {}", safe(&mint_arg, 64)))?;
 
-    let client = flag(args, "--rpc").map_or_else(RpcClient::from_env, RpcClient::new);
+    let client = flag(args, "--rpc").map_or_else(
+        || RpcClient::from_vars(&|k| std::env::var(k).ok()),
+        RpcClient::new,
+    );
     let seconds = flag(args, "--seconds")
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);

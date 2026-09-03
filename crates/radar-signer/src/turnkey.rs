@@ -131,12 +131,6 @@ impl ApiKey {
         })
         .map_err(|e| NotStamped::KeyFailed(e.to_string()))
     }
-
-    /// The public half, as Turnkey names it. Safe to log.
-    #[must_use]
-    pub fn public_key_hex(&self) -> &str {
-        &self.public_key_hex
-    }
 }
 
 /// Hex, lower case, as Turnkey encodes a stamp's signature.

@@ -107,4 +107,15 @@ exclude_re = [
     #
     # Verified by hand: applying `^` and running the crate's suite passes.
     'replace \| with \^ in compact_u16',
+
+    # `encode_url`: the three bytes are packed into disjoint ranges of one
+    # `u32` -- bits 16-23, 8-15 and 0-7 -- so no two of them share a set bit and
+    # `|` and `^` produce the same value. There is nothing for a test to
+    # distinguish.
+    #
+    # Not the same claim as the two `compact_u16` entries above, which turn on a
+    # mask; this one turns on the shifts. Both were verified by applying the
+    # mutation and running the crate's suite, and `radar-types` covers this
+    # function at every length class and round-trips all 256 byte values.
+    'replace \| with \^ in encode_url',
 ]

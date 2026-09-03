@@ -82,12 +82,6 @@ impl Challenges {
         }
     }
 
-    /// The site these challenges are bound to.
-    #[must_use]
-    pub fn domain(&self) -> &str {
-        &self.domain
-    }
-
     /// Records and returns a new challenge.
     ///
     /// `nonce` is supplied rather than generated here so the randomness has one

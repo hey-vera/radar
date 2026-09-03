@@ -394,7 +394,26 @@ mistake — acting on a trade-off that was not yours to make.
   different fingerprints, so each invalidates the other and rebuilds far more
   than it needs to.
 - **Do not leave anything running when you finish.** Kill background jobs and
-  remove `mutants.out/` rather than leaving the disk full.
+  remove `mutants.out/`. A background cargo job outlives the turn that started
+  it and keeps taking the machine after you have moved on.
+- **Watch `target/`.** It reached **127GB** on 2026-09-03 and the owner's machine
+  froze hard enough to need a forced power-off. Repeated workspace builds under
+  different flag sets each keep their own artefacts, and a mutation run
+  multiplies that. `rm -rf target/debug` costs a rebuild and nothing else; check
+  it when a session has done a lot of building.
+
+### Do not wait
+
+**Never block on something you are not required to watch.** A poll loop, a
+`sleep`, a background waiter — all of it holds the turn open, keeps processes
+alive on the owner's machine, and buys nothing that checking later would not.
+
+- When a long job is running elsewhere — CI especially — **go and do the next
+  unblocked task.** Check the result when you next have a natural reason to.
+- If literally everything is blocked on that job, say so and stop. That is a
+  short message, not half an hour of polling.
+- A wait is only justified when the very next action genuinely cannot be chosen
+  without the result, and nothing else is open. That is rarer than it feels.
 
 ## 9. Communication
 

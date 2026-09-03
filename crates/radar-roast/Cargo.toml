@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: Apache-2.0
+[package]
+name = "radar-roast"
+description = "The public analyst's reply: a typed fact sheet, a deterministic verdict, a voice pass that may not introduce a number, and the check that enforces it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The on-demand chain read the fact sheet is built from.
+radar-onchain.workspace = true
+# The untrusted fence and the escaper. Rule 4 is enforced with the same
+# mechanism the reading assistant uses, not a second one written here.
+radar-agent.workspace = true
+# The provider trait and the request builder. This crate holds no HTTP client
+# and no credential; it is handed a `dyn Provider` or it ships the template.
+radar-model.workspace = true
+radar-types.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Test-only: the adversarial fixture builds dossiers by hand and needs the
+# untrusted fence marker to attempt closing it.
+radar-agent.workspace = true
+
+[lints]
+workspace = true

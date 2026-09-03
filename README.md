@@ -113,6 +113,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-pumpfun` | Builds pump.fun instructions and prices them off the bonding curve. Pure: no clock, no network, no key. The curve is `x·y=k` over published reserves, so a fill is computed rather than quoted — see ADR 0009. |
 | `radar-customer` | The customer model. Pure: a bounded grant derived from the kernel's authorisation, and a signature meter. No account table — see ADR 0006. |
 | `radar-onchain` | The on-demand chain read behind `radar dossier`. Rebuilds a token's launch block and prices its curve from RPC in a bounded number of calls, for a mint that may be forty seconds old — which the store cannot answer, being minutes behind by design and holding the launch-block verdict rather than the number. Read-only: no key, no signer in its tree. |
+| `radar-roast` | The public analyst's reply. A typed fact sheet built from the dossier and the published base rates, a deterministic verdict, a voice pass that picks the headline and the tone, and two checks after generation: every numeral must appear on the sheet, and a list of claims may never be published. Either check failing ships the deterministic template instead. Prints; it holds no credential and cannot post. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
 Every crate in that table exists and is a workspace member; `repo-conformance`

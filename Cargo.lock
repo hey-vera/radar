@@ -1437,9 +1437,11 @@ dependencies = [
  "radar-exec",
  "radar-graph",
  "radar-instruments",
+ "radar-model",
  "radar-onchain",
  "radar-research",
  "radar-risk",
+ "radar-roast",
  "radar-sim",
  "radar-store",
  "radar-strategy",
@@ -1592,6 +1594,19 @@ dependencies = [
  "radar-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "radar-roast"
+version = "0.0.1"
+dependencies = [
+ "radar-agent",
+ "radar-model",
+ "radar-onchain",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

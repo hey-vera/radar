@@ -323,6 +323,36 @@ on its own is a feature, not a gap.
 - Investigate directly rather than delegating. Use a subagent only when the work
   is genuinely large, independent, and benefits from isolated context.
 
+**This repository is checked out on a workstation, not a build farm.** Somebody
+is using that machine while you work on it, and a long parallel Rust job makes it
+unusable — several cores at full tilt, gigabytes of RAM, and a disk that never
+settles. Assume the owner is trying to do something else at the same time.
+
+So **do not run these locally**:
+
+- `just mutants` or `cargo mutants` over anything wider than a single file
+- `cargo build --release`, or repeated full-workspace rebuilds
+- anything with `--jobs` above the default, or long-running background cargo
+
+The edit-compile loop is fine. `just check` on a crate is fine. A `cargo mutants
+-f one/file.rs` run is fine — it finishes in a couple of minutes. The thing to
+avoid is the long, wide, parallel job.
+
+**Move it, do not skip it.** CI runs the mutation check sharded across four
+runners, and that is where a full run belongs. Push the branch and read the
+result.
+
+**And if CI cannot run it, say so and ask.** That is the case this rule exists to
+handle honestly: on 2026-09-02 the mutation job was killed by the runner on every
+attempt, so a full run happened locally instead — repeatedly, for most of a
+session, on the owner's machine, after being told once that it was a problem.
+Both halves of that were wrong. The check mattered *and* the machine mattered,
+and the answer was neither to skip it nor to grind the workstation: it was to say
+plainly that the required check could not run, and let the owner decide.
+
+Silently skipping a check and silently burning somebody's computer are the same
+mistake — acting on a trade-off that was not yours to make.
+
 ## 9. Communication
 
 - Lead with the result or the conclusion. Do not bury it under preamble.

@@ -1273,3 +1273,43 @@ this cannot be written.
 that something is part of the key. A comment saying a caller must check is a
 comment saying the type is wrong.
 
+## 28. A mutant that killed the machine, so the check could not report
+
+One of four mutation shards was killed three minutes into every run of a
+sixty-eight-commit branch, reporting a baseline and then `ERROR interrupted`.
+The other three passed. It was diagnosed twice as a cancellation caused by
+pushing during an in-flight run — the mechanism entry 26's session had just
+learned — and both times that was wrong, for a reason visible in the run itself:
+`cancel-in-progress` cancels a *whole run*, and this was one job out of twelve.
+
+The cause was in the code being mutated. `compact_u16` was an unbounded
+`loop`, and `cargo mutants` turns its `remaining == 0` exit into `remaining
+!= 0`. For a value of zero that never terminates, and every iteration pushes a
+byte — so it is an unbounded **allocation**, not a spin. The runner ran out of
+memory and the job died with it, three minutes in, before the tool's own 300s
+per-mutant timeout could fire.
+
+That is the part worth keeping. **A tool cannot time out a mutant that kills the
+machine it is running on.** Every timeout `cargo mutants` offers assumes the
+harness outlives the mutant. When it does not, the check does not report a
+survivor, or a timeout, or a failure — it reports nothing, and the job looks
+infrastructurally broken rather than informative. Entry 26's lesson in a new
+place: a check must fail differently when it did not run than when it found
+nothing, and here it could not fail at all.
+
+Two things follow.
+
+**An unbounded loop that allocates is a different risk from one that spins**, and
+mutation testing is the thing most likely to find it, because it deliberately
+breaks exit conditions. Where the bound is known — a compact-u16 is three bytes,
+because the format is defined over a `u16` at seven bits a byte — write it. The
+mutation then produces a wrong answer that a test catches, which is the outcome
+the whole exercise is for.
+
+**A single job failing where its siblings pass is evidence about the work, not
+the infrastructure.** Sharding is deterministic, so the same shard drawing the
+same fatal mutant every time is a signature. The tell was there in the first
+log: shard 1, every run, same three minutes.
+
+**The check:** when one shard of a parallel job dies and the rest pass, look at
+what that shard was given before looking at the runner.

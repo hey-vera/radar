@@ -70,9 +70,19 @@ Radar's deterministic strategy decides. What a customer gets is the evidence and
 the reasoning, unchanged from what the recorder holds.
 
 - **Manual** — the customer signs every trade Radar offers.
-- **Automated** — a signed session signs on their behalf.
+- **Automated** — Radar signs on their behalf, within bounds they set and can
+  revoke.
 - **Risk level** — a threshold that keeps high-risk trades from being offered at
   all, and from being auto-signed if they are.
+
+**Automated is the harder half, and not for the reason it looks.** It cannot be
+done with a session key that signs only certain instructions: pump.fun's own
+transactions require the *customer's* account as a signer on every one of the
+three instructions, so there is no delegated key that can sign a buy without
+being able to sign anything. Unattended trading therefore means somebody holds a
+key that can move the customer's funds, which is a custody question rather than
+a wiring one, and it is why automated is a later and separately-priced thing
+rather than a checkbox.
 
 ### AI mode
 
@@ -100,6 +110,26 @@ AI mode is a conversation, not a dashboard.
 screen.** A customer who cannot ask it a question in their own words, or stop it
 in one sentence, does not actually control it — whatever the settings page says.
 
+### Signing in, and why there are two identities
+
+**A wallet is how you trade. An account is how you buy.** They answer different
+questions and collapsing them would break one of them.
+
+- **The wallet** proves who is trading, by signing a challenge. No vendor sits in
+  that path, on purpose: the wallet is the thing that moves money, and putting a
+  third party between a customer and their key is the one dependency worth
+  refusing.
+- **An account** — email, or a social login — is what a subscription attaches to.
+  A wallet address cannot receive a receipt, be contacted about a failed charge,
+  or be recovered when it is lost, and a reader who only wants the research has
+  no reason to own one at all.
+
+So an account is required to *buy* Radar and never to *authorise* anything. This
+is the same distinction rule 1 draws everywhere else: **a connected wallet is
+authentication, not authority, and neither is a paid account.** Being signed in,
+being subscribed, and being allowed to trade are three separate facts, and the
+last one is decided by the risk kernel rather than by either of the others.
+
 ### Two consequences that are not negotiable
 
 **A stop command must never travel through the model.** "Stop everything" has to
@@ -119,8 +149,10 @@ Every competitor shows what is going up. **Radar shows what it refused, and can
 tell you exactly why** — because every decision it has ever made carries a reason
 list and can be replayed at the watermark it was taken under.
 
-That is the asset. Roughly 4,400 recorded decisions that a human clicking *buy*
-would never have produced.
+That is the asset. **7,543 recorded decisions** as of 2026-09-03, against 479,564
+launches and 1,326,862 outcome measurements — every one of them made by a rule,
+carrying a reason list, and replayable. A human clicking *buy* produces none of
+it.
 
 ## The honest state, which is the point rather than an apology
 
@@ -173,6 +205,17 @@ demonstration available of the thing that makes Radar different — everyone els
 gives opinions, Radar gives receipts.
 
 It is also the cheapest possible test of whether anyone wants what Radar knows.
+
+**It needs no accounts and no sign-in.** The bot is reached by mentioning it, and
+the reply is public. That independence is most of its value: it can ship, and be
+useful, without waiting on billing, custody, or a single line of the trading
+lane — and it is the only part of Radar that can.
+
+**A page comes after the bot, not with it.** A public home for the roaster —
+its best answers, what it has caught, rewards and giveaways for the people who
+bring it the coins worth roasting. That is a distribution surface built on top of
+a bot that already works, and building it first would be building an audience
+venue with nothing to put in it.
 
 **What exists and what does not**, because "we mostly have this already" is the
 kind of assumption that turns a week into a quarter:

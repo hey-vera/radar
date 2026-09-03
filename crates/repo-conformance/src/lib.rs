@@ -136,7 +136,15 @@ pub fn documents() -> Vec<PathBuf> {
     let root = root();
     let mut out: Vec<PathBuf> = known_files()
         .iter()
-        .filter(|f| f.ends_with(".md"))
+        // Extension rather than a suffix match, and case-insensitively. On
+        // Windows `AGENTS.MD` and `AGENTS.md` are the same file, and this
+        // repository has already lost a document to exactly that collision --
+        // so a `.MD` is a document worth checking, not one worth skipping.
+        .filter(|f| {
+            Path::new(f.as_str())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        })
         .map(|f| root.join(f))
         .collect();
     out.retain(|p| p.exists());

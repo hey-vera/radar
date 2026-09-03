@@ -113,6 +113,19 @@ pub fn relative_links(markdown: &str) -> Vec<String> {
     out
 }
 
+/// Every markdown document in the repository.
+///
+/// **Discovered, not listed.** This was a hand-written enumeration of four root
+/// files plus `docs/adr`, `docs/research` and `deploy`, and `docs/` itself was
+/// not among them — so `docs/STATE.md` was created, committed, and checked by
+/// nothing. Fifteen of its links were broken on the day it landed, because it
+/// had been cut out of root-level `AGENTS.md` and its `docs/...` paths were
+/// never re-based; every conformance rule passed, because none of them looked.
+///
+/// A list of what to check is a second thing to keep in sync with the tree, and
+/// it fails silently in the direction that reports success. Deriving it from
+/// [`known_files`] cannot go stale: a document added anywhere is checked from
+/// the commit that adds it.
 /// Every markdown file tracked in the repository's documented areas.
 ///
 /// # Panics
@@ -121,27 +134,21 @@ pub fn relative_links(markdown: &str) -> Vec<String> {
 #[must_use]
 pub fn documents() -> Vec<PathBuf> {
     let root = root();
-    let mut out = vec![
-        root.join("README.md"),
-        root.join("AGENTS.md"),
-        root.join("CLAUDE.md"),
-        root.join("LEARNINGS.md"),
-    ];
-    for dir in ["docs/adr", "docs/research", "deploy"] {
-        let path = root.join(dir);
-        if !path.is_dir() {
-            continue;
-        }
-        let mut found: Vec<PathBuf> = std::fs::read_dir(&path)
-            .expect("a documented directory must be readable")
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|e| e == "md"))
-            .collect();
-        found.sort();
-        out.append(&mut found);
-    }
+    let mut out: Vec<PathBuf> = known_files()
+        .iter()
+        // Extension rather than a suffix match, and case-insensitively. On
+        // Windows `AGENTS.MD` and `AGENTS.md` are the same file, and this
+        // repository has already lost a document to exactly that collision --
+        // so a `.MD` is a document worth checking, not one worth skipping.
+        .filter(|f| {
+            Path::new(f.as_str())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        })
+        .map(|f| root.join(f))
+        .collect();
     out.retain(|p| p.exists());
+    out.sort();
     out
 }
 

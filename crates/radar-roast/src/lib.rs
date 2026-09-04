@@ -49,7 +49,7 @@ pub mod verdict;
 pub mod voice;
 
 pub use baserates::BaseRates;
-pub use creator::CreatorIndex;
+pub use creator::{CreatorIndex, Population};
 pub use sheet::{Fact, FactSheet};
 pub use verdict::{Verdict, template};
 pub use voice::{Fellback, Reply, write};

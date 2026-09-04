@@ -281,3 +281,77 @@ fn a_token_that_showed_almost_no_life_is_counted_as_such() {
     assert_eq!(record.organic, 0);
     assert_eq!(record.instant, 0);
 }
+
+#[test]
+fn the_population_is_the_sum_of_its_parts() {
+    // The population is accumulated in its own pass rather than summed from the
+    // records at the end, which is the only way it can disagree with them --
+    // and the only way it is worth having, because a total summed from the
+    // parts would agree with a per-creator bug rather than catch it.
+    //
+    // Two creators, one of whom has every outcome shape, so no counter can be
+    // attached to the wrong accumulator without this failing.
+    let index = index_over(
+        vec![
+            launch(1, 100, 1_000, true),
+            launch(2, 100, 1_001, true),
+            launch(3, 100, 1_002, true),
+            launch(4, 200, 1_003, true),
+            // Never happened, so it is in neither total.
+            launch(5, 200, 1_004, false),
+        ],
+        vec![
+            outcome(1, 2_000, 1_000, Some(5_000), 900),
+            outcome(2, 2_000, 1_001, Some(0), 900),
+            stillborn(3, 2_000, 1_002),
+            outcome(4, 2_000, 1_003, Some(5_000), 900),
+        ],
+    );
+
+    let population = index.population.expect("a build always measures one");
+    let summed = index
+        .creators
+        .values()
+        .fold((0_u64, 0_u64, 0_u64, 0_u64, 0_u64), |mut acc, r| {
+            acc.0 += u64::from(r.launches);
+            acc.1 += u64::from(r.measured);
+            acc.2 += u64::from(r.organic);
+            acc.3 += u64::from(r.instant);
+            acc.4 += u64::from(r.stillborn);
+            acc
+        });
+    assert_eq!(
+        (
+            population.launches,
+            population.measured,
+            population.organic,
+            population.instant,
+            population.stillborn
+        ),
+        summed,
+        "the total and the parts were counted separately and must agree: {population:?}"
+    );
+    // And the absolute values, so that both halves being wrong the same way is
+    // still caught.
+    assert_eq!(population.launches, 4, "the failed launch is not one");
+    assert_eq!(population.measured, 4);
+    assert_eq!(population.organic, 2);
+    assert_eq!(population.instant, 1);
+    assert_eq!(population.stillborn, 1);
+}
+
+#[test]
+fn an_empty_store_measures_a_population_rather_than_declining_to() {
+    // `None` means "written by a version that did not measure this". A build
+    // that found nothing must say so as zeroes-with-no-denominator, because the
+    // consumer's two branches are "not measured" and "measured, and empty" and
+    // they produce different replies.
+    let index = index_over(vec![launch(1, 100, 1_000, false)], Vec::new());
+    let population = index.population.expect("a build always measures one");
+    assert_eq!(population.launches, 0);
+    assert_eq!(
+        population.graduated_share(),
+        None,
+        "no denominator, so no share -- rule 9, and this is the flattering direction"
+    );
+}

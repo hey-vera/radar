@@ -165,6 +165,15 @@ impl FactSheet {
             ));
         }
 
+        // Not inside the launch-block arm above, and deliberately: this is a
+        // fact about the venue, not about the coin, so a mint whose launch block
+        // could not be read still gets it. It is also what gives the creator's
+        // counts a scale -- "none of 150 filled its curve" reads differently
+        // once you know what share of everything does.
+        if let Some(population) = creators.and_then(|c| c.population) {
+            push_measured_population(&mut facts, &population);
+        }
+
         if let Some(rates) = rates {
             push_cost(&mut facts, rates);
         }
@@ -393,6 +402,77 @@ fn push_creator(
         f64::from(record.stillborn),
         record.stillborn.to_string(),
     ));
+}
+
+/// The population as **Radar itself measured it**, from the store.
+///
+/// # Why this is beside the snapshot rather than instead of it
+///
+/// `push_population` places one coin's recipient count in a distribution that
+/// came from outside: a public RPC walking 45 slots, and a SQL endpoint that
+/// truncates at a thousand rows. That distribution is the only one available,
+/// because the store did not record a launch-block recipient count until
+/// ADR 0012 and only rows written after 2026-09-03 carry one.
+///
+/// The graduation rates are different. Radar has every succeeded launch it ever
+/// recorded and every outcome it ever measured, so it can count them rather than
+/// sample them — and the creator-index timer already does, every six hours, in
+/// the same pass. On these figures the store is the better instrument, and using
+/// the sampled ones when the counted ones are on disk would be a choice to be
+/// less accurate.
+///
+/// # The denominator is stated, always
+///
+/// Every share here is over `measured`, and `measured` is printed beside them.
+/// The gap between what was launched and what was measured is Radar's own
+/// backlog, and a share quoted without its denominator invites the reader to
+/// treat a lag as a finding.
+fn push_measured_population(facts: &mut Vec<Fact>, population: &crate::creator::Population) {
+    // Rule 9 in one branch: nothing measured is not a population of zeroes. Say
+    // that the figure is missing, in Radar's own words, rather than publishing
+    // "0% of launches graduate" off an empty denominator.
+    let Some(graduated) = population.graduated_share() else {
+        facts.push(Fact {
+            label: "how the venue as a whole turns out".to_owned(),
+            rendered: "NOT AVAILABLE -- no outcome has been measured yet".to_owned(),
+            values: Vec::new(),
+        });
+        return;
+    };
+    facts.push(Fact::exact(
+        "launches Radar has recorded and measured, which every share below is out of",
+        // Lossless below 2^53; these are counts of launches.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts of launches; 2^53 is six orders of magnitude away"
+        )]
+        {
+            population.measured as f64
+        },
+        population.measured.to_string(),
+    ));
+    facts.push(Fact::share(
+        "of every measured launch, how many graduated at all",
+        graduated,
+    ));
+    if let Some(organic) = population.organic_share() {
+        facts.push(Fact::share(
+            "of every measured launch, how many filled their curve over time",
+            organic,
+        ));
+    }
+    if let Some(instant) = population.instant_share() {
+        facts.push(Fact::share(
+            "of every measured launch, how many filled inside their own launch block",
+            instant,
+        ));
+    }
+    if let Some(stillborn) = population.stillborn_share() {
+        facts.push(Fact::share(
+            "of every measured launch, how many showed almost no activity at all",
+            stillborn,
+        ));
+    }
 }
 
 fn push_population(facts: &mut Vec<Fact>, recipients: Count, rates: &BaseRates) {

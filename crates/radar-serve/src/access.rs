@@ -1121,6 +1121,15 @@ mod tests {
             ("/v1/instruments", Audience::Operator),
             ("/v1/instruments/creator_track_record", Audience::Operator),
             ("/v1/link", Audience::Operator),
+            // The public analyst's reply log. Operator because it carries the
+            // fact sheet behind every answer, which is working material rather
+            // than a public artefact -- and because it reaches this row by
+            // falling through rather than by being listed, which is the
+            // fallback doing its job.
+            ("/v1/analyst/replies", Audience::Operator),
+            // The interface page that reads it. Not in the customer list above,
+            // and this row is what says that is deliberate.
+            ("/analyst", Audience::Operator),
             ("/mcp", Audience::Operator),
         ] {
             assert_eq!(audience_of(path), expected, "{path}");

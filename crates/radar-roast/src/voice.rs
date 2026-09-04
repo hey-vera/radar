@@ -37,7 +37,7 @@
 use radar_model::{Provider, Request};
 
 use crate::sheet::FactSheet;
-use crate::{fidelity, forbidden, verdict};
+use crate::{fidelity, forbidden, render, verdict};
 
 /// What the model is told it is doing.
 ///
@@ -132,7 +132,13 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
         }
     };
 
-    let text = answer.text.trim().to_owned();
+    // Cleaned **before** the checks, not after, and the ordering is the whole
+    // reason `render` exists. Both checks below read the text as characters, and
+    // a zero-width space renders as nothing: `s\u{200b}cam` is two tokens to a
+    // checker and one word to a reader, and `1\u{200b}00%` is not a number until it
+    // reaches the timeline. Cleaning afterwards would assemble exactly the
+    // statement the checks refused.
+    let text = render::for_publication(&answer.text);
     if text.is_empty() {
         return Reply {
             text: fallback,
@@ -250,6 +256,67 @@ mod tests {
         fn ask(&self, _: &Request) -> Result<Answer, Unreachable> {
             Err(Unreachable::NoContact("no route".to_owned()))
         }
+    }
+
+    #[test]
+    fn a_forbidden_word_split_by_a_zero_width_space_is_still_caught() {
+        // The evasion this ordering closes. `forbidden::check` reads characters,
+        // so "s\u{200b}cam" is two tokens it does not recognise -- and X renders
+        // it as one word. Cleaning after the check would have assembled exactly
+        // the claim the check refused.
+        //
+        // Verified by re-applying the bug: moving `render::for_publication`
+        // below the two checks makes this ship the model's text.
+        let reply = write(
+            &sheet(),
+            Some(&Says("this one is a s\u{200b}cam, obviously")),
+        );
+        assert!(
+            reply.is_template(),
+            "the forbidden word must be caught: {:?}",
+            reply.text
+        );
+        assert!(matches!(reply.fellback, Some(Fellback::Forbidden(_))));
+    }
+
+    #[test]
+    fn a_fabricated_number_split_by_a_zero_width_space_is_still_caught() {
+        // The discriminating case, and it took two attempts to build.
+        //
+        // The sheet authorises 11 and 850. Split by a zero-width space,
+        // "11\u{200b}850" is two numbers the sheet **does** authorise, so a
+        // fidelity check running first passes it -- and the reader is then shown
+        // 11850, which nothing measured.
+        //
+        // A first version of this test used "1\u{200b}00%", which the check
+        // refuses either way because neither half is authorised. It passed with
+        // the bug re-applied and therefore proved nothing about the ordering.
+        let reply = write(&sheet(), Some(&Says("the figure is 11\u{200b}850 exactly")));
+        assert!(
+            reply.is_template(),
+            "11850 is not on the sheet and must not be published: {:?}",
+            reply.text
+        );
+        assert!(matches!(reply.fellback, Some(Fellback::Fabricated(_))));
+    }
+
+    #[test]
+    fn a_bidirectional_override_never_reaches_a_published_reply() {
+        // An override reverses the rendering of everything after it, which
+        // turns a true sentence into a different one without changing a
+        // character any checker reads.
+        let reply = write(
+            &sheet(),
+            Some(&Says("eleven recipients\u{202e} in the block")),
+        );
+        assert!(!reply.text.contains('\u{202e}'), "{:?}", reply.text);
+    }
+
+    #[test]
+    fn a_reply_that_is_only_invisible_characters_is_empty_rather_than_published() {
+        let reply = write(&sheet(), Some(&Says("\u{200b}\u{200b}")));
+        assert!(reply.is_template());
+        assert_eq!(reply.fellback, Some(Fellback::Empty));
     }
 
     #[test]

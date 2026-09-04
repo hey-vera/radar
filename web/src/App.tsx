@@ -30,6 +30,7 @@ import { Link, Route, Switch, useRoute } from "wouter";
 import { Wallet } from "./Wallet";
 
 import { Agent } from "./Agent";
+import { Analyst } from "./Analyst";
 import { Decisions } from "./Decisions";
 import { Health } from "./Health";
 import { Scoreboard } from "./Scoreboard";
@@ -74,6 +75,7 @@ export function App() {
           <Route path="/ask">
             <Agent alwaysShow />
           </Route>
+          <Route path="/analyst" component={Analyst} />
           <Route path="/instance" component={Health} />
           <Route path="/token/:mint" component={TokenPage} />
           <Route>

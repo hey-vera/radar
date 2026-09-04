@@ -11,10 +11,32 @@ homepage.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The pipeline one mention goes through. Here rather than in the command that
+# had it, because the daemon is a second caller -- and two copies of *what the
+# account says* is the arrangement where the version somebody reviews two
+# hundred replies from is not the version that posts them.
+radar-onchain.workspace = true
+radar-roast.workspace = true
+radar-model.workspace = true
+# The spend meter. Pure policy -- no clock, no network, no filesystem -- so this
+# crate decides what "today" means and where the ledger lives, which is exactly
+# the split that lets the meter be tested without either.
+radar-provider.workspace = true
 radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The one impure edge in this crate: reading mentions and posting replies.
+# Matched to the client every other crate here uses rather than adding a second
+# HTTP stack to a workspace whose dependency bar is "the alternative is writing
+# it ourselves and getting it wrong".
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 [lints]
 workspace = true
+
+# The daemon. A binary's caller is systemd, which is why the loop lives in one
+# rather than in a library function whose only caller would be a test.
+[[bin]]
+name = "radar-analyst"
+path = "src/main.rs"

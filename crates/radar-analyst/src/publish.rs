@@ -93,22 +93,47 @@ impl Publisher for DryRun {
     }
 }
 
-/// Publishes an entry, or records that it was not published.
+/// Publishes an entry, recording it **before** it is said and again after.
 ///
-/// The log is written **either way**, and it is written *before* the reply is
-/// treated as sent. Publishing something there is no record of is the one
-/// outcome [`crate::log`] exists to prevent, and it is worse than not
-/// publishing at all.
+/// # The ordering is the point, and an earlier version had it backwards
+///
+/// This function used to reply first and append afterwards. Its own doc claimed
+/// the log was written "before the reply is treated as sent", which was true and
+/// not the guarantee anybody wanted: the post had already happened, so a log
+/// write that failed left a **public statement with no record of it**. That is
+/// the one outcome [`crate::log`] exists to prevent, and with `DryRun` as the
+/// only publisher nothing could observe it.
+///
+/// So the intent is recorded first. Two appends, and the failure modes are
+/// deliberately asymmetric:
+///
+/// - **The first append fails** — nothing is said. An account that cannot record
+///   what it says must not say it.
+/// - **The reply fails** — the second append records why, beside the first.
+/// - **The second append fails** — the reply exists and its id does not. The
+///   first record still holds the fact sheet, the slot and the exact text, so
+///   the statement is still defensible; only the platform's id for it is lost.
+///   That is the cheapest of the four failures and it is the one this ordering
+///   chooses to accept.
+///
+/// The two records share a `mention_id`. [`crate::log::latest`] folds them, and
+/// a reader that does not fold sees the intent and then the outcome, in order,
+/// which is also true.
 ///
 /// # Errors
 ///
-/// The I/O error when the log cannot be written. **This stops the reply**: an
-/// account that cannot record what it says must not say it.
+/// The I/O error when either append fails. A caller that treats this as "not
+/// published" is wrong only in the third case above, and the admission gate's
+/// per-mint dedupe is what stops that becoming a second reply.
 pub fn publish(
     publisher: &dyn Publisher,
     log_path: &str,
     mut entry: Entry,
 ) -> std::io::Result<Entry> {
+    // Said nothing yet. This is the record that makes the reply defensible even
+    // if everything after it fails.
+    crate::log::append(log_path, &entry)?;
+
     match publisher.reply(&entry.mention_id, &entry.reply) {
         Ok(id) => entry.reply_id = Some(id),
         Err(why) => {
@@ -181,10 +206,59 @@ mod tests {
         assert!(out.reply_id.is_none());
         assert!(out.fellback.expect("a reason").contains("not published"));
 
-        let back = crate::log::read(&path).expect("read");
+        // Two lines: the intent, then the outcome. `latest` is what a reader
+        // asking "what did this account say" wants.
+        let raw = crate::log::read(&path).expect("read");
+        assert_eq!(raw.len(), 2, "the intent and the outcome are both recorded");
+        let back = crate::log::latest(&path).expect("read");
         assert_eq!(back.len(), 1);
         assert!(back[0].reply_id.is_none());
         assert_eq!(back[0].fact_sheet, "recipients: 6\n");
+    }
+
+    /// A publisher that reads the log at the moment it is asked to post.
+    ///
+    /// The only way to test an *ordering*: it captures what was on disk when the
+    /// reply was made, which is exactly the question — was the statement
+    /// recorded before it was said, or after?
+    #[derive(Debug)]
+    struct ReadsTheLogWhilePosting {
+        path: String,
+        seen: std::sync::Mutex<usize>,
+    }
+
+    impl Publisher for ReadsTheLogWhilePosting {
+        fn name(&self) -> &'static str {
+            "reads-the-log"
+        }
+        fn reply(&self, _: &str, _: &str) -> Result<String, Undeliverable> {
+            let lines = crate::log::read(&self.path).map_or(0, |v| v.len());
+            *self.seen.lock().expect("not poisoned") = lines;
+            Ok("reply-1".to_owned())
+        }
+    }
+
+    #[test]
+    fn nothing_is_said_before_it_is_recorded() {
+        // The bug this replaces: `publish` replied first and appended
+        // afterwards, so a failed log write left a public statement with no
+        // record of it. With `DryRun` as the only publisher nothing could
+        // observe that, which is why it survived review and a test suite.
+        //
+        // Verified by re-applying it: swapping the first `append` back below the
+        // `match` makes this read 0 and fail.
+        let path = temp("ordering.jsonl");
+        let publisher = ReadsTheLogWhilePosting {
+            path: path.clone(),
+            seen: std::sync::Mutex::new(usize::MAX),
+        };
+        publish(&publisher, &path, entry()).expect("logged");
+
+        let at_post_time = *publisher.seen.lock().expect("not poisoned");
+        assert_eq!(
+            at_post_time, 1,
+            "the reply was made with {at_post_time} record(s) on disk, and it must be 1"
+        );
     }
 
     #[derive(Debug)]
@@ -206,11 +280,14 @@ mod tests {
         assert_eq!(out.reply_id.as_deref(), Some("reply-1"));
         assert!(out.fellback.is_none());
         assert_eq!(
-            crate::log::read(&path).expect("read")[0]
+            crate::log::latest(&path).expect("read")[0]
                 .reply_id
                 .as_deref(),
             Some("reply-1")
         );
+        let raw = crate::log::read(&path).expect("read");
+        assert_eq!(raw.len(), 2);
+        assert!(raw[0].reply_id.is_none(), "the first record is the intent");
     }
 
     #[test]

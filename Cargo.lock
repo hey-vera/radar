@@ -1253,10 +1253,15 @@ dependencies = [
 name = "radar-analyst"
 version = "0.0.1"
 dependencies = [
+ "radar-model",
+ "radar-onchain",
+ "radar-provider",
+ "radar-roast",
  "radar-types",
  "serde",
  "serde_json",
  "thiserror",
+ "ureq",
 ]
 
 [[package]]
@@ -1473,6 +1478,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "radar-agent",
+ "radar-analyst",
  "radar-asof",
  "radar-customer",
  "radar-instruments",

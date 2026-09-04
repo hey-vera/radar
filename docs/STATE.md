@@ -267,6 +267,37 @@ it deliberately, and not as a side effect of something else. Note that opening i
 before the funnel has been exercised with a real proposal would be opening a path
 nothing has ever tested.
 
+## The public analyst, as of 2026-09-04
+
+**Code-complete and posting nothing.** `radar dossier`, `radar roast` and
+`radar analyst --mentions <file>` run offline; `radar-analyst` is also a daemon
+under `deploy/radar-analyst.service` that polls mentions, answers them, meters
+what it spends and logs every reply beside the fact sheet it was built from.
+
+**The only thing between it and a public account is a credential and a
+decision.** `RADAR_X_BEARER` and `RADAR_X_USER_ID` is the switch; with either
+absent the publisher is the dry run and nothing can be posted. The four prices
+have **no defaults**, so an instance that has not been told what it is charged
+answers nothing rather than spending an unmetered amount — which is what makes
+the two unverified X billing figures a line in a config file rather than a
+blocker.
+
+Three properties are load-bearing and each is pinned by a test that was verified
+by re-applying the bug it prevents:
+
+- **A reply is recorded before it is said.** `publish` appends the intent, posts,
+  then appends the outcome. It used to post first, and a failed log write would
+  have left a public statement with no record of it.
+- **The reply is sanitised before it is checked, never after.** The forbidden and
+  fidelity checks read characters, and a zero-width space renders as nothing —
+  `s<ZWSP>cam` is two tokens to a checker and one word to a reader. Cleaning
+  afterwards would assemble exactly the statement the checks refused.
+- **The gate refuses before the chain is read**, because the read is the
+  expensive part.
+
+Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
+against the chain and append-only against its own log.
+
 ## Where to start
 
 - [`docs/research/`](../docs/research/) — what was investigated and what it found,

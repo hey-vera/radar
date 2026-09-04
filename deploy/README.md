@@ -670,6 +670,61 @@ roughly 0% CPU — neither appears in the top consumers on a box also running
 Cortex and Pulse. The systemd units are for restart-on-failure and boot
 persistence, not for resource containment.
 
+## The public analyst
+
+`radar-analyst` answers mentions with what Radar measured. It is the one service
+here that talks to a third party on a stranger's schedule, so it is a separate
+unit: a crash, a rate limit or a revoked token must not touch the recorder.
+
+**It does not read the store.** Per-mint facts come from RPC on demand and the
+population figures come from a snapshot file, so this unit and the recorder
+share nothing but a disk.
+
+```bash
+sudo install -D -m644 deploy/radar-analyst.service /etc/systemd/system/radar-analyst.service
+sudo install -m 0640 -o root -g guardian deploy/analyst.env.example /etc/radar/analyst.env
+install -m755 dist/radar-analyst ~/bin/radar-analyst
+mkdir -p ~/radar/data/analyst
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-analyst
+```
+
+**It starts safely with an empty env file, and that is the point.** Every switch
+is deny-by-default, and each absence is reported rather than assumed:
+
+| absent | what happens |
+|---|---|
+| `RADAR_X_BEARER` / `RADAR_X_USER_ID` | **nothing is read and nothing is posted** — the publisher is the dry run |
+| the four prices | nothing is answered: an unpriced call cannot be metered |
+| `RADAR_ANALYST_DAILY_USD` / `_PER_CALL_USD` | the budget is closed and every call is refused |
+| the limits | the admission gate refuses every mention |
+| `RADAR_MODEL_*` | the deterministic template ships instead of a voice |
+| the base-rate snapshot | replies carry no population context |
+
+A daemon that exits on a missing variable looks like a broken deploy. One that
+runs and says `unfunded` on every tick is legible, and `radar brief` can see it.
+
+**Setting `RADAR_X_BEARER` and `RADAR_X_USER_ID` is what makes the account
+public.** Until both are set, this writes replies to a log and shows them to
+nobody. That is the intended state for the first day: read a few hundred of them
+beside their fact sheets before anyone else does.
+
+```bash
+journalctl -u radar-analyst -f
+tail -f ~/radar/data/analyst/replies.jsonl
+```
+
+The three files it owns live under `RADAR_ANALYST_DIR`, and the unit grants
+write access to that path and nothing else: `replies.jsonl` is the reply log,
+`cursor` is the last mention answered, and `ledger.json` is the day's spend. The
+ledger is what stops a service under `Restart=always` spending the day's budget
+as many times as it can crash, so **do not delete it to "reset" anything**.
+
+`radar brief` gains an `analyst` line reporting how many replies were answered
+and how many were actually published. The gap between those two numbers is the
+one worth watching: a publisher that is down all night fills the log and answers
+nobody.
+
 ## Knowing when it stopped
 
 `radar-follow.service` restarts a recorder that dies. It cannot help with a

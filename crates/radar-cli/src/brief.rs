@@ -124,6 +124,7 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     let probe = serve_url.map(|url| (url, probe_serving(url)));
     checks.push(agent(probe.as_ref().map(|(_, p)| p)));
     checks.push(serving(probe));
+    checks.push(analyst(&analyst_dir(&|k| std::env::var(k).ok())));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -192,6 +193,76 @@ fn ingestion(store: &Path, now: i64) -> Check {
         Status::Ok
     };
     Check::new(status, "ingestion", detail)
+}
+
+/// Where the analyst keeps its files.
+///
+/// The same default the daemon uses, and the same environment variable, so an
+/// operator who moved the directory does not have to tell the brief twice.
+///
+/// Takes a getter for the reason the daemon's config readers do: the rule is
+/// then testable without setting a process-wide variable that parallel tests
+/// would fight over.
+fn analyst_dir(get: &impl Fn(&str) -> Option<String>) -> String {
+    get("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned())
+}
+
+/// Whether the public analyst is answering, and when it last did.
+///
+/// # Why absence is Unknown rather than Ok
+///
+/// An analyst that has never run and an analyst that stopped look identical from
+/// a directory listing, and both are reported as `Unknown`, which alarms. The
+/// alternative -- treating "no log" as "nothing to report" -- is the failure
+/// LEARNINGS 5 records: a check that reports absence the same way it reports
+/// success. This account's whole product is answering in public, so a silent one
+/// is the outage.
+///
+/// It reads the reply log rather than a process list, for the reason the
+/// ingestion check reads the cursor: a daemon that is running and answering
+/// nobody is the state worth catching, and only the log can tell.
+fn analyst(dir: &str) -> Check {
+    let log = format!("{dir}/replies.jsonl");
+    let entries = match radar_analyst::log::read(&log) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return Check::new(
+                Status::Unknown,
+                "analyst",
+                format!("no reply log at {log} — it has never run, or cannot write ({e})"),
+            );
+        }
+    };
+
+    let Some(last) = entries.iter().map(|e| e.at).max() else {
+        return Check::new(
+            Status::Unknown,
+            "analyst",
+            format!("{log} is empty — it has started and answered nothing"),
+        );
+    };
+
+    // Counted over the folded view, because `publish` writes twice per reply --
+    // once before it says anything and once after. Counting raw lines would
+    // report double.
+    let answered = radar_analyst::log::latest(&log).map_or(entries.len(), |v| v.len());
+    let published = radar_analyst::log::latest(&log)
+        .map_or(0, |v| v.iter().filter(|e| e.reply_id.is_some()).count());
+
+    // No threshold on the age, and no age computed. A quiet account is a quiet
+    // day, not an outage -- this thing answers when it is asked, and nobody
+    // asking is a fact about the world rather than a fault. Alarming on it would
+    // be a check that fires on ordinary weather, which AGENTS.md section 5 says
+    // is worse than no check.
+    //
+    // An earlier version computed the age and then discarded it, which mutation
+    // testing found by replacing the subtraction with an addition and nothing
+    // failing. A number nothing reads is not a number.
+    let detail = format!(
+        "{answered} answered, {published} published; last at {}",
+        from_epoch(i64::try_from(last).unwrap_or(0))
+    );
+    Check::new(Status::Ok, "analyst", detail)
 }
 
 /// The highest slot the store holds.
@@ -1513,5 +1584,109 @@ mod tests {
         assert_eq!(humanise(45), "45s");
         assert_eq!(humanise(600), "10m");
         assert_eq!(humanise(47_143), "13h05m");
+    }
+    #[test]
+    fn the_analyst_directory_falls_back_to_the_daemons_own_default() {
+        // The same default and the same variable the daemon uses. A brief
+        // looking somewhere else reports a healthy analyst as never having run.
+        assert_eq!(analyst_dir(&|_| None), "data/analyst");
+        assert_eq!(
+            analyst_dir(&|k| (k == "RADAR_ANALYST_DIR").then(|| "/srv/a".to_owned())),
+            "/srv/a"
+        );
+    }
+
+    #[test]
+    fn an_analyst_that_never_ran_is_unknown_rather_than_fine() {
+        // The failure LEARNINGS 5 records: a check reporting absence the same
+        // way it reports success. This account's product is answering in
+        // public, so a silent one is the outage -- and `Unknown` alarms.
+        let dir = std::env::temp_dir().join(format!("radar-brief-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let check = analyst(dir.to_str().expect("a path"));
+        assert_eq!(check.status, Status::Unknown, "{}", check.detail);
+        assert!(check.detail.contains("never run"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_empty_reply_log_is_unknown_too() {
+        let dir = std::env::temp_dir().join(format!("radar-brief-empty-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        std::fs::write(dir.join("replies.jsonl"), "").expect("written");
+        let check = analyst(dir.to_str().expect("a path"));
+        assert_eq!(check.status, Status::Unknown, "{}", check.detail);
+    }
+
+    #[test]
+    fn the_analyst_check_counts_replies_rather_than_log_lines() {
+        // `publish` writes twice per reply -- once before it says anything and
+        // once after -- so counting raw lines reports double, and an operator
+        // reading "6 answered" when three people asked would be reading a
+        // number that means nothing.
+        let dir = std::env::temp_dir().join(format!("radar-brief-count-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let log = dir.join("replies.jsonl");
+        let log = log.to_str().expect("a path").to_owned();
+        let _ = std::fs::remove_file(&log);
+
+        for id in ["m1", "m2", "m3"] {
+            let mut entry = radar_analyst::Entry {
+                at: 1_788_000_000,
+                mention_id: id.to_owned(),
+                summoner: "a".to_owned(),
+                mint: None,
+                read_at_slot: None,
+                fact_sheet: String::new(),
+                reply: "text".to_owned(),
+                fellback: None,
+                reply_id: None,
+            };
+            // The intent, then the outcome, exactly as `publish` writes them.
+            radar_analyst::log::append(&log, &entry).expect("intent");
+            entry.reply_id = Some(format!("r-{id}"));
+            radar_analyst::log::append(&log, &entry).expect("outcome");
+        }
+
+        let check = analyst(dir.to_str().expect("a path"));
+        assert_eq!(check.status, Status::Ok, "{}", check.detail);
+        assert!(
+            check.detail.starts_with("3 answered, 3 published"),
+            "six lines are three replies: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_reply_that_was_never_published_is_counted_separately() {
+        // The difference between "we decided this" and "we said this" is the
+        // whole reason the log records both, and an operator needs to see when
+        // the gap opens -- a publisher that is down all night answers nobody
+        // while the log fills up.
+        let dir = std::env::temp_dir().join(format!("radar-brief-dry-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let log = dir.join("replies.jsonl");
+        let log = log.to_str().expect("a path").to_owned();
+        let _ = std::fs::remove_file(&log);
+
+        let entry = radar_analyst::Entry {
+            at: 1_788_000_000,
+            mention_id: "m1".to_owned(),
+            summoner: "a".to_owned(),
+            mint: None,
+            read_at_slot: None,
+            fact_sheet: String::new(),
+            reply: "text".to_owned(),
+            fellback: Some("not published: no credential".to_owned()),
+            reply_id: None,
+        };
+        radar_analyst::log::append(&log, &entry).expect("intent");
+        radar_analyst::log::append(&log, &entry).expect("outcome");
+
+        let check = analyst(dir.to_str().expect("a path"));
+        assert!(
+            check.detail.starts_with("1 answered, 0 published"),
+            "{}",
+            check.detail
+        );
     }
 }

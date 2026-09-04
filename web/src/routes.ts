@@ -61,6 +61,16 @@ export const ROUTES = [
     inNav: true,
   },
   {
+    // The public analyst's reply log. Operator, because every row carries the
+    // fact sheet the reply was built from — working material rather than a
+    // public artefact, and the page an operator reads two hundred dry-run
+    // replies on before anybody outside sees one.
+    path: "/analyst",
+    label: "Analyst",
+    audience: "operator",
+    inNav: true,
+  },
+  {
     // Reached from a decision row or from the lookup box, never from the nav —
     // it needs a mint to mean anything, and a nav entry that leads to an empty
     // form is a nav entry that leads nowhere.

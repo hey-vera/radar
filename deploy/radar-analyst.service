@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-analyst.service
+#
+# The public analyst: reads mentions, answers them, and -- unless a credential
+# says otherwise -- posts nothing at all.
+#
+# Separate from radar-follow and radar-serve for the same reason those are
+# separate from each other: this one talks to a third party on a stranger's
+# schedule, and a crash here must not take the recorder with it.
+#
+# It does NOT read the store. Per-mint facts come from RPC on demand and the
+# population figures come from a snapshot file, so this unit and the recorder
+# share nothing but a disk.
+[Unit]
+Description=Radar public analyst — answers mentions with what was measured
+Documentation=https://github.com/hey-vera/radar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+
+# Every switch is deny-by-default, so an absent file means a service that runs,
+# says what is missing, and posts nothing. The leading `-` keeps that true: a
+# missing env file must not be a failed start, because a unit that will not
+# start is a unit somebody stops looking at.
+EnvironmentFile=-/etc/radar/analyst.env
+ExecStart=/home/guardian/bin/radar-analyst
+
+Restart=always
+RestartSec=30
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Its own directory, and only its own: the reply log, the cursor and the spend
+# ledger. It has no business writing where the recorder writes.
+ReadWritePaths=/home/guardian/radar/data/analyst
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Smaller than the recorder's. This holds one page of mentions and one dossier
+# at a time; anything larger is a leak rather than a workload, and on a 2-core
+# box shared with other people's services a cap is what keeps a leak local.
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

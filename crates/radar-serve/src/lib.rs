@@ -152,6 +152,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/evidence/activity", get(activity))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
+        .route("/v1/analyst/replies", get(analyst_replies))
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/config", get(customer_config))
         .route("/v1/customer/siws/challenge", post(siws::challenge))
@@ -992,6 +993,73 @@ async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> 
     }
 }
 
+/// What the public analyst has said, and what it only decided to say.
+///
+/// # Operator, by falling through rather than by being listed
+///
+/// `audience_of` classifies the customer routes explicitly and everything else
+/// falls to `Audience::Operator`. This route is not in that list, so it is
+/// operator-only without a line being added — which is the fallback doing its
+/// job. It stays that way deliberately: the reply log carries the fact sheet
+/// behind every answer, and that is an operator's working material rather than
+/// a public artefact.
+///
+/// # It reads the log, never the store
+///
+/// The analyst does not write to the store and this does not read from it. A
+/// reply is a live observation about a mint at a slot, not a recorded fact about
+/// the chain, and putting one where a replay reads would be rule 3 broken for
+/// the sake of a convenient join.
+///
+/// Folded, so one reply is one row. `publish` appends twice — once before it
+/// says anything and once after — and a page counting raw lines would report
+/// every answer twice.
+async fn analyst_replies() -> Response {
+    let dir = std::env::var("RADAR_ANALYST_DIR").unwrap_or_else(|_| "data/analyst".to_owned());
+    analyst_replies_in(&dir)
+}
+
+/// The handler, over a directory it is given.
+///
+/// Split from the route so it can be tested without setting a process-wide
+/// environment variable that parallel tests would fight over -- the same shape
+/// the daemon's config readers use.
+fn analyst_replies_in(dir: &str) -> Response {
+    let log = format!("{dir}/replies.jsonl");
+
+    let Ok(entries) = radar_analyst::log::latest(&log) else {
+        // Not an error. An instance with no analyst running has no log, and
+        // reporting that as a failure would make an ordinary configuration look
+        // like a broken one. The count says which.
+        return Json(json!({
+            "log": log,
+            "running": false,
+            "answered": 0,
+            "published": 0,
+            "replies": [],
+        }))
+        .into_response();
+    };
+
+    let published = entries.iter().filter(|e| e.reply_id.is_some()).count();
+    // Newest first: an operator opening this wants the last thing the account
+    // said, not the first.
+    let mut replies: Vec<_> = entries.iter().collect();
+    // Descending, so `Reverse` rather than a comparator: clippy is right that a
+    // key is clearer, and the key here is "how recent", inverted.
+    replies.sort_by_key(|e| std::cmp::Reverse(e.at));
+    replies.truncate(200);
+
+    Json(json!({
+        "log": log,
+        "running": true,
+        "answered": entries.len(),
+        "published": published,
+        "replies": replies,
+    }))
+    .into_response()
+}
+
 /// How many rows each table holds.
 async fn store_counts(State(state): State<Arc<AppState>>) -> Response {
     let watermark = match watermark_of(&state) {
@@ -1229,6 +1297,71 @@ mod tests {
             (1_750_000_000..2_000_000_000).contains(&now),
             "seconds since 1970 is ~1.77e9 in 2026 and ~2.0e9 in 2033; got {now}"
         );
+    }
+
+    /// Reads a handler's JSON body.
+    async fn body_of(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn an_instance_with_no_analyst_says_so_rather_than_failing() {
+        // A missing log is an ordinary configuration -- most instances do not
+        // run the analyst -- and reporting it as an error would make that look
+        // like a fault. `running` is what tells the two apart, and a page that
+        // read only `answered` could not.
+        let dir = std::env::temp_dir().join(format!("radar-noanalyst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+
+        let body = body_of(analyst_replies_in(dir.to_str().expect("a path"))).await;
+        assert_eq!(body["running"], false);
+        assert_eq!(body["answered"], 0);
+        assert_eq!(body["published"], 0);
+        assert!(body["replies"].as_array().expect("an array").is_empty());
+    }
+
+    #[tokio::test]
+    async fn replies_are_folded_newest_first_and_counted_once() {
+        // `publish` appends twice per reply, so a handler counting raw lines
+        // reports every answer twice. And an operator opening this wants the
+        // last thing the account said, not the first.
+        let dir = std::env::temp_dir().join(format!("radar-analyst-api-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let log = dir.join("replies.jsonl");
+        let log = log.to_str().expect("a path").to_owned();
+
+        for (at, id, published) in [(100_u64, "m1", true), (200, "m2", false)] {
+            let mut entry = radar_analyst::Entry {
+                at,
+                mention_id: id.to_owned(),
+                summoner: "a".to_owned(),
+                mint: None,
+                read_at_slot: None,
+                fact_sheet: "evidence".to_owned(),
+                reply: "text".to_owned(),
+                fellback: None,
+                reply_id: None,
+            };
+            radar_analyst::log::append(&log, &entry).expect("intent");
+            if published {
+                entry.reply_id = Some(format!("r-{id}"));
+            }
+            radar_analyst::log::append(&log, &entry).expect("outcome");
+        }
+
+        let body = body_of(analyst_replies_in(dir.to_str().expect("a path"))).await;
+        assert_eq!(body["running"], true);
+        assert_eq!(body["answered"], 2, "four lines are two replies");
+        assert_eq!(body["published"], 1, "one of them was posted");
+        let replies = body["replies"].as_array().expect("an array");
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["mention_id"], "m2", "newest first");
+        assert_eq!(replies[0]["fact_sheet"], "evidence");
     }
 
     #[test]

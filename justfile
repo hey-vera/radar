@@ -50,7 +50,7 @@ cargo := env("RADAR_CARGO", "cargo")
 # it to make a red run green is the thing that must never happen; if the number
 # has to come down, the commit says which tests went and why they went with
 # their subject.
-export MIN_TESTS := "1477"
+export MIN_TESTS := "1568"
 
 _default:
     @just --list --unsorted
@@ -240,7 +240,7 @@ licence-headers:
 # a suite that quietly shrinks is a suite somebody deleted a test from, and the
 # number going down is the only thing that says so. Raise it when tests are
 # added; never lower it to make a run go green.
-export MIN_WEB_TESTS := "25"
+export MIN_WEB_TESTS := "173"
 
 # The interface: install exactly the locked dependencies, check them for known
 # advisories, type-check, test, and build.

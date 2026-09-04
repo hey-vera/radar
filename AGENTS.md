@@ -252,7 +252,11 @@ branch.** `cargo mutants -f <one file>` takes a couple of minutes and is the one
 form of this §8 permits locally. Twenty-one survivors on an open PR is the same
 information, arriving after it is expensive to act on.
 
-**Do not push while a check you are waiting on is in flight.** The workflow sets
+**Do not push while a check you are waiting on is in flight** — `just hooks`
+installs a `pre-push` that now refuses this rather than warning, with
+`RADAR_PUSH_OVER_CI=1` as the deliberate override. It warned for one session and
+was overridden every round; `mutants-shards (0)` was cancelled seven times out
+of seven and a quarter of the mutants went unchecked. The workflow sets
 `cancel-in-progress`, so every push kills the run before it — the fast jobs go
 green either way and the slow one never finishes, which reads exactly like a
 broken check. Before concluding a check is broken, establish that it **ran**:
@@ -330,9 +334,19 @@ lot.
 **Never block on something you are not required to watch.** A poll loop, a
 `sleep`, a background waiter — all of it holds the turn open, keeps processes
 alive on the owner's machine, and buys nothing that checking later would not.
-When a long job runs elsewhere, go and do the next unblocked task. If everything
-is blocked on it, say so and stop; that is a short message, not half an hour of
-polling.
+
+**A list of things for the owner is not the end of your turn.** When the main
+thread is blocked, sort what is left. An item needing a *decision* — money, a
+refusal, a public surface — stops and asks. An item needing only *doing* gets
+done: say what you are starting, then start it. "Here are two things for you"
+while an unblocked task sits is a handback wearing a report's clothes, and it
+makes the owner the scheduler.
+
+**Three conditions, all of them, before starting parallel work:** it does not
+depend on the blocked thing and cannot be invalidated by its outcome; it lands
+on its own branch when the blocked thing owns the current one, so neither
+delays the other; and it is finishable now. A half-done second thread is debt,
+and worse than not having started.
 
 ## 9. Communication
 

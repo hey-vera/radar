@@ -8,9 +8,14 @@
 # read it. Nothing was broken that a check did not catch -- the check caught it
 # immediately and reported to a page nobody opened.
 #
-# **It never blocks.** Exit is always zero. A red previous run is often exactly
-# why you are pushing, and a hook that argued with that would be turned off
-# within a day. It prints one paragraph and gets out of the way.
+# **It blocks in exactly one case**: a run for this branch is still going, so
+# pushing would cancel it. Everything else it prints and gets out of the way for
+# -- a red previous run is often exactly why you are pushing, and a hook that
+# argued with that would be switched off within a day.
+#
+# The one refusal has an override, `RADAR_PUSH_OVER_CI=1`, because superseding a
+# run is sometimes right. The point is not to forbid it; it is to make it a
+# decision somebody takes rather than a notice somebody scrolls past.
 #
 # It is also silent when it cannot know: no `gh`, no network, no runs yet, or a
 # slow API. An absent answer is not a red answer, and printing a scary line
@@ -24,6 +29,12 @@ set -uo pipefail
 branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
 [ -n "$branch" ] || exit 0
 command -v gh >/dev/null 2>&1 || exit 0
+
+# The deliberate override for the one refusal below.
+if [ "${RADAR_PUSH_OVER_CI:-}" = "1" ]; then
+    printf '\n  RADAR_PUSH_OVER_CI=1: superseding any run in flight.\n\n' >&2
+    exit 0
+fi
 
 # A push must not wait on GitHub. `timeout` is not everywhere, so it is used
 # when present and skipped when not.
@@ -71,8 +82,35 @@ case "$status:$conclusion" in
         printf '  sets cancel-in-progress, so a push kills the run before it.\n\n' >&2
         ;;
     in_progress:* | queued:* | requested:* | waiting:*)
-        printf '\n  a CI run on %s (%s) is still %s; this push will cancel it.\n\n' \
+        # **This one refuses**, and it is the only thing here that does.
+        #
+        # It warned instead, for one session. Over seven rounds on
+        # 2026-09-03 it printed this exact notice every time and the push
+        # went ahead every time, because there was always a good local
+        # reason. The cost was not the wasted minutes: `mutants-shards (0)`
+        # was cancelled in seven of seven runs, so a quarter of the mutants
+        # went unchecked for the whole session while the other three shards
+        # were confidently repaired. It reported once, at the end, and was
+        # holding fourteen survivors in the crates that read untrusted input
+        # and meter spending.
+        #
+        # AGENTS.md §6 already said not to do this. Prose is the weakest rung
+        # of the ladder in §5, and this is what that costs when the work is
+        # going well and the rule is only advice.
+        printf '\n  refusing: a CI run on %s (%s) is still %s.\n' \
             "$branch" "$sha" "$status" >&2
+        cat >&2 <<'MSG'
+
+  Pushing now cancels it, and a cancelled shard reports nothing. Wait for it,
+  or put the work on another branch -- a merge is not a blocker and batching
+  is fine.
+
+  If superseding it really is what you want:
+
+      RADAR_PUSH_OVER_CI=1 git push
+
+MSG
+        exit 1
         ;;
 esac
 

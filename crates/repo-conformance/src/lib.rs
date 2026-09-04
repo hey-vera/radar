@@ -505,6 +505,22 @@ pub fn learnings_entries(text: &str) -> Vec<(u32, String)> {
         .collect()
 }
 
+/// Whether `git` can answer questions about this tree.
+///
+/// False under `cargo mutants`, which copies the sources to a scratch directory
+/// without a `.git`. Everything in this crate that shells out to git degrades to
+/// an empty answer there, and a test that cannot tell that apart from a real
+/// empty answer would fail for the environment rather than for the code.
+#[must_use]
+pub fn git_is_usable() -> bool {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["rev-parse", "--git-dir"])
+        .output()
+        .is_ok_and(|o| o.status.success())
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -939,6 +955,43 @@ mod tests {
     }
 
     #[test]
+    fn a_test_path_is_read_to_its_edges_and_no_further() {
+        // `test_paths` had no direct test: it was exercised only through the
+        // ownership rule, which passes trivially when there are no collisions --
+        // so a suite with zero collisions could not tell a working extractor
+        // from one that returned nothing. CI reported nine survivors here.
+        let one = |t: &str| test_paths(t).into_iter().collect::<Vec<_>>();
+
+        // A path that is the whole string. The backward walk has to stop at
+        // index 0 without reading before it, and the forward walk has to stop at
+        // the end without reading past it.
+        assert_eq!(one("crates/a/tests/b.rs"), vec!["crates/a/tests/b.rs"]);
+
+        // Surrounded by characters that are not part of a path -- a markdown
+        // link is the real case. Without a correct backward walk the opening
+        // bracket is swallowed into the path.
+        assert_eq!(
+            one("see [b](crates/a/tests/b.rs) for it"),
+            vec!["crates/a/tests/b.rs"]
+        );
+
+        // Relative from inside `docs/`, normalised to the same path. This is the
+        // whole reason the rule works between a root document and a docs/ one.
+        assert_eq!(one("../crates/a/tests/b.rs"), vec!["crates/a/tests/b.rs"]);
+
+        // Two in one line, and a `/tests/` path that is not Rust.
+        assert_eq!(
+            one("crates/a/tests/x.rs and crates/b/tests/y.rs"),
+            vec!["crates/a/tests/x.rs", "crates/b/tests/y.rs"]
+        );
+        assert!(one("crates/a/tests/fixture.json").is_empty());
+
+        // Prose with no path in it at all.
+        assert!(one("the tests directory").is_empty());
+        assert!(one("").is_empty());
+    }
+
+    #[test]
     fn one_test_file_is_accounted_for_by_one_document() {
         // Three documents make claims about behaviour: AGENTS.md says what the
         // rules are, README.md is the front page, docs/STATE.md is what has
@@ -1061,11 +1114,15 @@ mod tests {
 
         // Every shape this has to tell apart, including the two that were wrong
         // on the first run: a variable assignment, and a recipe with parameters.
+        // `Web:` is here for the third conjunct in the name filter -- a name
+        // outside the allowed character set is not a recipe name, and without
+        // that clause an arbitrary capitalised line reads as one.
         let recipes = justfile_recipes(concat!(
             "cargo := env(\"RADAR_CARGO\", \"cargo\")\n",
             "check: _disk build\n",
             "    cargo test --cfg a:b\n",
             "_disk:\n",
+            "Web:\n",
             "mutants base=\"origin/main\" shard=\"\":\n",
             "web:\n",
         ));
@@ -1075,7 +1132,7 @@ mod tests {
                 .into_iter()
                 .map(str::to_string)
                 .collect::<BTreeSet<_>>(),
-            "`:=` is a variable, a parameterised recipe is named by its first word, an indented body line is not a recipe, and an underscore recipe is not a check"
+            "`:=` is a variable, a parameterised recipe is named by its first word, an indented body line is not a recipe, an underscore recipe is not a check, and `Web` is not a recipe name this repository can have"
         );
 
         let templated = format!("    name: {TEMPLATE_OPEN} matrix.recipe }}}}");
@@ -1093,6 +1150,17 @@ mod tests {
 
     #[test]
     fn no_markdown_document_is_invisible_to_these_checks() {
+        // Declared first: an item after a statement is a clippy warning, and CI
+        // builds with `-D warnings`.
+        struct Probe(PathBuf);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                // Best effort on purpose: a failed assertion must not be
+                // replaced by a panic-in-drop about the cleanup.
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
         // The hole this closes is not hypothetical and was not found by
         // reasoning: design 0004 was written, run against this suite, and
         // passed -- because the suite could not see it. It passed for real only
@@ -1106,6 +1174,33 @@ mod tests {
         assert!(
             untracked.is_empty(),
             "these markdown files exist but git does not know about them, so every check in this crate silently skipped them: {untracked:?} -- run `git add -N <path>` to make them visible, or add them to .gitignore to say they are not documents"
+        );
+
+        // And the other half, in the same test rather than its own, because a
+        // second test creating an untracked file would race the assertion above.
+        //
+        // The assertion above is satisfied by a function that always returns
+        // nothing, which is exactly what CI reported: two survivors that gutted
+        // `untracked_documents` and nothing failed. A rule that cannot tell "no
+        // untracked documents" from "I did not look" is LEARNINGS 5, and this
+        // crate exists to catch that shape.
+        // Skipped where git cannot answer at all -- under `cargo mutants`, which
+        // works in a copy of the sources with no `.git`. There the function
+        // under test is dead whatever its body says, so failing here would be
+        // failing for the environment. `.cargo/mutants.toml` records the two
+        // mutants that consequently survive a mutation run, and records them as
+        // unreachable in that sandbox rather than as equivalent, because they
+        // are not equivalent: they disable the rule.
+        if !git_is_usable() {
+            return;
+        }
+
+        let probe = Probe(root().join("zz-untracked-probe.md"));
+        std::fs::write(&probe.0, "# not a document, a probe\n").expect("write the probe");
+        let seen = untracked_documents();
+        assert!(
+            seen.iter().any(|f| f.ends_with("zz-untracked-probe.md")),
+            "untracked_documents did not report a markdown file that is present and untracked, so the assertion above proves nothing. It saw: {seen:?}"
         );
     }
 

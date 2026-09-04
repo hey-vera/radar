@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Mutants that survive because they are *equivalent*, not because a test is
-# missing.
+# Mutants that survive for a reason other than a missing test.
+#
+# Two categories, and they are not the same claim:
+#
+#   1. **Equivalent** -- the mutation cannot change behaviour. Most of this file.
+#   2. **Unreachable in the mutation sandbox** -- the mutation *would* change
+#      behaviour, and a test does cover it, but `cargo mutants` works in a copy
+#      of the sources with no `.git`, so the code path is dead there whatever its
+#      body says. Marked explicitly, because calling one of these "equivalent"
+#      would be exactly the wrong claim the paragraph below warns about.
 #
 # This file is the place where "we looked and it does not matter" is written
 # down. It has to stay short. Every entry is a claim that a mutation cannot
@@ -164,4 +172,23 @@ exclude_re = [
     # boundary. It passes because the expressions agree, not because the tests
     # are weak.
     'replace / with \* in round_to',
+
+    # --- category 2: unreachable in the mutation sandbox ---------------------
+    #
+    # `untracked_documents` shells out to `git ls-files --others`. It is covered
+    # by the probe in `no_markdown_document_is_invisible_to_these_checks`, which
+    # writes an untracked markdown file, asserts the function reports it, and
+    # removes it again -- and that probe runs in `just tests` and in CI, where
+    # there is a git directory.
+    #
+    # `cargo mutants` copies the sources to a scratch tree with no `.git`, so
+    # `git ls-files` fails there and the function returns empty whatever its body
+    # says. Both mutations below are therefore invisible to a mutation run and
+    # visible to the test suite. They are **not equivalent** -- each one disables
+    # the rule that a new markdown document is checked before it is committed.
+    #
+    # If `cargo mutants` ever runs against a real checkout, delete these two
+    # lines first and confirm the probe kills them.
+    'replace untracked_documents -> Vec<String> with vec!\[\]',
+    'delete ! in untracked_documents',
 ]

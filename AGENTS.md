@@ -308,10 +308,14 @@ default, or long-running background cargo. The edit-compile loop is fine.
 `just check` on a crate is fine. `cargo mutants -f one/file.rs` is fine.
 
 **Move it, do not skip it.** CI runs the mutation check sharded across four
-runners. Push the branch and read the result. **And if CI cannot run it, say so
-and ask** — silently skipping a check and silently burning somebody's computer
-are the same mistake, acting on a trade-off that was not yours to make.
-LEARNINGS 26.
+runners. Push the branch and read the result. **A local `cargo mutants -f` is for
+diagnosing a survivor CI has already reported** — one file, once. It is not the
+way to verify a fix: it costs about nine minutes of the whole machine per file,
+and four runners in parallel are both faster and free. Three serial runs on
+2026-09-03 cost an hour and told CI nothing it would not have said itself.
+**And if CI cannot run it, say so and ask** — silently skipping a check and
+silently burning somebody's computer are the same mistake, acting on a trade-off
+that was not yours to make. LEARNINGS 26.
 
 **Spend the machine sparingly otherwise:** one cargo process at a time, never a
 background build alongside a foreground one. Scope to what you are editing

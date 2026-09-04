@@ -190,33 +190,41 @@ exclude_re = [
     # the dry run and posts nothing. It is caught by the first live run.
     'replace X::from_env -> Option<Self> with None',
 
-    # The daemon's three thinnest wrappers, and none of them is equivalent --
-    # each is **unreachable by a test in this workspace**, which is a different
-    # and more honest claim.
+    # The daemon's two thinnest wrappers, and neither is equivalent -- each is
+    # **unreachable by a test in this workspace**, which is a different and more
+    # honest claim.
     #
     # `daemon::env` is `std::env::var(key).ok()` and `daemon::now` is the clock.
-    # Faking either means setting process-wide state, and this workspace runs its
-    # tests in parallel threads where that is a race between unrelated tests --
+    # Faking either means process-wide state, and this workspace runs its tests
+    # in parallel threads where that is a race between unrelated tests --
     # `std::env::set_var` is also `unsafe` in edition 2024 against a workspace
-    # that forbids unsafe. So the *rules* that read them are what is tested, and
-    # they are tested thoroughly: `budget_from`, `limits_from` and
-    # `Prices::from_vars` all take a getter and are exercised at every
-    # combination, precisely so that only the two-line wrappers are left here.
+    # that forbids unsafe.
     #
-    # `run`'s `budget == Budget::CLOSED` decides whether to print one line, in a
-    # function that never returns. The decision it reports is `budget_from`'s and
-    # that is tested; what survives is the reporting.
-    'replace daemon::env -> Option<String> with None',
-    'replace daemon::env -> Option<String> with Some(String::new())',
-    'replace daemon::env -> Option<String> with Some("xyzzy".into())',
-    'replace daemon::now -> u64 with 0',
-    'replace == with != in run',
+    # So the *rules* that read them are what is tested, and they are tested
+    # thoroughly: `budget_from`, `limits_from` and `Prices::from_vars` all take a
+    # getter and are exercised at every combination, precisely so that only these
+    # two-line wrappers are left here.
+    #
+    # A clock has no value a test can distinguish -- `0` and `1` are each "some
+    # fixed instant", and the only thing separating them from the truth is the
+    # truth, which is the thing being faked. Written as a pattern so a third
+    # replacement value does not reopen it.
+    #
+    # These names are unqualified because that is how `cargo mutants` renders
+    # them; an earlier version wrote `daemon::now` and matched nothing at all,
+    # which CI reported as a survivor twice. The signatures are what keep them
+    # narrow: nothing else in this workspace is a `now -> u64` or an
+    # `env -> Option<String>`.
+    'replace now -> u64 with \d+',
+    'replace env -> Option<String> with None',
+    'replace env -> Option<String> with Some\(String::new\(\)\)',
+    'replace env -> Option<String> with Some\("xyzzy"\.into\(\)\)',
 
     # `main` is four lines: it calls `daemon::run`, which loops forever. A test
     # that ran it would not return, and there is nothing in it to assert --
     # every decision it could make was moved into `daemon` for exactly this
     # reason, which is why that module exists at all.
-    'replace main with ()',
+    'replace main with \(\)',
 
     # --- category 2: unreachable in the mutation sandbox ---------------------
     #

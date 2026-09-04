@@ -35,10 +35,18 @@ use radar_types::MicroUsd;
 /// The end of an HTTP header block.
 const CRLF_CRLF: [u8; 4] = [13, 10, 13, 10];
 
-/// A platform that answers one request with a canned page.
+/// A platform that answers every request with a canned page.
 ///
-/// Returns its base URL and a receiver carrying the request it saw, so the test
-/// can assert that the cursor and the credential actually reached the wire.
+/// Returns its base URL and a receiver carrying the **first** request it saw, so
+/// a test can assert that the cursor and the credential actually reached the
+/// wire.
+///
+/// Serves in a loop rather than exactly once. An earlier version answered a
+/// single request and the mutation baseline failed intermittently in its scratch
+/// tree: a client that opens a second connection -- a retry, or a `Connection:
+/// close` followed by another call -- met a closed socket, and the test failed
+/// for a reason that had nothing to do with the code under test. A fake that can
+/// only be asked once is a fake that makes flakiness look like a finding.
 fn platform(body: &str) -> (String, std::sync::mpsc::Receiver<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
     let port = listener.local_addr().expect("an address").port();
@@ -46,33 +54,37 @@ fn platform(body: &str) -> (String, std::sync::mpsc::Receiver<String>) {
     let body = body.to_owned();
 
     std::thread::spawn(move || {
-        let Ok((mut stream, _)) = listener.accept() else {
-            return;
-        };
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-        let mut buf = vec![0_u8; 8192];
-        let mut n = 0;
-        while n < buf.len() {
-            let Ok(read) = stream.read(&mut buf[n..]) else {
-                break;
+        for incoming in listener.incoming() {
+            let Ok(mut stream) = incoming else {
+                return;
             };
-            if read == 0 {
-                break;
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+            let mut buf = vec![0_u8; 8192];
+            let mut n = 0;
+            while n < buf.len() {
+                let Ok(read) = stream.read(&mut buf[n..]) else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                n += read;
+                if buf[..n].windows(4).any(|w| w == CRLF_CRLF) {
+                    break;
+                }
             }
-            n += read;
-            if buf[..n].windows(4).any(|w| w == CRLF_CRLF) {
-                break;
-            }
-        }
-        let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
+            // Only the first is reported; the channel is for the assertion, and
+            // a later request must not block on a receiver nobody is reading.
+            let _ = tx.send(String::from_utf8_lossy(&buf[..n]).into_owned());
 
-        let crlf = String::from_utf8(vec![13, 10]).expect("ascii is utf-8");
-        let head = format!(
-            "HTTP/1.1 200 OK{crlf}Content-Length: {len}{crlf}Content-Type: application/json{crlf}Connection: close{crlf}{crlf}",
-            len = body.len()
-        );
-        let _ = stream.write_all(format!("{head}{body}").as_bytes());
-        let _ = stream.flush();
+            let crlf = String::from_utf8(vec![13, 10]).expect("ascii is utf-8");
+            let head = format!(
+                "HTTP/1.1 200 OK{crlf}Content-Length: {len}{crlf}Content-Type: application/json{crlf}Connection: close{crlf}{crlf}",
+                len = body.len()
+            );
+            let _ = stream.write_all(format!("{head}{body}").as_bytes());
+            let _ = stream.flush();
+        }
     });
 
     (format!("http://127.0.0.1:{port}"), rx)

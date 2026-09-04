@@ -97,6 +97,21 @@ pub fn budget_from(get: &impl Fn(&str) -> Option<String>) -> Budget {
     }
 }
 
+/// What to say when the budget refuses everything, or `None`.
+///
+/// A function rather than an `if` inside [`run`], because `run` never returns
+/// and nothing inside it can be tested. The decision — *is this instance
+/// funded* — is worth pinning: an operator who mistypes a ceiling gets a
+/// service that answers nothing, and this line is the whole difference between
+/// that and a mystery.
+#[must_use]
+pub fn unfunded_notice(budget: Budget) -> Option<&'static str> {
+    (budget == Budget::CLOSED).then_some(
+        "radar-analyst: unfunded -- RADAR_ANALYST_DAILY_USD and \
+         RADAR_ANALYST_PER_CALL_USD are not both set, so every call is refused.",
+    )
+}
+
 /// The admission limits, or ones that refuse everything.
 ///
 /// Takes a getter, for the reason [`budget_from`] does.
@@ -153,11 +168,8 @@ pub fn run() -> ! {
     };
 
     let budget = budget_from(&env);
-    if budget == Budget::CLOSED {
-        eprintln!(
-            "radar-analyst: unfunded -- RADAR_ANALYST_DAILY_USD and \
-             RADAR_ANALYST_PER_CALL_USD are not both set, so every call is refused."
-        );
+    if let Some(notice) = unfunded_notice(budget) {
+        eprintln!("{notice}");
     }
 
     let limits = limits_from(&env);
@@ -370,6 +382,25 @@ mod tests {
             ("RADAR_ANALYST_PER_CALL_USD", "0.25"),
         ]);
         assert_eq!(budget_from(&typo), Budget::CLOSED);
+    }
+
+    #[test]
+    fn an_unfunded_instance_is_told_why_it_is_answering_nothing() {
+        // An operator who mistypes a ceiling gets a service that answers
+        // nothing, and this line is the difference between that and a mystery.
+        let notice = unfunded_notice(Budget::CLOSED).expect("a closed budget says so");
+        assert!(notice.contains("unfunded"), "{notice}");
+        assert!(notice.contains("RADAR_ANALYST_DAILY_USD"), "{notice}");
+
+        // A funded one says nothing: a warning that fires when everything is
+        // fine is a warning nobody reads.
+        assert_eq!(
+            unfunded_notice(Budget {
+                per_call_max: MicroUsd(250_000),
+                daily_max: MicroUsd(5_000_000),
+            }),
+            None
+        );
     }
 
     #[test]

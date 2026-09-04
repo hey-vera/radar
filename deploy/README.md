@@ -697,7 +697,7 @@ the sense that matters: without them the bot still answers, and says less.
 | file | without it |
 |---|---|
 | `docs/research/data/0024-base-rates.json` | replies carry no population context — a recipient count with no distribution to quote it against |
-| `docs/research/data/creator-index.json` | **every reply about a fresh launch says the same thing** |
+| `docs/research/data/creator-index.json` | **every reply about a fresh launch says the same thing**, and the venue's own graduation rates go stale with the snapshot |
 
 Both are read relative to the working directory, which the unit sets to
 `/home/guardian/radar`, so they live at
@@ -730,6 +730,17 @@ reply say "this creator has no record here".
 
 **It ships with `main`.** The count in the file is a measurement, so the file is
 not committed — like the store itself, it is built where the data is.
+
+The same pass also measures **the venue's own graduation rates** — how many of
+every launch Radar has recorded and measured ever filled their curve, over time
+or inside their own block — and writes them into the file as `population`. Those
+two figures also exist in `0024-base-rates.json`, where they came from a public
+RPC walking 45 slots; here they are counted over the whole recorded population
+instead, and refreshed every six hours by this timer rather than by hand.
+
+An index written before this existed has no `population` key and still loads:
+absent means *not measured*, and a reply says nothing rather than quoting five
+zeroes. So the first run after upgrading is what starts the figures flowing.
 
 **It starts safely with an empty env file, and that is the point.** Every switch
 is deny-by-default, and each absence is reported rather than assumed:

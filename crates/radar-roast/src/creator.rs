@@ -75,6 +75,97 @@ pub struct Record {
     pub stillborn: u32,
 }
 
+/// The whole population, at the same watermark as the records.
+///
+/// # Why this rides along rather than being measured separately
+///
+/// It is the sum of the records, and computing it in the same pass is what makes
+/// it *consistent with* them: a population measured by a second scan could
+/// disagree with the parts it is supposed to be the total of, and the reply
+/// would quote both.
+///
+/// It also costs nothing. The pass that builds the index has already visited
+/// every launch and every outcome; these are five additions per row.
+///
+/// # Why it is worth having at all
+///
+/// `docs/research/data/0024-base-rates.json` carries two figures of the same
+/// shape, and they came from **outside**: a public RPC walking 45 slots and a
+/// SQL endpoint that truncates silently at a thousand rows. Both are samples of
+/// a window. This is the population Radar actually recorded — every succeeded
+/// launch at the watermark — measured offline, from the store, deterministically.
+///
+/// That does not make the snapshot wrong or replaceable. The snapshot carries
+/// the **recipient distribution**, which needs the launch block and which the
+/// store did not record until ADR 0012. These two overlap on exactly two
+/// figures, and on those two this is the better instrument.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Population {
+    /// Succeeded launches recorded at or before the watermark.
+    pub launches: u64,
+    /// Of those, how many have had an outcome measured.
+    pub measured: u64,
+    /// Measured tokens whose curve filled over time.
+    pub organic: u64,
+    /// Measured tokens whose curve completed within three slots of launch.
+    pub instant: u64,
+    /// Measured tokens that showed almost no life.
+    pub stillborn: u64,
+}
+
+impl Population {
+    /// Share of measured tokens that filled their curve over time.
+    ///
+    /// `None` when nothing has been measured. **Not zero** — rule 9, and this is
+    /// the direction that flatters: "0% of launches graduate" read off an empty
+    /// denominator is a measurement of the outcome pass, published as a fact
+    /// about the venue.
+    #[must_use]
+    pub fn organic_share(&self) -> Option<f64> {
+        self.share(self.organic)
+    }
+
+    /// Share of measured tokens whose curve completed inside three slots.
+    ///
+    /// `None` when nothing has been measured; see [`Self::organic_share`].
+    #[must_use]
+    pub fn instant_share(&self) -> Option<f64> {
+        self.share(self.instant)
+    }
+
+    /// Share of measured tokens that graduated at all, by either route.
+    ///
+    /// `None` when nothing has been measured; see [`Self::organic_share`].
+    #[must_use]
+    pub fn graduated_share(&self) -> Option<f64> {
+        self.share(self.organic + self.instant)
+    }
+
+    /// Share of measured tokens that showed almost no life.
+    ///
+    /// `None` when nothing has been measured; see [`Self::organic_share`].
+    #[must_use]
+    pub fn stillborn_share(&self) -> Option<f64> {
+        self.share(self.stillborn)
+    }
+
+    /// A share of the **measured** population, never of the recorded one.
+    ///
+    /// The denominator is `measured` rather than `launches` deliberately. The
+    /// gap between them is how far behind the outcome pass is, and dividing by
+    /// `launches` would fold Radar's own lag into a claim about the venue —
+    /// understating every graduation rate by exactly the size of the backlog.
+    fn share(&self, part: u64) -> Option<f64> {
+        // Precision: `u64 as f64` is lossless below 2^53 and these are counts of
+        // launches, six orders of magnitude short of it.
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "counts of launches; 2^53 is six orders of magnitude away"
+        )]
+        (self.measured > 0).then(|| part as f64 / self.measured as f64)
+    }
+}
+
 /// Every creator's record at one watermark.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CreatorIndex {
@@ -82,6 +173,15 @@ pub struct CreatorIndex {
     pub watermark_slot: u64,
     /// When it was built, as seconds since the epoch.
     pub built_at: u64,
+    /// The totals, over the same pass that built the records.
+    ///
+    /// `Option`, and defaulted, because an index written before this field
+    /// existed is still a valid index and is sitting on the production box right
+    /// now. Absent means **not measured**, which the consumer must say nothing
+    /// about — a `Population::default()` here would be five zeroes claiming that
+    /// nothing has ever graduated.
+    #[serde(default)]
+    pub population: Option<Population>,
     /// Creator address, base58, to their record.
     pub creators: BTreeMap<String, Record>,
 }
@@ -151,6 +251,7 @@ mod tests {
         let index = CreatorIndex {
             watermark_slot: 1,
             built_at: 0,
+            population: None,
             creators: BTreeMap::new(),
         };
         assert_eq!(index.get("nobody"), None);
@@ -168,6 +269,7 @@ mod tests {
             CreatorIndex {
                 watermark_slot: 1,
                 built_at: 0,
+                population: None,
                 creators: creators.clone(),
             }
             .len(),
@@ -180,6 +282,7 @@ mod tests {
         let index = CreatorIndex {
             watermark_slot: 1,
             built_at: 0,
+            population: None,
             creators,
         };
         assert_eq!(index.len(), 3);
@@ -207,6 +310,7 @@ mod tests {
         let index = CreatorIndex {
             watermark_slot: 444_339_860,
             built_at: 1_788_000_000,
+            population: None,
             creators,
         };
         index.write(&path).expect("written");
@@ -241,5 +345,60 @@ mod tests {
         };
         assert!(record.measured <= record.launches);
         assert!(record.organic + record.instant + record.stillborn <= record.measured);
+    }
+
+    #[test]
+    fn a_share_is_out_of_what_was_measured_not_out_of_what_was_launched() {
+        // Re-applying this bug is a one-character edit -- `launches` for
+        // `measured` in `share` -- and it is the one that quietly understates
+        // every graduation rate by the size of Radar's own outcome backlog.
+        //
+        // Here the backlog is half the population, so the wrong denominator
+        // halves every figure: a 50% graduation rate published as 25%, which is
+        // a measurement of the outcome pass presented as a fact about the venue.
+        let p = Population {
+            launches: 200,
+            measured: 100,
+            organic: 30,
+            instant: 20,
+            stillborn: 40,
+        };
+        assert!((p.graduated_share().expect("measured") - 0.50).abs() < 1e-12);
+        assert!((p.organic_share().expect("measured") - 0.30).abs() < 1e-12);
+        assert!((p.instant_share().expect("measured") - 0.20).abs() < 1e-12);
+        assert!((p.stillborn_share().expect("measured") - 0.40).abs() < 1e-12);
+    }
+
+    #[test]
+    fn nothing_measured_yields_no_share_at_all() {
+        // Rule 9. `0.0` here would be "nothing on this venue ever graduates",
+        // which is both false and the direction that sounds authoritative.
+        let p = Population {
+            launches: 5_000,
+            measured: 0,
+            organic: 0,
+            instant: 0,
+            stillborn: 0,
+        };
+        assert_eq!(p.graduated_share(), None);
+        assert_eq!(p.organic_share(), None);
+        assert_eq!(p.instant_share(), None);
+        assert_eq!(p.stillborn_share(), None);
+    }
+
+    #[test]
+    fn an_index_written_before_the_population_existed_still_loads() {
+        // The one sitting on the production box right now has no `population`
+        // key. Refusing it would take the creator facts away -- the facts that
+        // stopped every reply being the same reply -- to gain a field.
+        let old = r#"{"watermark_slot":444361818,"built_at":1788000000,
+                      "creators":{"aaa":{"launches":3,"measured":2,"organic":1,
+                      "instant":0,"stillborn":1}}}"#;
+        let index: CreatorIndex = serde_json::from_str(old).expect("an older index loads");
+        assert_eq!(index.len(), 1);
+        assert_eq!(
+            index.population, None,
+            "absent means not measured, and the consumer must say nothing"
+        );
     }
 }

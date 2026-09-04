@@ -407,6 +407,7 @@ fn index_with(creator: &str, record: radar_roast::creator::Record) -> radar_roas
     radar_roast::CreatorIndex {
         watermark_slot: 444_343_109,
         built_at: 1_788_000_000,
+        population: None,
         creators,
     }
 }

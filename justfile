@@ -27,7 +27,18 @@ cargo := env("RADAR_CARGO", "cargo")
 
 # A floor, not a target. Raise it as the suite grows; lowering it to make a run
 # pass is the failure this guards against.
-export MIN_TESTS := "1069"
+#
+# Raised 1069 -> 1503 on 2026-09-04. It had drifted 434 behind the suite, which
+# is most of a third of it: a floor that far below the real count would let
+# every test in four crates be deleted without the number moving, and a floor
+# that cannot notice that is decoration. Raising it is part of adding tests,
+# not a separate chore.
+#
+# The count is platform-independent here, which is what makes a single number
+# safe: nothing in the workspace is `cfg(windows)` or `cfg(unix)` gated except
+# one function in `radar-exec`'s signer client, and it carries no tests. So a
+# Linux runner cannot count fewer than a Windows workstation.
+export MIN_TESTS := "1503"
 
 _default:
     @just --list --unsorted

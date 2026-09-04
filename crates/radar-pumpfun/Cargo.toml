@@ -16,7 +16,7 @@ workspace = true
 # a transaction was rejected.
 radar-decode.workspace = true
 radar-types.workspace = true
-sha2 = "0.10"
+sha2 = "0.11"
 thiserror.workspace = true
 # Only to ask whether a 32-byte value is a point on the ed25519 curve, which is
 # what makes an address a program-derived one. No key is held, generated or used

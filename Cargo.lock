@@ -1437,6 +1437,7 @@ dependencies = [
  "blake3",
  "radar-asof",
  "radar-risk",
+ "radar-roast",
  "radar-store",
  "radar-strategy",
  "radar-types",

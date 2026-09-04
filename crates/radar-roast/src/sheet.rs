@@ -124,7 +124,11 @@ impl FactSheet {
     /// carries no population context, and the reply says less. Rule 8 — a
     /// missing input is a refusal to claim, not a default.
     #[must_use]
-    pub fn build(dossier: &Dossier, rates: Option<&BaseRates>) -> Self {
+    pub fn build(
+        dossier: &Dossier,
+        rates: Option<&BaseRates>,
+        creators: Option<&crate::creator::CreatorIndex>,
+    ) -> Self {
         let mut facts = Vec::new();
         let mut untrusted = Vec::new();
         let mut unknown = Vec::new();
@@ -133,6 +137,15 @@ impl FactSheet {
             push_launch(&mut facts, &mut untrusted, launch);
             if let Some(rates) = rates {
                 push_population(&mut facts, launch.recipients, rates);
+            }
+            // **The fact that makes one reply differ from another.** Everything
+            // above is about the block; three coins launched in the same minute
+            // produce the same sentences, because the cost line is a constant
+            // and most launches sit in the same recipient band. What this
+            // creator did before is the part that is about *this* coin, and it
+            // is the thing Radar has that nobody else does.
+            if let Some(index) = creators {
+                push_creator(&mut facts, &mut unknown, &launch.creator.to_string(), index);
             }
         } else {
             unknown.push("the launch block could not be read".to_owned());
@@ -301,6 +314,85 @@ fn push_launch(facts: &mut Vec<Fact>, untrusted: &mut Vec<(String, String)>, lau
     }
     untrusted.push(("token name".to_owned(), launch.metadata.name.clone()));
     untrusted.push(("token symbol".to_owned(), launch.metadata.symbol.clone()));
+}
+
+/// What this creator's other tokens did.
+///
+/// # Counts, never a rate
+///
+/// "Nine of forty-one" and "22%" say the same thing to an arithmetician and
+/// different things to a reader: the share hides the denominator, and the
+/// denominator is the part that decides whether the number means anything.
+/// `creator_track_record` computes rates with a minimum sample and a note
+/// explaining itself; this publishes what was counted and lets the reader do
+/// the division.
+///
+/// # Absent is not innocent
+///
+/// A creator the index has never seen launched before Radar was watching. That
+/// is said plainly, because a reply that omitted the line would read as a clean
+/// record — rule 9 in the direction that flatters, which is the one that gets
+/// somebody hurt.
+///
+/// # Never presented as a good sign
+///
+/// Research 0011: graduation predicts **volatility, not profit**. Organic
+/// graduations end at a median −3,228 bps against −853 for tokens that never
+/// graduate. So the graduation count is published as a measurement and the
+/// label never suggests it is encouraging.
+fn push_creator(
+    facts: &mut Vec<Fact>,
+    unknown: &mut Vec<String>,
+    creator: &str,
+    index: &crate::creator::CreatorIndex,
+) {
+    let Some(record) = index.get(creator) else {
+        // One line, no continuation. A `\` continuation in a Rust string keeps
+        // the *leading* whitespace of the next line, so this rendered with a
+        // run of fourteen spaces in the middle of a published sentence -- which
+        // is the sort of thing that looks like a broken bot rather than a
+        // careful one.
+        unknown.push(
+            "this creator has no record here: Radar has been watching since August, so they launched before that, or have not launched again"
+                .to_owned(),
+        );
+        return;
+    };
+
+    facts.push(Fact::exact(
+        "tokens this creator has launched, in Radar's record",
+        f64::from(record.launches),
+        record.launches.to_string(),
+    ));
+
+    // The denominator, always beside the numerator. A gap between launches and
+    // measured means the outcome pass has not caught up -- not that those
+    // tokens did nothing -- and a share quoted without it would be a share of
+    // an unstated population.
+    if record.measured == 0 {
+        unknown.push("how those launches turned out: none has been measured yet".to_owned());
+        return;
+    }
+    facts.push(Fact::exact(
+        "of those, how many have been measured",
+        f64::from(record.measured),
+        record.measured.to_string(),
+    ));
+    facts.push(Fact::exact(
+        "of the measured, how many reached an AMM by filling over time",
+        f64::from(record.organic),
+        record.organic.to_string(),
+    ));
+    facts.push(Fact::exact(
+        "of the measured, how many filled their curve within three slots (capital committed before the token existed, not demand)",
+        f64::from(record.instant),
+        record.instant.to_string(),
+    ));
+    facts.push(Fact::exact(
+        "of the measured, how many showed almost no activity at all",
+        f64::from(record.stillborn),
+        record.stillborn.to_string(),
+    ));
 }
 
 fn push_population(facts: &mut Vec<Fact>, recipients: Count, rates: &BaseRates) {

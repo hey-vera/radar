@@ -653,6 +653,44 @@ fn event_study(args: &[String]) -> Result<(), String> {
     study::run(&reader, pivot)
 }
 
+/// Builds the creator index the public analyst reads.
+///
+/// Its own command rather than something the recorder does on every write: this
+/// reads both tables in full, which is the expensive operation the index exists
+/// to stop happening per mention. Run it on a timer, the way the base rates are.
+///
+/// # Errors
+///
+/// A message when the store cannot be read or the file cannot be written.
+fn creator_index(args: &[String]) -> Result<(), String> {
+    let reader = store_of(args)?;
+    let out = flag(args, "--out").unwrap_or_else(|| radar_roast::creator::DEFAULT_PATH.to_owned());
+
+    let watermark = reader
+        .watermark()
+        .map_err(|e| format!("cannot read the watermark: {e}"))?
+        .ok_or("the store holds no events, so there is nothing to index")?;
+
+    let built_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    let index =
+        radar_research::creator_index::build(&reader, radar_asof::AsOf::at(watermark), built_at)
+            .map_err(|e| format!("cannot build the index: {e}"))?;
+
+    index
+        .write(&out)
+        .map_err(|e| format!("cannot write {out}: {e}"))?;
+
+    println!(
+        "{} creators at slot {}, written to {out}",
+        index.len(),
+        watermark.get()
+    );
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let Some(command) = args.first() else {
@@ -671,6 +709,7 @@ fn main() -> ExitCode {
         "route" => route::run(&args),
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
+        "creator-index" => creator_index(&args),
         "dossier" => dossier::run(&args),
         "roast" => roast::run(&args),
         "analyst" => analyst::run(&args),

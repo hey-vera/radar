@@ -74,6 +74,16 @@ impl Verdict {
 /// silently print the wrong fact for a token whose curve was unreadable.
 const LEAD: &[&str] = &[
     "round trip for a position of $20-$200",
+    // The creator's record, second. Running the command against three real
+    // launches on 2026-09-04 produced three **identical** replies: the cost
+    // line is a constant and most launches sit in the same recipient band, so
+    // nothing above or below this was about the coin being asked about.
+    //
+    // This is. "Forty-seven launches, none of which reached an AMM by filling
+    // over time" is specific, checkable, and the thing Radar has that nobody
+    // else does.
+    "tokens this creator has launched",
+    "how many reached an AMM by filling over time",
     "distinct token accounts receiving",
     "share of INSTANT graduations",
     "share of launches that NEVER graduated",
@@ -86,7 +96,12 @@ const LEAD: &[&str] = &[
 /// A reply is read at a glance and screenshotted, or it is not read. The full
 /// sheet is what `radar roast --sheet` is for; this is what gets posted, and a
 /// twenty-line dump would be posted by nobody.
-const MAX_FACTS: usize = 4;
+///
+/// Five rather than four since 2026-09-04, and the extra one is the creator's
+/// record. Four was enough while every fact was about the block; it is not
+/// enough now that two of the lines are the only ones that differ between one
+/// coin and the next.
+const MAX_FACTS: usize = 5;
 
 /// The reply that ships when a model reply cannot be trusted or cannot be had.
 ///
@@ -148,6 +163,14 @@ fn short(label: &str) -> &str {
         }
         l if l.contains("SOL the creator spent") => "the creator's own buy",
         l if l.contains("round trip for a position of") => "round trip on a $20-$200 position",
+        // The two lines that make one reply differ from the next, so they are
+        // the two whose wording matters most. The sheet's labels are written to
+        // be unambiguous to a model reading twenty of them; these are written to
+        // be read once, by somebody deciding whether to buy.
+        l if l.contains("tokens this creator has launched") => "tokens this creator has launched",
+        l if l.contains("how many reached an AMM by filling over time") => {
+            "of those, how many ever filled their curve over time"
+        }
         other => other,
     }
 }

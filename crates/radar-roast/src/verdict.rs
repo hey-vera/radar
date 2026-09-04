@@ -171,6 +171,57 @@ mod tests {
     }
 
     #[test]
+    fn a_fact_with_nothing_rendered_is_not_quoted() {
+        // The selector is `label matches AND something was rendered`. With OR, a
+        // fact whose value could not be read is printed with an empty value --
+        // "- recipients: " -- which reads as a measurement of nothing rather
+        // than as an absence. That is LEARNINGS 5's shape in a published reply.
+        let mut s = sheet();
+        s.facts = vec![Fact {
+            label: "recipients".to_owned(),
+            rendered: String::new(),
+            values: vec![],
+        }];
+        let out = template(&s);
+        assert!(
+            !out.contains("recipients"),
+            "an unrendered fact was quoted anyway:\n{out}"
+        );
+    }
+
+    #[test]
+    fn the_reply_stops_at_the_fact_ceiling() {
+        // `shown += 1` counts toward MAX_FACTS. Mutated to `*=` it stays at zero
+        // for ever and the ceiling never binds, so a reply grows without limit
+        // -- and the one place that shows up is a post that will not send.
+        // The labels have to be ones `LEAD` actually looks for, or the loop
+        // matches nothing and prints nothing -- which is how the first version
+        // of this test passed while the mutant lived. LEAD carries six patterns
+        // against a ceiling of four, so a sheet answering all six is the only
+        // case where the ceiling is what stops a six-line post.
+        assert!(
+            LEAD.len() > MAX_FACTS,
+            "the ceiling is unreachable if LEAD is no longer than it, and this test would prove nothing"
+        );
+        let mut s = sheet();
+        s.facts = LEAD
+            .iter()
+            .map(|wanted| Fact::exact((*wanted).to_owned(), 11.0, "11"))
+            .collect();
+        // The unknowns are printed as `- ` lines too, and they are not what the
+        // ceiling governs. Counting them made the first run of this read five
+        // against four and look like a defect in the ceiling rather than in the
+        // count.
+        s.unknown.clear();
+        let out = template(&s);
+        let quoted = out.lines().filter(|l| l.starts_with("- ")).count();
+        assert_eq!(
+            quoted, MAX_FACTS,
+            "{quoted} facts quoted against a ceiling of {MAX_FACTS}:\n{out}"
+        );
+    }
+
+    #[test]
     fn the_template_passes_its_own_fidelity_check() {
         // The property that makes it a safe floor. If the template could
         // contain a number the sheet does not authorise, then the thing that

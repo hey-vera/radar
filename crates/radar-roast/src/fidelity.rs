@@ -234,6 +234,19 @@ mod tests {
     }
 
     #[test]
+    fn a_number_at_the_very_end_of_the_text_does_not_read_past_it() {
+        // The decimal-point branch guards with `i + 1 < bytes.len()` before
+        // looking at the next byte. Mutated to `i - 1`, the guard is true at the
+        // last index and the read runs off the end. The existing full-stop test
+        // did not catch it because its full stop was not the final byte.
+        //
+        // Both of these end exactly at the character after the digits.
+        assert!(check("the figure is 25.", &[25.0]).is_empty());
+        assert_eq!(literals("ends on 6.").len(), 1);
+        assert_eq!(literals("ends on 6").len(), 1);
+    }
+
+    #[test]
     fn the_exact_match_is_a_difference_and_not_a_sum_or_a_ratio() {
         // Two values that agree far past any precision a model would write, but
         // round to different grid points at the precision it *did* write. Only

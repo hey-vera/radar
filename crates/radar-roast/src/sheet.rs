@@ -419,6 +419,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn the_precision_switch_is_exactly_where_0024_needs_it() {
+        // The rule is `> 0.0 && < 0.1` renders two decimals, everything else
+        // one. Both comparisons are one character from being wrong and every
+        // mutation of them survived, because nothing tested either edge.
+        //
+        // What is at stake is 0024's strongest finding: one to three recipients
+        // graduate instantly 0.02% of the time. At one decimal that is "0.0%",
+        // which reads as *never* rather than *rare* -- wrong in the direction
+        // that gets quoted back at you.
+        assert_eq!(Fact::share("x", 0.000_2).rendered, "0.02%");
+        assert_eq!(Fact::share("x", 0.000_5).rendered, "0.05%");
+
+        // Zero is not "0.00%". It is genuinely zero, and the two-decimal form is
+        // for small-but-real, so the lower bound is exclusive.
+        assert_eq!(Fact::share("x", 0.0).rendered, "0.0%");
+
+        // And a tenth of a percent is the upper bound, also exclusive: 0.1% has
+        // no hidden precision to show.
+        assert_eq!(Fact::share("x", 0.001).rendered, "0.1%");
+
+        // Ordinary magnitudes are unaffected.
+        assert_eq!(Fact::share("x", 0.251).rendered, "25.1%");
+    }
+
+    #[test]
+    fn every_unreadable_fact_names_which_fact_it_was() {
+        // Each arm is a different sentence in a published reply. Deleting any of
+        // them falls through to the generic phrase, which is safe but says less,
+        // and nothing noticed -- three arms, three survivors.
+        assert_eq!(
+            phrase_for("launch block"),
+            "the launch block could not be read"
+        );
+        assert_eq!(phrase_for("curve"), "the bonding curve could not be read");
+        assert_eq!(
+            phrase_for("creator history"),
+            "the creator's history could not be read"
+        );
+        // The fallback is deliberately the safe one, for a fact added later by
+        // someone who did not read the comment above it.
+        assert_eq!(
+            phrase_for("something new"),
+            "part of this could not be read"
+        );
+    }
+
+    #[test]
+    fn lamports_convert_to_sol_at_the_documented_rate() {
+        // Used only to compare against a figure a model wrote, which is why it
+        // is a float at all -- but a wrong conversion there authorises a wrong
+        // number in a public reply.
+        assert!((lamports_as_sol(LAMPORTS_PER_SOL) - 1.0).abs() < 1e-9);
+        assert!((lamports_as_sol(LAMPORTS_PER_SOL / 2) - 0.5).abs() < 1e-9);
+        assert!((lamports_as_sol(3 * LAMPORTS_PER_SOL) - 3.0).abs() < 1e-9);
+        assert!((lamports_as_sol(0) - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
     fn a_share_authorises_its_ordinary_roundings_and_nothing_else() {
         let f = Fact::share("x", 0.251);
         assert!(f.values.iter().any(|v| (*v - 0.251).abs() < 1e-9));

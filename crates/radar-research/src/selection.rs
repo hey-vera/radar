@@ -516,6 +516,8 @@ mod tests {
             exit_capacity_micro_usd: None,
             assumed_round_trip_bps: 850,
             coordination: None,
+            launch_recipients: None,
+            launch_transactions: None,
             authority_prevalence: None,
             kernel_outcome: None,
             kernel_reasons: Vec::new(),

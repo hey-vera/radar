@@ -164,6 +164,15 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             // Null means the launch block could not be read — never that it
             // looked clean, which is the distinction the whole gate rests on.
             Field::new("coordination", DataType::Utf8, true),
+            // The numbers that verdict was computed from, recorded beside the
+            // label rather than instead of it (ADR 0012). Keeping only the label
+            // is what made the last drift invisible for nine days: a threshold
+            // fitted to a count the store discarded can only be re-fitted by
+            // measuring the whole world again.
+            //
+            // Null means no launch block was read -- never that it held nobody.
+            Field::new("launch_recipients", DataType::UInt32, true),
+            Field::new("launch_transactions", DataType::UInt32, true),
             // Null means the prevalence table could not be read, including the
             // case where it was truncated — a table that cannot be trusted, not
             // one that found nothing. Never that the wallets looked ordinary.

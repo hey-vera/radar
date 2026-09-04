@@ -345,6 +345,12 @@ impl Reader {
                 // `optional_u64_col`'s doc comment describes and which this
                 // very change would otherwise have caused in production.
                 let prevalence = optional_str_col(&batch, "authority_prevalence");
+                // Added 2026-09-04, so optional for the same reason the two
+                // above are: every decision recorded before this change has no
+                // such column, and those are the rows a re-derived threshold
+                // would be fitted against.
+                let recipients = optional_u32_col(&batch, "launch_recipients");
+                let block_txs = optional_u32_col(&batch, "launch_transactions");
                 let kernel = str_col(&batch, "kernel_outcome")?;
                 let digest = str_col(&batch, "inputs_digest")?;
                 // Optional by column, not just by row: a file written before
@@ -380,6 +386,8 @@ impl Reader {
                         coordination: coordination
                             .is_valid(i)
                             .then(|| coordination.value(i).to_owned()),
+                        launch_recipients: cell_u32(recipients, i),
+                        launch_transactions: cell_u32(block_txs, i),
                         authority_prevalence: prevalence
                             .filter(|c| c.is_valid(i))
                             .map(|c| c.value(i).to_owned()),
@@ -674,6 +682,28 @@ fn optional_u64_col<'a>(
 
 /// One cell of an optional column, absent if either the column or the value is.
 fn cell(column: Option<&UInt64Array>, i: usize) -> Option<u64> {
+    let column = column?;
+    column.is_valid(i).then(|| column.value(i))
+}
+
+/// The `u32` form of [`optional_u64_col`], for the launch-block counts.
+///
+/// Same reasoning, and it is worth restating rather than pointing at: these two
+/// columns were added on 2026-09-04 and every decision file written before then
+/// lacks them. Read with the erroring form, one schema change would make the
+/// whole recorded history unreadable.
+fn optional_u32_col<'a>(
+    batch: &'a arrow::record_batch::RecordBatch,
+    name: &str,
+) -> Option<&'a UInt32Array> {
+    batch
+        .column_by_name(name)?
+        .as_any()
+        .downcast_ref::<UInt32Array>()
+}
+
+/// One cell of an optional `u32` column.
+fn cell_u32(column: Option<&UInt32Array>, i: usize) -> Option<u32> {
     let column = column?;
     column.is_valid(i).then(|| column.value(i))
 }

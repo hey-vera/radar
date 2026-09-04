@@ -576,6 +576,8 @@ fn decision(mint: u8, decided: u64) -> radar_store::Decision {
         exit_capacity_micro_usd: Some(31_520_000),
         assumed_round_trip_bps: 850,
         coordination: Some("unremarkable".to_owned()),
+        launch_recipients: Some(11),
+        launch_transactions: Some(4),
         authority_prevalence: None,
         kernel_outcome: Some(radar_store::KernelOutcome::Refused),
         kernel_reasons: vec!["NoAutonomy".to_owned(), "InputsTooStale".to_owned()],
@@ -601,6 +603,15 @@ fn a_decision_survives_a_round_trip_through_parquet() {
         d.kernel_outcome = None;
         d.kernel_reasons = Vec::new();
         d.coordination = None;
+        // No label and no count. The two go together: `None` means no launch
+        // block was read, never that it held nobody, and a row carrying a count
+        // with no verdict would be a state the recorder cannot produce.
+        //
+        // So this row exercises the absent case and the other the present one,
+        // which is what makes the whole-struct comparison below say something
+        // about the new columns rather than only about the old ones.
+        d.launch_recipients = None;
+        d.launch_transactions = None;
         d
     };
     let proposed = decision(2, 500_001);

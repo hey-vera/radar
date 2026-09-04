@@ -358,10 +358,16 @@ where
         // paid calls and it can end the question. Probing the exit of a token
         // whose curve was already bought out by whoever arranged it is money
         // spent to be told something the block said for less.
+        // The shape as well as the verdict. Recording only the label is what
+        // made the last drift invisible for nine days (ADR 0012): a threshold
+        // fitted to a count the store discarded can only be re-fitted by
+        // measuring the whole world again.
+        let mut launch_shape = None;
         let coordination = match universe.launches.get(mint) {
             Some(facts) => match blocks.shape_at(mint, facts.slot) {
                 Ok(shape) => {
                     shapes.observe(shape);
+                    launch_shape = Some(shape);
                     let at_launch = radar_graph::assess(shape).coordination;
 
                     // The launch block is not the only place a bundle can
@@ -427,7 +433,15 @@ where
                 };
                 let decision = strategy.consider(&candidate);
                 examined.push((
-                    record_of(&candidate, &decision, strategy, None, watermark, prevalence),
+                    record_of(
+                        &candidate,
+                        &decision,
+                        strategy,
+                        None,
+                        watermark,
+                        prevalence,
+                        launch_shape,
+                    ),
                     candidate.mint,
                 ));
             }
@@ -457,6 +471,7 @@ where
             watermark,
             examined,
             prevalence,
+            launch_shape,
         );
     }
 
@@ -676,6 +691,7 @@ fn record_of(
     verdict: Option<&Verdict>,
     decided_at: radar_types::Slot,
     prevalence: Option<radar_graph::prevalence::Prevalence>,
+    launch_shape: Option<radar_graph::LaunchBlockShape>,
 ) -> radar_store::Decision {
     let proposal = match decision {
         Decision::Propose(p) => Some(p),
@@ -706,6 +722,13 @@ fn record_of(
         // Absent because the source could not answer, never because the launch
         // looked clean. Collapsing those would quietly clear a bundle.
         coordination: candidate.coordination.map(|c| format!("{c:?}")),
+        // The numbers the verdict above was computed from, beside the label
+        // rather than instead of it (ADR 0012). Saturating rather than
+        // truncating: a count past `u32::MAX` is not a launch block, and
+        // wrapping it would record a small number for an enormous one.
+        launch_recipients: launch_shape.map(|s| u32::try_from(s.recipients).unwrap_or(u32::MAX)),
+        launch_transactions: launch_shape
+            .map(|s| u32::try_from(s.transactions).unwrap_or(u32::MAX)),
         // Recorded, never acted on. 0012 measured who recurs and not whether
         // recurrence predicts anything about money; this is what makes that
         // second question answerable later.
@@ -788,12 +811,21 @@ fn report_one(
     watermark: radar_types::Slot,
     examined: &mut Vec<(radar_store::Decision, Address)>,
     prevalence: Option<radar_graph::prevalence::Prevalence>,
+    launch_shape: Option<radar_graph::LaunchBlockShape>,
 ) {
     let decision = strategy.consider(candidate);
     // Recorded before the kernel runs, and updated with its verdict afterwards.
     // A proposal the kernel never saw is a different state from one it refused.
     examined.push((
-        record_of(candidate, &decision, strategy, None, watermark, prevalence),
+        record_of(
+            candidate,
+            &decision,
+            strategy,
+            None,
+            watermark,
+            prevalence,
+            launch_shape,
+        ),
         candidate.mint,
     ));
     match decision {
@@ -1339,6 +1371,7 @@ mod tests {
             Some(&verdict),
             radar_types::Slot(10_000),
             None,
+            None,
         );
         assert_eq!(
             record.kernel_reasons,
@@ -1365,6 +1398,7 @@ mod tests {
             None,
             radar_types::Slot(10_000),
             None,
+            None,
         );
         assert_eq!(record.kernel_outcome, None);
         assert!(record.kernel_reasons.is_empty());
@@ -1386,7 +1420,50 @@ mod tests {
             None,
             radar_types::Slot(441_734_987),
             None,
+            None,
         );
+
+        // ADR 0012's first commitment: the count travels with the verdict.
+        // `None` here because this call passes no shape, and the next test is
+        // the one that proves a shape is recorded rather than dropped.
+        assert_eq!(record.launch_recipients, None);
+        assert_eq!(record.launch_transactions, None);
+    }
+
+    #[test]
+    fn the_launch_block_count_is_recorded_beside_the_verdict() {
+        // ADR 0012, and the whole reason it exists. `Decision.coordination`
+        // kept the label and threw the number away, so a threshold fitted to
+        // that number could only be re-fitted by scanning the chain again --
+        // which is why the last drift went unnoticed for nine days and was
+        // found by hand.
+        //
+        // Recording it is what makes the next re-derivation a query.
+        let strategy = CreatorEdge::default();
+        let candidate = a_candidate();
+        let decision = strategy.consider(&candidate);
+
+        let shape = radar_graph::LaunchBlockShape {
+            recipients: 11,
+            transactions: 4,
+        };
+        let record = record_of(
+            &candidate,
+            &decision,
+            &strategy,
+            None,
+            radar_types::Slot(441_734_987),
+            None,
+            Some(shape),
+        );
+
+        assert_eq!(record.launch_recipients, Some(11));
+        assert_eq!(record.launch_transactions, Some(4));
+
+        // Both halves, because a block with six recipients across six
+        // transactions and one with six across one are different arrangements,
+        // and a threshold derived from recipients alone cannot tell them apart.
+        assert_ne!(record.launch_recipients, record.launch_transactions);
 
         assert_eq!(record.decided_at, radar_types::Slot(441_734_987));
         assert_eq!(record.launch_slot, candidate.launch_slot);
@@ -1415,6 +1492,7 @@ mod tests {
             None,
             radar_types::Slot(10_000),
             None,
+            None,
         );
         assert_eq!(unread.coordination, None);
 
@@ -1425,6 +1503,7 @@ mod tests {
             &strategy,
             None,
             radar_types::Slot(10_000),
+            None,
             None,
         );
         assert_eq!(looked.coordination, Some("Unremarkable".to_owned()));

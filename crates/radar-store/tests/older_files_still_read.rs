@@ -145,6 +145,16 @@ fn a_decision_file_written_before_authority_prevalence_still_reads() {
     // is exactly what it should mean.
     assert_eq!(decision.authority_prevalence, None);
 
+    // Added 2026-09-04, and absent from this file for the same reason. The two
+    // together are the point: **every decision recorded before today has no
+    // launch-block count**, and those are exactly the rows a re-derived
+    // threshold would be fitted against. A reader that failed on them would
+    // make the history unreadable in the same change that started recording the
+    // number -- so the count is `None`, meaning "this decision predates the
+    // measurement", and never zero, which would mean "the block held nobody".
+    assert_eq!(decision.launch_recipients, None);
+    assert_eq!(decision.launch_transactions, None);
+
     // And everything the old file *did* carry comes back intact, which is the
     // other half: a reader that tolerated the missing column by returning an
     // empty row would pass the assertion above and be useless.

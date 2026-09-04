@@ -113,6 +113,29 @@ pub struct Decision {
     /// `None` means the source could not answer, never that the launch looked
     /// clean — the distinction the whole gate rests on.
     pub coordination: Option<String>,
+    /// Distinct accounts that received the token inside its launch block.
+    ///
+    /// **The number the verdict above was computed from**, recorded alongside
+    /// the label rather than instead of it — [ADR 0012](https://github.com/hey-vera/radar/blob/main/docs/adr/0012-the-launch-block-count-is-recorded-not-the-threshold-retuned.md).
+    ///
+    /// Keeping only the label is what made the last drift invisible: `0008`
+    /// derived a threshold from a count nobody could re-derive without a
+    /// twenty-five-minute chain scan, the launchers changed their configuration,
+    /// and the detector went quiet for nine days without saying so. A rule
+    /// fitted to a number the store threw away can only be re-fitted by
+    /// measuring the whole world again.
+    ///
+    /// `None` means no launch block was read — never that it held nobody. These
+    /// are token accounts, not owners, and not buyers: resolving them is a join
+    /// this does not claim to have done.
+    pub launch_recipients: Option<u32>,
+    /// Distinct transactions touching the token in its launch block.
+    ///
+    /// Recorded for the same reason and with the same meaning for `None`. It is
+    /// the second half of the shape: a block with six recipients across six
+    /// transactions and one with six across one are different arrangements, and
+    /// a threshold derived from recipients alone cannot tell them apart.
+    pub launch_transactions: Option<u32>,
     /// How widely the launch block's signing wallets appear in other launch
     /// blocks, as [`radar_graph::prevalence::Prevalence`] labels it.
     ///
@@ -219,6 +242,8 @@ mod tests {
             exit_capacity_micro_usd: None,
             assumed_round_trip_bps: 850,
             coordination: None,
+            launch_recipients: None,
+            launch_transactions: None,
             authority_prevalence: None,
             kernel_outcome: None,
             kernel_reasons: Vec::new(),

@@ -69,14 +69,40 @@ the operational skin that makes it safe to leave running.
       tested without `std::env::set_var`, which is `unsafe` in edition 2024
       against a workspace that forbids unsafe.
 
-- [ ] 2. The poll loop, with a cursor that survives a restart
+- [x] 2. The cursor, the interval, and the ordering bug it uncovered
       `since_id` persisted next to the log. Adaptive interval: 60s after a
       poll that returned something, doubling to 300s idle.
       **The log entry is written before the publish call**, so a crash between
       them leaves a logged-but-unposted reply rather than a post nothing
       recorded. That ordering is the whole design and it gets a test.
-      done when: killing the process mid-loop and restarting it answers no
-      mention twice, proved against a fake source.
+      done: `crates/radar-analyst/src/poll.rs`, plus a **fix to shipped code**.
+      **`publish` replied first and appended afterwards**, so a failed log write
+      left a public statement with no record of it. Its own doc said the log was
+      written "before the reply is treated as sent", which was true and not the
+      guarantee anyone wanted. With `DryRun` as the only publisher nothing could
+      observe it, which is how it passed review and a test suite.
+      Now: append the intent, reply, append the outcome. The four failure modes
+      are asymmetric on purpose and the accepted one is the cheapest — a reply
+      whose platform id is lost, still backed by a record holding the fact
+      sheet, the slot and the exact text. `log::latest` folds the two records;
+      `log::read` stays raw, because an intent with no outcome beside it is an
+      interrupted reply and folding that away would hide the case worth seeing.
+      Proved by re-applying the bug: `nothing_is_said_before_it_is_recorded`
+      uses a publisher that reads the log at the moment it posts, and moving the
+      append back below the reply makes it read 0 and fail.
+      The cursor is written by rename, so it is either the old id or the new one
+      — a half-written cursor is still digits, so it parses, and it points
+      somewhere arbitrary. `next_cursor` takes the **largest** id rather than
+      the last in the page, compared by length then lexically because these
+      outgrew `u64`; the platform returns newest first, so "the last one" would
+      re-read the whole page forever.
+      `just tests` 1518 passed; `cargo mutants` over `poll.rs`, `publish.rs` and
+      `log.rs`: **0 missed**. The one survivor was real — nothing tested a
+      mention with a *single* record, which is exactly the interrupted-reply
+      case the new ordering creates.
+      not done here: the loop that ties these together. It needs the per-mention
+      pipeline that currently lives in `radar-cli`, and moving that is item 5's
+      binary — where it gains two real callers instead of one and a test.
 
 - [ ] 3. The spend meter
       Every X call and every model call reserves against

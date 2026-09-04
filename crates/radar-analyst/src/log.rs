@@ -96,6 +96,43 @@ pub fn read(path: &str) -> std::io::Result<Vec<Entry>> {
         .collect())
 }
 
+/// The log, with each mention's last word.
+///
+/// # Why the raw read is not enough
+///
+/// [`crate::publish`] appends **twice** for one reply: once before it says
+/// anything, so a statement is never made without a record, and once after, to
+/// record the platform's id for it or why there is none. Both lines are true and
+/// the second supersedes the first.
+///
+/// So a reader counting lines counts intents, not replies. Anything answering
+/// *"what did this account say, and what happened to it"* wants this function.
+/// [`read`] stays raw because the ordering itself is evidence: an intent with no
+/// outcome beside it is a reply that was interrupted, and folding that away
+/// would hide the one case worth noticing.
+///
+/// Ordered by first appearance, so the shape of a run is preserved rather than
+/// sorted into something tidier than it was.
+///
+/// # Errors
+///
+/// The underlying I/O error if the file cannot be read at all.
+pub fn latest(path: &str) -> std::io::Result<Vec<Entry>> {
+    let all = read(path)?;
+    let mut order: Vec<String> = Vec::new();
+    let mut newest: std::collections::HashMap<String, Entry> = std::collections::HashMap::new();
+    for entry in all {
+        if !newest.contains_key(&entry.mention_id) {
+            order.push(entry.mention_id.clone());
+        }
+        newest.insert(entry.mention_id.clone(), entry);
+    }
+    Ok(order
+        .into_iter()
+        .filter_map(|id| newest.remove(&id))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +149,50 @@ mod tests {
             fellback: None,
             reply_id: Some("r1".to_owned()),
         }
+    }
+
+    #[test]
+    fn an_interrupted_reply_is_still_the_account_saying_something() {
+        // The case the two-append ordering creates and the one that matters
+        // most: the intent was recorded and the process died before the
+        // outcome. `latest` must still report it -- a mention with one record
+        // is a reply that may well have gone out, and dropping it from the
+        // folded view would hide exactly the entry somebody is looking for.
+        //
+        // This is the mutant `delete ! in latest` survived on: with every
+        // mention carrying two records, keeping only the ids already seen
+        // produces the same answer, and only a single-record mention tells the
+        // two apart.
+        let dir = std::env::temp_dir().join(format!("radar-log-fold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let path = dir.join("interrupted.jsonl");
+        let path = path.to_str().expect("a path").to_owned();
+        let _ = std::fs::remove_file(&path);
+
+        // One mention answered fully, one interrupted after its intent.
+        let mut finished_intent = entry();
+        finished_intent.mention_id = "done".to_owned();
+        finished_intent.reply_id = None;
+        let mut finished_outcome = finished_intent.clone();
+        finished_outcome.reply_id = Some("r-done".to_owned());
+
+        let mut interrupted = entry();
+        interrupted.mention_id = "interrupted".to_owned();
+        interrupted.reply_id = None;
+
+        append(&path, &finished_intent).expect("append");
+        append(&path, &finished_outcome).expect("append");
+        append(&path, &interrupted).expect("append");
+
+        let folded = latest(&path).expect("read");
+        assert_eq!(folded.len(), 2, "both mentions must appear: {folded:?}");
+        assert_eq!(folded[0].mention_id, "done", "order of first appearance");
+        assert_eq!(folded[0].reply_id.as_deref(), Some("r-done"));
+        assert_eq!(folded[1].mention_id, "interrupted");
+        assert!(
+            folded[1].reply_id.is_none(),
+            "an interrupted reply has no id, and that is the signal"
+        );
     }
 
     #[test]

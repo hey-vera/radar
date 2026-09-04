@@ -176,17 +176,24 @@ mod tests {
         // fact whose value could not be read is printed with an empty value --
         // "- recipients: " -- which reads as a measurement of nothing rather
         // than as an absence. That is LEARNINGS 5's shape in a published reply.
+        // The label has to be one `LEAD` looks for, or the selector never
+        // reaches the second operand and the mutation is untested -- which is
+        // how the first version of this passed while the mutant lived.
+        let wanted = LEAD[0];
         let mut s = sheet();
         s.facts = vec![Fact {
-            label: "recipients".to_owned(),
+            label: wanted.to_owned(),
             rendered: String::new(),
             values: vec![],
         }];
+        s.unknown.clear();
         let out = template(&s);
-        assert!(
-            !out.contains("recipients"),
-            "an unrendered fact was quoted anyway:\n{out}"
-        );
+        // Counted, not searched for by label: the template prints
+        // `short(&fact.label)`, so looking for the full LEAD string in the
+        // output cannot find the line even when it is there. The first version
+        // of this test searched for it and passed while the mutant lived.
+        let quoted = out.lines().filter(|l| l.starts_with("- ")).count();
+        assert_eq!(quoted, 0, "an unrendered fact was quoted anyway:\n{out}");
     }
 
     #[test]

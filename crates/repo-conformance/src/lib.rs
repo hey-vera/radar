@@ -505,22 +505,6 @@ pub fn learnings_entries(text: &str) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// Whether `git` can answer questions about this tree.
-///
-/// False under `cargo mutants`, which copies the sources to a scratch directory
-/// without a `.git`. Everything in this crate that shells out to git degrades to
-/// an empty answer there, and a test that cannot tell that apart from a real
-/// empty answer would fail for the environment rather than for the code.
-#[must_use]
-pub fn git_is_usable() -> bool {
-    std::process::Command::new("git")
-        .arg("-C")
-        .arg(root())
-        .args(["rev-parse", "--git-dir"])
-        .output()
-        .is_ok_and(|o| o.status.success())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -986,6 +970,14 @@ mod tests {
         );
         assert!(one("crates/a/tests/fixture.json").is_empty());
 
+        // A Rust file that is not a test file. This is the case that pins the
+        // `/tests/` filter itself: without it, inverting the filter still finds
+        // every path, because the backward walk from any earlier position
+        // expands to the same string. The rule is about test files, and a `src`
+        // path must not be read as one.
+        assert!(one("crates/a/src/b.rs").is_empty());
+        assert!(one("see [x](crates/a/src/b.rs) and nothing else").is_empty());
+
         // Prose with no path in it at all.
         assert!(one("the tests directory").is_empty());
         assert!(one("").is_empty());
@@ -1184,14 +1176,20 @@ mod tests {
         // `untracked_documents` and nothing failed. A rule that cannot tell "no
         // untracked documents" from "I did not look" is LEARNINGS 5, and this
         // crate exists to catch that shape.
-        // Skipped where git cannot answer at all -- under `cargo mutants`, which
-        // works in a copy of the sources with no `.git`. There the function
-        // under test is dead whatever its body says, so failing here would be
-        // failing for the environment. `.cargo/mutants.toml` records the two
-        // mutants that consequently survive a mutation run, and records them as
-        // unreachable in that sandbox rather than as equivalent, because they
-        // are not equivalent: they disable the rule.
-        if !git_is_usable() {
+        // Skipped where there is no git directory to ask -- under `cargo
+        // mutants`, which works in a copy of the sources without one. There
+        // `untracked_documents` is dead whatever its body says, so failing here
+        // would be failing for the environment. `.cargo/mutants.toml` records
+        // the two mutants that consequently survive a mutation run, as
+        // unreachable in that sandbox rather than as equivalent: they are not
+        // equivalent, they disable the rule.
+        //
+        // Written inline rather than as a `git_is_usable()` helper, which was
+        // the first attempt: a function whose only job is to gate a test is a
+        // function whose mutation to `false` skips the test and can never be
+        // killed. Introducing an unkillable mutant to kill two others is a bad
+        // trade.
+        if !root().join(".git").exists() {
             return;
         }
 

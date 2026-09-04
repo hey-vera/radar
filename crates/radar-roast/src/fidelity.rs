@@ -242,8 +242,30 @@ mod tests {
         //
         // Both of these end exactly at the character after the digits.
         assert!(check("the figure is 25.", &[25.0]).is_empty());
-        assert_eq!(literals("ends on 6.").len(), 1);
         assert_eq!(literals("ends on 6").len(), 1);
+
+        // And the *text* of the literal, not only how many there are. The guard
+        // has a second `i + 1`, inside `bytes[i + 1]`, and mutating that one to
+        // `i - 1` looks at the digit already consumed instead of the character
+        // ahead -- so the full stop is swallowed into the number. "6." and "6"
+        // parse to the same f64, which is why a count cannot tell them apart;
+        // what changes is the precision the literal is taken to be written to,
+        // and that is what the rounding tolerance is derived from.
+        // The full stop must not be the final character, or the guard before it
+        // (`i + 1 < bytes.len()`) short-circuits and the byte in question is
+        // never read -- which is how the first version of this test missed the
+        // mutation entirely while looking straight at it.
+        let ends = literals("ends on 6. Next");
+        assert_eq!(ends.len(), 1);
+        assert_eq!(
+            ends[0].0, "6",
+            "the full stop is punctuation, not a decimal point"
+        );
+
+        // The same character *is* a decimal point when a digit follows it.
+        let inner = literals("it is 6.5 here");
+        assert_eq!(inner.len(), 1);
+        assert_eq!(inner[0].0, "6.5");
     }
 
     #[test]

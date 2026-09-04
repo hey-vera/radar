@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Plan 0004 — The bot, to dry-run complete
 
-Status: in progress
+Status: landed — every item except the live dry run, which needs the X account
 Branch: feat/the-analyst-reads-and-posts
 Base:   8caf7b1
 Planned by: Opus 5, 2026-09-04
@@ -189,11 +189,28 @@ the operational skin that makes it safe to leave running.
       rather than to refusing, and the reason is the same: the default must be
       the outcome that cannot surprise anybody, and for a base URL that is X.
 
-- [ ] 6. The reply log, readable
+- [x] 6. The reply log, readable
       `/v1/analyst/replies` (Operator) and a page listing what was asked, the
       fact sheet built, and what would have been posted. Reads the log file,
       never the store.
-      done when: 200 dry-run replies are readable in a browser.
+      done: `/v1/analyst/replies` and `web/src/Analyst.tsx`.
+      Operator **by falling through** rather than by being listed — the reply log
+      carries the fact sheet behind every answer, which is working material
+      rather than a public artefact, and `audience_of`'s fallback is what makes
+      that the default. Both the route and the page have a row in the audience
+      table so it reads as deliberate.
+      The page shows **answered and published as two numbers**, because the gap
+      is what matters: a publisher down all night fills the log and tells nobody
+      anything. The evidence expands beside each reply, which is the whole point
+      — a reply alone is a sentence to have an opinion about, a reply beside its
+      fact sheet is a claim that can be checked. The fallback reason is never
+      hidden: it is the early warning that the voice pass is drifting.
+      Verified against a real `radar-serve` with a six-record log: the endpoint
+      reported **3 answered, 2 published**, so the fold is right, and the page
+      rendered all three newest-first with the evidence toggling open.
+      A bug the tests found: an error with an empty message is falsy, so a 500
+      with no body left the page reading "reading…" forever — a page stuck
+      pending is indistinguishable from a slow one. It checks `!== null` now.
 
 ## The gate this plan does not decide
 
@@ -210,6 +227,24 @@ them, and this plan finishing is not the same as the account existing.
 
 ## Handback
 
-Stopped at: not started; this is the plan only.
-Next action: item 1.
-Do not: configure a live publisher, or touch the trading and custody lanes.
+Stopped at: **all six items done.** The only part not finished is the half of
+item 5 that needs an X account — a 24-hour live dry run against real mentions —
+and Josh is setting that up last, deliberately.
+
+What that means concretely: **the only thing between Radar and a public analyst
+is a credential and a decision, not any code.** Setting `RADAR_X_BEARER` and
+`RADAR_X_USER_ID` in `/etc/radar/analyst.env` is the switch, and until both are
+set the daemon writes replies to a log and shows them to nobody.
+
+Next action: deploy it in dry run. `deploy/README.md` §"The public analyst" has
+the six commands; an empty env file is a working install, and the first day's
+job is reading a few hundred replies on `/analyst` beside their fact sheets.
+
+Do not: set the credential before those replies have been read, open
+`Policy::CLOSED`, or touch the custody lane.
+
+Two things found here and left deliberately: the settle-at-zero bug is fixed but
+it is the shape to watch for elsewhere — a meter that hands its reservation back
+reports a budget being respected. And the sanitise-before-check ordering in
+`radar-roast` is a security property, not a tidiness one; anything added to the
+reply path goes **after** `render::for_publication`, never before.

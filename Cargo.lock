@@ -1478,6 +1478,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "radar-agent",
+ "radar-analyst",
  "radar-asof",
  "radar-customer",
  "radar-instruments",

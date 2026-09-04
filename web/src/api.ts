@@ -97,8 +97,35 @@ export const api = {
  * Kept apart so a screen built on one is a deliberate choice rather than an
  * accident, and so the seam is already drawn when the customer lane switches on.
  */
+/** One thing the public analyst said, or decided to say. */
+export interface Reply {
+  at: number;
+  mention_id: string;
+  summoner: string;
+  mint: string | null;
+  read_at_slot: number | null;
+  /** The evidence the reply was built from. The half that settles an argument. */
+  fact_sheet: string;
+  reply: string;
+  /** Why the deterministic template shipped, or null when the model's did. */
+  fellback: string | null;
+  /** The published reply's id, or null when nothing was posted. */
+  reply_id: string | null;
+}
+
+/** What the analyst has said, and whether it is running at all. */
+export interface Replies {
+  log: string;
+  /** False when there is no log: an ordinary state, not a failure. */
+  running: boolean;
+  answered: number;
+  published: number;
+  replies: Reply[];
+}
+
 export const operator = {
   store: (signal?: AbortSignal) => get<StoreCounts>("/v1/store", signal),
+  replies: (signal?: AbortSignal) => get<Replies>("/v1/analyst/replies", signal),
 };
 
 /**

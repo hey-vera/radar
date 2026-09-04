@@ -152,6 +152,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/evidence/activity", get(activity))
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
+        .route("/v1/analyst/replies", get(analyst_replies))
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/config", get(customer_config))
         .route("/v1/customer/siws/challenge", post(siws::challenge))
@@ -990,6 +991,64 @@ async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> 
         )
             .into_response(),
     }
+}
+
+/// What the public analyst has said, and what it only decided to say.
+///
+/// # Operator, by falling through rather than by being listed
+///
+/// `audience_of` classifies the customer routes explicitly and everything else
+/// falls to `Audience::Operator`. This route is not in that list, so it is
+/// operator-only without a line being added — which is the fallback doing its
+/// job. It stays that way deliberately: the reply log carries the fact sheet
+/// behind every answer, and that is an operator's working material rather than
+/// a public artefact.
+///
+/// # It reads the log, never the store
+///
+/// The analyst does not write to the store and this does not read from it. A
+/// reply is a live observation about a mint at a slot, not a recorded fact about
+/// the chain, and putting one where a replay reads would be rule 3 broken for
+/// the sake of a convenient join.
+///
+/// Folded, so one reply is one row. `publish` appends twice — once before it
+/// says anything and once after — and a page counting raw lines would report
+/// every answer twice.
+async fn analyst_replies() -> Response {
+    let dir = std::env::var("RADAR_ANALYST_DIR").unwrap_or_else(|_| "data/analyst".to_owned());
+    let log = format!("{dir}/replies.jsonl");
+
+    let Ok(entries) = radar_analyst::log::latest(&log) else {
+        // Not an error. An instance with no analyst running has no log, and
+        // reporting that as a failure would make an ordinary configuration look
+        // like a broken one. The count says which.
+        return Json(json!({
+            "log": log,
+            "running": false,
+            "answered": 0,
+            "published": 0,
+            "replies": [],
+        }))
+        .into_response();
+    };
+
+    let published = entries.iter().filter(|e| e.reply_id.is_some()).count();
+    // Newest first: an operator opening this wants the last thing the account
+    // said, not the first.
+    let mut replies: Vec<_> = entries.iter().collect();
+    // Descending, so `Reverse` rather than a comparator: clippy is right that a
+    // key is clearer, and the key here is "how recent", inverted.
+    replies.sort_by_key(|e| std::cmp::Reverse(e.at));
+    replies.truncate(200);
+
+    Json(json!({
+        "log": log,
+        "running": true,
+        "answered": entries.len(),
+        "published": published,
+        "replies": replies,
+    }))
+    .into_response()
 }
 
 /// How many rows each table holds.

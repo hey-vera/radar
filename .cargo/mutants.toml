@@ -192,3 +192,11 @@ exclude_re = [
     'replace untracked_documents -> Vec<String> with vec!\[\]',
     'delete ! in untracked_documents',
 ]
+
+# A note on what does NOT belong here, learned on 2026-09-03 and worth the four
+# lines. A `git_is_usable()` helper was added so the probe above could skip
+# itself where there is no git directory. CI immediately reported
+# `replace git_is_usable -> bool with false` as a survivor, and it was right: a
+# function whose only job is to gate a test is a function whose mutation skips
+# the test, and nothing can ever kill it. The gate is inline now. Do not add a
+# helper here to silence a mutant -- it adds one that cannot be silenced.

@@ -44,31 +44,52 @@ profit**, at a median −3,228 bps.
 
 ## 2. What is actually running
 
-Two processes on the guardian VPS under `setsid nohup`, plus an hourly cron:
-`radar-backfill --follow` recording launches ~5 minutes behind chain,
-`radar-serve` on `127.0.0.1:8402`, and the outcome pass at `17 * * * *`.
+**Checked on the box, 2026-09-04 05:29 UTC.** This paragraph said "two
+processes under `setsid nohup`, plus an hourly cron" and was wrong on every
+count. `deploy/README.md` was right.
 
-**Not verified from here, and something else in the repository says otherwise.**
-[`deploy/README.md`](../../deploy/README.md) records `radar-serve.service`,
-`radar-follow.service` and `radar-brief.timer` as enabled and active, checked
-2026-08-25 — which is systemd, not `setsid nohup`. Both accounts cannot be
-right, and neither was checked on the day this was written.
+Three systemd units, all enabled, and **two** hourly crons:
 
-So resolve it rather than picking one, and the runbook already gives the
-command:
+| | |
+|---|---|
+| `radar-follow.service` | enabled, active — `radar-backfill --follow`, 5 min behind chain |
+| `radar-serve.service` | enabled, active — `127.0.0.1:8402` |
+| `radar-brief.timer` | enabled, active — every 15 minutes, not hourly |
+| cron `17 * * * *` | the outcome pass |
+| cron `37 * * * *` | **`radar consider --cap 40 --record`** — the decision pass, which no document mentioned |
+
+The binaries are in two places: `radar-backfill` and `radar` in
+`/home/guardian/bin`, `radar-serve` in `/usr/local/bin`. `deploy/README.md`
+says so; it is easy to install one and think you have deployed both.
+
+The state of the store at that moment, which is the part that decays fastest:
+
+```
+ingestion   cursor 05:23:21 -- 5m behind        watermark  slot 444164263
+launches    515245 recorded (29968 failed)      graduations 44741 (25659 failed)
+outcomes    1436409 measurements                decisions   8477 (3634 proposed)
+host        38% disk, 924MB of 3915MB used, load 0.38
+```
+
+`radar brief` reports nothing out of bounds, **with one warning that is worth
+a look and is not an alarm** — `Warn` is defined as "worth a look, not worth
+waking anyone", so the summary line is consistent rather than contradictory:
+
+> coordination — 3500 bps at the centre over 600 blocks against 580 measured
+> — either the market moved or this sample is not what it is believed to be
+
+That is [ADR 0012](../adr/0012-the-launch-block-count-is-recorded-not-the-threshold-retuned.md)'s
+predicted drift, firing. It has been firing to a terminal nobody was reading.
+
+**Resolved.** The contradiction this section used to carry — three systemd
+units in `deploy/README.md` against two `nohup` processes here — is settled
+above in favour of the runbook, and both documents now say the same thing. The
+lesson is the cheap one: neither claim had been checked on the day it was
+written, and the command that settles it takes ten seconds.
 
 ```bash
 ssh guardian-vps-tail 'systemctl list-unit-files "radar*" --no-pager'
-ssh guardian-vps-tail 'pgrep -ax radar-backfill; pgrep -ax radar-serve'
 ```
-
-Whichever document is wrong gets fixed in the same change as the answer. The
-follow recorder has exited silently before — [LEARNINGS](../../LEARNINGS.md) 8
-— so an absent process is a plausible state rather than a surprising one, and
-a supervised unit and an unsupervised process fail very differently.
-
-An attempt on 2026-09-04 got as far as Tailscale asking for a browser check, so
-the answer is one click away and not in this file.
 
 **The trading lane is shut.** `Policy::CLOSED` ships and has never been handed a
 real proposal. `radar-cli` reaches `radar_exec::route` for `radar route`, which

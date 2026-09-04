@@ -49,15 +49,50 @@ disagreeing.
       2026-09-03, the day before that table was written. Section 2's account of
       what runs on the VPS now records that `deploy/README.md` disagrees with
       it, with the two commands that settle it, rather than asserting either.
-- [ ] 4. Verify what is running on the VPS, and make the two documents agree (A2)
-      blocked: Tailscale SSH asks for a browser check —
-      `https://login.tailscale.com/a/l4e1b2b828ad11`. One click from Josh, then
-      this is ten minutes. See Open questions Q1.
+- [x] 4. Verify what is running on the VPS, and make the two documents agree (A2)
+      done: checked on the box 2026-09-04 05:29 UTC with
+      `systemctl list-unit-files "radar*"`, `pgrep -ax`, `crontab -l` and
+      `radar brief`. **`deploy/README.md` was right and design 0006 was wrong**:
+      three systemd units, all enabled and active, not two `nohup` processes.
+      Design 0006 section 2 now carries the checked table and the store's
+      figures with the timestamp they were read at.
+      Two things nothing had recorded: a **second** cron at `37 * * * *`
+      running `radar consider --cap 40 --record`, and the fact that the
+      coordination check has been sitting at `[WARN]` — ADR 0012's predicted
+      drift, firing to a terminal nobody reads. `Warn` deliberately does not
+      alarm ("worth a look, not worth waking anyone"), so the summary line is
+      consistent rather than contradictory.
+      Production is healthy: ingestion 5m behind, 515,245 launches, 44,741
+      graduations, 1,436,409 outcomes, 8,477 decisions, 38% disk, load 0.38.
 - [ ] 5. An alert channel that reaches somebody (A3)
-      blocked on Q2. `radar-brief.timer` has posted to `RADAR_ALERT_WEBHOOK`
-      since PR #10 and the variable has never been set, so the only detection
-      mechanism for a dead recorder is a person happening to look. It went
-      unnoticed for thirteen hours once (LEARNINGS 8).
+      the code half is **done**; the file itself needs one root command from
+      Josh, because `/etc/radar` is root-owned and guardian's NOPASSWD list
+      does not cover writing there.
+      Confirmed on the box: `/etc/radar/` contains `radar.env` only. There is
+      no `alert.env`, so `RADAR_ALERT_WEBHOOK` has never been set and the only
+      detection mechanism for a dead recorder is a person happening to look.
+      **Two bugs found in the delivery path, and neither had ever run.** The
+      body was `{"text": ...}`, which is Slack's field — **Discord answers that
+      with a 400**, so choosing Discord would have produced one "POST failed"
+      journal line and nothing else. And the shell escaping of quotes and
+      backslashes did not survive the trip through `sed` and `curl -d`: the
+      message field arrived **empty**, which from outside looks exactly like a
+      delivered alert. Both found by pointing the real script at a local
+      listener and reading what arrived.
+      Fixed: the body carries `text` and `content` together, and the two
+      characters that can break JSON are removed rather than escaped, so the
+      payload cannot be malformed by its own contents. Four destinations are
+      supported — Telegram (`RADAR_ALERT_FORMAT=telegram` plus a chat id),
+      ntfy.sh (`text`), Discord and Slack (the default). Telegram needs a
+      second value no webhook URL carries, so a missing chat id sends nothing
+      and says why rather than POSTing a body Telegram answers with a 400.
+      Verified by building each body from the script's own transform against
+      output containing quotes, a backslash, tabs and newlines, and parsing it:
+      all four branches correct, both JSON bodies parse, and the no-chat-id
+      case issues no request at all. `deploy/alert.env.example` and the runbook
+      carry the setup for each.
+      next: Josh runs the three commands in `deploy/README.md` under
+      "Where a failure goes".
 - [ ] 6. Dependabot triage (A6)
       triaged 2026-09-04 by reading every one of the fourteen; **the batch is
       not uniform and the grouping in the plan was wrong** — Dependabot opened
@@ -115,13 +150,25 @@ disagreeing.
 
 ## Open questions for Josh
 
-- Q1 (2026-09-04): the Tailscale browser check. Until it is clicked, nothing
-  about production is verifiable from this workstation and item 4 cannot start.
-  — unanswered
-- Q2 (2026-09-04): which alert channel. Recommendation is a Discord webhook:
-  free, one minute to create, and it reaches a phone. — unanswered
-- Q3 (2026-09-04): the two X billing figures, which gate workstream B and are
-  settleable with one live test post. Not needed for this plan. — unanswered
+- Q1 (2026-09-04): the Tailscale browser check. — **answered: authenticated.**
+  Item 4 is done.
+- Q2 (2026-09-04): which alert channel. — **answered, and the answer separated
+  two things that were being asked as one.** Josh: a website is the lowest
+  friction *for users*; Discord and Telegram are medium friction. Both true,
+  and they are different questions. The user-facing surface is a page and it is
+  design 0007's workstream C. The *operator alarm* cannot be a page, because
+  waiting to be looked at is the property that produced the thirteen-hour
+  outage.
+  Josh then asked whether Telegram beats ntfy.sh. **It does, and it is the
+  recommendation.** ntfy wins only on setup time — about a minute against five.
+  Telegram is protected by a bot token rather than by a topic name a stranger
+  could guess, and it keeps a searchable history, which is what the question
+  after an outage always needs. All four are supported; the choice is one line
+  in `/etc/radar/alert.env`.
+- Q3: **withdrawn.** Josh, 2026-09-04: the X billing figures get settled at the
+  end of the programme. **Do not raise them again** — they gate only the moment
+  the bot posts publicly, and every other part of workstream B is buildable and
+  testable without them.
 - Q4 (2026-09-04): `radar-asof`'s `Observed<T>` and `LookAhead` have no caller
   now that the provider cache is gone. Three honest options: delete them and
   leave `radar-asof` as `AsOf` alone; keep them for the `radar-serve` cache
@@ -134,13 +181,16 @@ disagreeing.
 
 ## Handback
 
-Stopped at: items 0 to 3, 7 and 8 landed. Items 4 and 5 are blocked on Q1 and
-Q2. Item 6 is unblocked and is the only one left.
-Next action: item 6, the Dependabot batch — the last unblocked item. Fourteen
-PRs; the two grouped minor/patch ones go together, `arrow`/`parquet` 56 to 59
-needs `older_files_still_read.rs` on its own branch because it touches the
-store's format, and `ed25519-dalek` 3 is read by hand because it is under the
-signer.
+Stopped at: items 0 to 4, 7 and 8 landed. Item 5's code is done and it needs
+one root command from Josh, because `/etc/radar` is root-owned and guardian's
+NOPASSWD list does not cover writing there.
+Next action: item 6, the Dependabot batch — the last item with work left in
+it. Fourteen PRs; the two grouped minor/patch ones go together,
+`arrow`/`parquet` 56 to 59 needs `older_files_still_read.rs` on its own branch
+because it touches the store's format, and `ed25519-dalek` 3 is read by hand
+because it sits under the signer.
+Then Josh runs the three commands under "Where a failure goes" in
+`deploy/README.md` and item 5 closes.
 Do not: open `Policy::CLOSED`, edit the custody lane, or retune `radar-graph`.
 All three are in Not in scope above, and each has a document saying why.
 Do not delete `Observed<T>` on the strength of Q4 without answering it — an

@@ -700,23 +700,71 @@ inside the first failing window rather than an hour later.
 **The journal, always.** `journalctl -t radar-brief -p err` shows one line per
 failing check. This needs no configuration and cannot be switched off.
 
-**A webhook, if one is configured.** Put it in `/etc/radar/alert.env`:
+**A webhook, if one is configured.** `radar-brief.service` already loads
+`/etc/radar/alert.env`, and the file does not exist on this box yet.
+[`alert.env.example`](alert.env.example) is the template and explains each
+setting; the short version is one of these three:
 
+```bash
+sudo install -m 0640 -o root -g guardian deploy/alert.env.example /etc/radar/alert.env
+sudo nano /etc/radar/alert.env
+sudo systemctl restart radar-brief.timer   # picks the file up on the next run
 ```
-RADAR_ALERT_WEBHOOK=https://hooks.slack.com/services/T.../B.../...
-```
+
+| destination | what to set | setup |
+|---|---|---|
+| **Telegram** — recommended | `RADAR_ALERT_WEBHOOK=https://api.telegram.org/bot<TOKEN>/sendMessage`, `RADAR_ALERT_FORMAT=telegram`, `RADAR_ALERT_CHAT_ID=<id>` | ~5 min in the app: @BotFather `/newbot`, message the bot once, read the id from `getUpdates` |
+| ntfy.sh | `RADAR_ALERT_WEBHOOK=https://ntfy.sh/<long-random-topic>` and `RADAR_ALERT_FORMAT=text` | ~1 min, no account — but the topic name is the only thing protecting it |
+| Discord | the channel webhook URL, format left unset | a server you own |
+| Slack | the incoming-webhook URL, format left unset | a workspace |
+
+**Telegram is the recommendation** and the trade against ntfy is the honest
+one: four more minutes of setup, in exchange for a token instead of a guessable
+name, and a searchable history for the question that always gets asked after an
+outage — *when did this start?* Telegram is also the only one of the four whose
+body needs a second value, the chat id; without it the script sends nothing and
+says so in the journal, because a `curl` that succeeds while delivering to
+nobody is the worst outcome this path can produce.
+
+The body carries **both** `text` and `content`, because Slack reads the first
+and Discord the second and each ignores the other. That is not belt and braces:
+an earlier version of this script sent only `text`, which Discord answers with
+a **400**, and the only trace would have been a single "POST failed" line in
+the journal — an alerting path failing in exactly the manner of the outage it
+exists to report.
+
+The message has its quotes and backslashes **removed** rather than escaped, so
+a Windows path or a quoted token symbol in a check detail cannot produce a
+malformed body. The version that escaped them lost the backslashes somewhere
+between the heredoc, `sed` and `curl -d`, and posted an empty message field —
+which from outside is indistinguishable from a delivered alert. Found by
+pointing it at a local listener and reading what actually arrived, which is the
+only way this class of bug is ever found.
 
 Unset means no webhook, never a silent pass — the journal line happens
 regardless. That is rule 8 applied to alerting: missing configuration must not
 turn a failure into a success.
 
-**As of 2026-08-24 no channel is configured on this box, and that is worth
-knowing.** `claw-net/scripts/monitoring-check.sh` has been running every five
-minutes for months with `SLACK_WEBHOOK_URL`, `ALERT_EMAIL` and
-`PAGERDUTY_ROUTING_KEY` all unset, writing to a log nobody reads. A monitor
-without a channel is a monitor that only works when someone is already
-suspicious — which is how a thirteen-hour recorder outage was found by accident
-rather than reported.
+**Why a status page is not a substitute, even though one is planned.** The
+failure this exists for is a recorder that exited at 05:37 and was found
+thirteen hours later by somebody happening to reground (LEARNINGS 8). A page
+has precisely the property that caused that: it waits to be looked at. The
+sibling service on this box proves the point at length —
+`claw-net/scripts/monitoring-check.sh` has run every five minutes for months
+with `SLACK_WEBHOOK_URL`, `ALERT_EMAIL` and `PAGERDUTY_ROUTING_KEY` all unset,
+writing to a log nobody reads. A public page is the right surface for *users*
+and it is in design 0007; it cannot be the thing that wakes an operator.
+
+**Prove the channel before trusting it**, the same way the timer is proved
+above — a store that cannot be healthy must both exit non-zero and arrive:
+
+```bash
+mkdir -p /tmp/emptystore && RADAR_STORE=/tmp/emptystore ~/bin/radar-brief.sh; echo "exit=$?"
+```
+
+If nothing arrives, `journalctl -t radar-brief -p err -n 5` will say
+`alert webhook POST failed` — the script never lets a dead webhook change the
+health verdict.
 
 ## Keeping it current
 

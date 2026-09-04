@@ -124,7 +124,13 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     let probe = serve_url.map(|url| (url, probe_serving(url)));
     checks.push(agent(probe.as_ref().map(|(_, p)| p)));
     checks.push(serving(probe));
-    checks.push(analyst(&analyst_dir(&|k| std::env::var(k).ok())));
+    // The getter is read twice and it says two different things: where the log
+    // is, and whether anybody has claimed the analyst runs on this host.
+    let get = |k: &str| std::env::var(k).ok();
+    checks.push(analyst(
+        &analyst_dir(&get),
+        get("RADAR_ANALYST_DIR").is_some(),
+    ));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -209,25 +215,43 @@ fn analyst_dir(get: &impl Fn(&str) -> Option<String>) -> String {
 
 /// Whether the public analyst is answering, and when it last did.
 ///
-/// # Why absence is Unknown rather than Ok
+/// # Why absence is Unknown only once somebody has claimed it runs here
 ///
 /// An analyst that has never run and an analyst that stopped look identical from
-/// a directory listing, and both are reported as `Unknown`, which alarms. The
-/// alternative -- treating "no log" as "nothing to report" -- is the failure
-/// LEARNINGS 5 records: a check that reports absence the same way it reports
-/// success. This account's whole product is answering in public, so a silent one
-/// is the outage.
+/// a directory listing, and reporting absence the same way as success is the
+/// failure LEARNINGS 5 records. This account's whole product is answering in
+/// public, so a silent one is the outage -- **once there is an account**.
+///
+/// Before that there is not. On every host where the daemon is not installed the
+/// log is legitimately absent forever, and a check that alarms every fifteen
+/// minutes for the weeks before launch is a check that fires on ordinary
+/// weather, which section 5 of `AGENTS.md` says is worse than no check: it
+/// spends the credibility of the alert channel the recorder depends on. That
+/// alert channel is the one that was missing when the recorder died silently for
+/// thirteen hours.
+///
+/// So `declared` decides which of the two this is, and `RADAR_ANALYST_DIR` is
+/// where the claim is made -- the unit file sets it, so installing the analyst
+/// is what arms the check. It is deny-by-default read the right way round: what
+/// is denied without configuration is the *alarm*, not the reporting, and the
+/// state is still printed either way.
 ///
 /// It reads the reply log rather than a process list, for the reason the
 /// ingestion check reads the cursor: a daemon that is running and answering
 /// nobody is the state worth catching, and only the log can tell.
-fn analyst(dir: &str) -> Check {
+fn analyst(dir: &str, declared: bool) -> Check {
     let log = format!("{dir}/replies.jsonl");
+    // Absent and not claimed: a fact about this host, printed and not alarmed.
+    let missing = if declared {
+        Status::Unknown
+    } else {
+        Status::Ok
+    };
     let entries = match radar_analyst::log::read(&log) {
         Ok(entries) => entries,
         Err(e) => {
             return Check::new(
-                Status::Unknown,
+                missing,
                 "analyst",
                 format!("no reply log at {log} — it has never run, or cannot write ({e})"),
             );
@@ -236,7 +260,7 @@ fn analyst(dir: &str) -> Check {
 
     let Some(last) = entries.iter().map(|e| e.at).max() else {
         return Check::new(
-            Status::Unknown,
+            missing,
             "analyst",
             format!("{log} is empty — it has started and answered nothing"),
         );
@@ -1767,15 +1791,41 @@ mod tests {
     }
 
     #[test]
-    fn an_analyst_that_never_ran_is_unknown_rather_than_fine() {
+    fn an_analyst_that_never_ran_is_unknown_once_somebody_says_it_runs_here() {
         // The failure LEARNINGS 5 records: a check reporting absence the same
         // way it reports success. This account's product is answering in
         // public, so a silent one is the outage -- and `Unknown` alarms.
         let dir = std::env::temp_dir().join(format!("radar-brief-none-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
-        let check = analyst(dir.to_str().expect("a path"));
+        let check = analyst(dir.to_str().expect("a path"), true);
         assert_eq!(check.status, Status::Unknown, "{}", check.detail);
         assert!(check.detail.contains("never run"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_analyst_nobody_installed_is_reported_and_not_alarmed() {
+        // The other half, and the reason the parameter exists. The daemon was
+        // not installed on this host for weeks before there was an account to
+        // run it, and for all of those weeks the log was legitimately absent.
+        //
+        // Alarming on it would have fired every fifteen minutes down the same
+        // channel that carries the recorder's death -- teaching the operator to
+        // ignore the alert that matters, which is a worse outcome than having no
+        // analyst check at all.
+        //
+        // The state is still *said*: only the status changes, so nothing is
+        // hidden. Re-apply the bug by passing `true` here and the assertion on
+        // the status fails while the one on the text still passes, which is
+        // exactly the shape of the mistake.
+        let dir = std::env::temp_dir().join(format!("radar-brief-undec-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let check = analyst(dir.to_str().expect("a path"), false);
+        assert_eq!(check.status, Status::Ok, "{}", check.detail);
+        assert!(
+            check.detail.contains("never run"),
+            "reported, not hidden: {}",
+            check.detail
+        );
     }
 
     #[test]
@@ -1783,8 +1833,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("radar-brief-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");
         std::fs::write(dir.join("replies.jsonl"), "").expect("written");
-        let check = analyst(dir.to_str().expect("a path"));
+        let check = analyst(dir.to_str().expect("a path"), true);
         assert_eq!(check.status, Status::Unknown, "{}", check.detail);
+        // Started and answered nothing is a real state on a host that has one.
+        assert_eq!(
+            analyst(dir.to_str().expect("a path"), false).status,
+            Status::Ok
+        );
     }
 
     #[test]
@@ -1817,7 +1872,7 @@ mod tests {
             radar_analyst::log::append(&log, &entry).expect("outcome");
         }
 
-        let check = analyst(dir.to_str().expect("a path"));
+        let check = analyst(dir.to_str().expect("a path"), true);
         assert_eq!(check.status, Status::Ok, "{}", check.detail);
         assert!(
             check.detail.starts_with("3 answered, 3 published"),
@@ -1852,7 +1907,7 @@ mod tests {
         radar_analyst::log::append(&log, &entry).expect("intent");
         radar_analyst::log::append(&log, &entry).expect("outcome");
 
-        let check = analyst(dir.to_str().expect("a path"));
+        let check = analyst(dir.to_str().expect("a path"), true);
         assert!(
             check.detail.starts_with("1 answered, 0 published"),
             "{}",

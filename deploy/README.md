@@ -767,6 +767,16 @@ and how many were actually published. The gap between those two numbers is the
 one worth watching: a publisher that is down all night fills the log and answers
 nobody.
 
+**That line only *alarms* on a host where `RADAR_ANALYST_DIR` is set.** Setting
+it is the claim that the analyst runs here, and the unit above sets it, so
+installing the analyst is what arms the check. Everywhere else a missing reply
+log is reported in words and graded `ok`, because on a host without the daemon
+it is absent forever and a check that fires every fifteen minutes for weeks
+would teach you to ignore the channel that carries the recorder's death.
+
+So: if you run `radar brief` by hand and want the analyst held to account, run
+it the way the timer does — with the environment file — rather than bare.
+
 ## Knowing when it stopped
 
 `radar-follow.service` restarts a recorder that dies. It cannot help with a

@@ -689,6 +689,48 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now radar-analyst
 ```
 
+### The two files it reads, and what happens without them
+
+The analyst reads two published measurements from disk. Neither is optional in
+the sense that matters: without them the bot still answers, and says less.
+
+| file | without it |
+|---|---|
+| `docs/research/data/0024-base-rates.json` | replies carry no population context — a recipient count with no distribution to quote it against |
+| `docs/research/data/creator-index.json` | **every reply about a fresh launch says the same thing** |
+
+Both are read relative to the working directory, which the unit sets to
+`/home/guardian/radar`, so they live at
+`/home/guardian/radar/docs/research/data/`.
+
+The second one is the difference between an account worth following and one that
+gets mentioned once. Measured on 2026-09-04: three real launches produced three
+**identical** replies without it, because the cost figure is a constant and most
+launches sit in the same recipient band. With it, the same command said *"150
+tokens launched by this creator, none of which ever filled its curve"* — which
+is specific, checkable, and said by nobody else.
+
+Build it, and put it on the timer that keeps it current:
+
+```bash
+sudo install -D -m644 deploy/radar-creator-index.service /etc/systemd/system/radar-creator-index.service
+sudo install -D -m644 deploy/radar-creator-index.timer   /etc/systemd/system/radar-creator-index.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-creator-index.timer
+
+# And once now, rather than waiting six hours for the first run.
+sudo systemctl start radar-creator-index
+journalctl -u radar-creator-index -n 5 --no-pager
+```
+
+It took about a minute over 506,821 launches and produced 116,405 creators in a
+13MB file. **Check the count, not the exit status**: a store that cannot be read
+produces an empty index rather than an error, and an empty index makes every
+reply say "this creator has no record here".
+
+**It ships with `main`.** The count in the file is a measurement, so the file is
+not committed — like the store itself, it is built where the data is.
+
 **It starts safely with an empty env file, and that is the point.** Every switch
 is deny-by-default, and each absence is reported rather than assumed:
 

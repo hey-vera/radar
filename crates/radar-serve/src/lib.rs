@@ -1016,6 +1016,15 @@ async fn token(State(state): State<Arc<AppState>>, Path(mint): Path<String>) -> 
 /// every answer twice.
 async fn analyst_replies() -> Response {
     let dir = std::env::var("RADAR_ANALYST_DIR").unwrap_or_else(|_| "data/analyst".to_owned());
+    analyst_replies_in(&dir)
+}
+
+/// The handler, over a directory it is given.
+///
+/// Split from the route so it can be tested without setting a process-wide
+/// environment variable that parallel tests would fight over -- the same shape
+/// the daemon's config readers use.
+fn analyst_replies_in(dir: &str) -> Response {
     let log = format!("{dir}/replies.jsonl");
 
     let Ok(entries) = radar_analyst::log::latest(&log) else {
@@ -1288,6 +1297,71 @@ mod tests {
             (1_750_000_000..2_000_000_000).contains(&now),
             "seconds since 1970 is ~1.77e9 in 2026 and ~2.0e9 in 2033; got {now}"
         );
+    }
+
+    /// Reads a handler's JSON body.
+    async fn body_of(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("a body");
+        serde_json::from_slice(&bytes).expect("json")
+    }
+
+    #[tokio::test]
+    async fn an_instance_with_no_analyst_says_so_rather_than_failing() {
+        // A missing log is an ordinary configuration -- most instances do not
+        // run the analyst -- and reporting it as an error would make that look
+        // like a fault. `running` is what tells the two apart, and a page that
+        // read only `answered` could not.
+        let dir = std::env::temp_dir().join(format!("radar-noanalyst-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+
+        let body = body_of(analyst_replies_in(dir.to_str().expect("a path"))).await;
+        assert_eq!(body["running"], false);
+        assert_eq!(body["answered"], 0);
+        assert_eq!(body["published"], 0);
+        assert!(body["replies"].as_array().expect("an array").is_empty());
+    }
+
+    #[tokio::test]
+    async fn replies_are_folded_newest_first_and_counted_once() {
+        // `publish` appends twice per reply, so a handler counting raw lines
+        // reports every answer twice. And an operator opening this wants the
+        // last thing the account said, not the first.
+        let dir = std::env::temp_dir().join(format!("radar-analyst-api-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let log = dir.join("replies.jsonl");
+        let log = log.to_str().expect("a path").to_owned();
+
+        for (at, id, published) in [(100_u64, "m1", true), (200, "m2", false)] {
+            let mut entry = radar_analyst::Entry {
+                at,
+                mention_id: id.to_owned(),
+                summoner: "a".to_owned(),
+                mint: None,
+                read_at_slot: None,
+                fact_sheet: "evidence".to_owned(),
+                reply: "text".to_owned(),
+                fellback: None,
+                reply_id: None,
+            };
+            radar_analyst::log::append(&log, &entry).expect("intent");
+            if published {
+                entry.reply_id = Some(format!("r-{id}"));
+            }
+            radar_analyst::log::append(&log, &entry).expect("outcome");
+        }
+
+        let body = body_of(analyst_replies_in(dir.to_str().expect("a path"))).await;
+        assert_eq!(body["running"], true);
+        assert_eq!(body["answered"], 2, "four lines are two replies");
+        assert_eq!(body["published"], 1, "one of them was posted");
+        let replies = body["replies"].as_array().expect("an array");
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["mention_id"], "m2", "newest first");
+        assert_eq!(replies[0]["fact_sheet"], "evidence");
     }
 
     #[test]

@@ -124,7 +124,7 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
     let probe = serve_url.map(|url| (url, probe_serving(url)));
     checks.push(agent(probe.as_ref().map(|(_, p)| p)));
     checks.push(serving(probe));
-    checks.push(analyst(&analyst_dir()));
+    checks.push(analyst(&analyst_dir(&|k| std::env::var(k).ok())));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -199,8 +199,12 @@ fn ingestion(store: &Path, now: i64) -> Check {
 ///
 /// The same default the daemon uses, and the same environment variable, so an
 /// operator who moved the directory does not have to tell the brief twice.
-fn analyst_dir() -> String {
-    std::env::var("RADAR_ANALYST_DIR").unwrap_or_else(|_| "data/analyst".to_owned())
+///
+/// Takes a getter for the reason the daemon's config readers do: the rule is
+/// then testable without setting a process-wide variable that parallel tests
+/// would fight over.
+fn analyst_dir(get: &impl Fn(&str) -> Option<String>) -> String {
+    get("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned())
 }
 
 /// Whether the public analyst is answering, and when it last did.
@@ -245,18 +249,19 @@ fn analyst(dir: &str) -> Check {
     let published = radar_analyst::log::latest(&log)
         .map_or(0, |v| v.iter().filter(|e| e.reply_id.is_some()).count());
 
-    let age = now_epoch() - i64::try_from(last).unwrap_or(i64::MAX);
+    // No threshold on the age, and no age computed. A quiet account is a quiet
+    // day, not an outage -- this thing answers when it is asked, and nobody
+    // asking is a fact about the world rather than a fault. Alarming on it would
+    // be a check that fires on ordinary weather, which AGENTS.md section 5 says
+    // is worse than no check.
+    //
+    // An earlier version computed the age and then discarded it, which mutation
+    // testing found by replacing the subtraction with an addition and nothing
+    // failing. A number nothing reads is not a number.
     let detail = format!(
         "{answered} answered, {published} published; last at {}",
         from_epoch(i64::try_from(last).unwrap_or(0))
     );
-
-    // No threshold on the age. A quiet account is a quiet day, not an outage --
-    // this thing answers when it is asked, and nobody asking is a fact about the
-    // world rather than a fault. The number is printed so an operator can judge
-    // it; alarming on it would be a check that fires on ordinary weather, which
-    // AGENTS.md section 5 says is worse than no check.
-    let _ = age;
     Check::new(Status::Ok, "analyst", detail)
 }
 
@@ -1580,6 +1585,17 @@ mod tests {
         assert_eq!(humanise(600), "10m");
         assert_eq!(humanise(47_143), "13h05m");
     }
+    #[test]
+    fn the_analyst_directory_falls_back_to_the_daemons_own_default() {
+        // The same default and the same variable the daemon uses. A brief
+        // looking somewhere else reports a healthy analyst as never having run.
+        assert_eq!(analyst_dir(&|_| None), "data/analyst");
+        assert_eq!(
+            analyst_dir(&|k| (k == "RADAR_ANALYST_DIR").then(|| "/srv/a".to_owned())),
+            "/srv/a"
+        );
+    }
+
     #[test]
     fn an_analyst_that_never_ran_is_unknown_rather_than_fine() {
         // The failure LEARNINGS 5 records: a check reporting absence the same

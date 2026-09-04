@@ -73,15 +73,19 @@ fn env(key: &str) -> Option<String> {
 
 /// The budget, or a closed one.
 ///
+/// Takes a getter rather than reading the environment, so the rule can be tested
+/// without setting process-wide variables that parallel tests would fight over —
+/// the same shape `Prices::from_vars` uses, and for the same reason.
+///
 /// Dollars in, micro-USD out, because an operator writing a daily cap thinks in
 /// dollars and the meter counts in millionths. A value that will not parse is
 /// **closed**, not ignored: a typo in a spending ceiling must not read as
 /// permission.
-fn budget_from_env() -> Budget {
-    let daily = env("RADAR_ANALYST_DAILY_USD")
+pub fn budget_from(get: &impl Fn(&str) -> Option<String>) -> Budget {
+    let daily = get("RADAR_ANALYST_DAILY_USD")
         .and_then(|v| v.trim().parse::<f64>().ok())
         .map(MicroUsd::from_dollars);
-    let per_call = env("RADAR_ANALYST_PER_CALL_USD")
+    let per_call = get("RADAR_ANALYST_PER_CALL_USD")
         .and_then(|v| v.trim().parse::<f64>().ok())
         .map(MicroUsd::from_dollars);
     match (daily, per_call) {
@@ -95,16 +99,22 @@ fn budget_from_env() -> Budget {
 
 /// The admission limits, or ones that refuse everything.
 ///
+/// Takes a getter, for the reason [`budget_from`] does.
+///
 /// Unset means zero, and zero means refuse. `Limits` has no `Default` in the
 /// library on purpose — a default here would be a spending policy invented by
 /// whoever typed it — so this function is where the absence is turned into a
 /// refusal rather than into a number.
-fn limits_from_env() -> Limits {
-    let n = |key: &str| env(key).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+pub fn limits_from(get: &impl Fn(&str) -> Option<String>) -> Limits {
+    let n = |key: &str| get(key).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
     Limits {
         per_summoner_daily: n("RADAR_ANALYST_PER_SUMMONER_DAILY"),
         global_daily: n("RADAR_ANALYST_GLOBAL_DAILY"),
-        dedupe_seconds: env("RADAR_ANALYST_DEDUPE_SECONDS")
+        // The one with a default, because a dedupe window is not a spending
+        // decision -- it decides how long "already answered" lasts, and zero
+        // would mean the same coin is answered again on the next poll. An hour
+        // is the same figure the command uses.
+        dedupe_seconds: get("RADAR_ANALYST_DEDUPE_SECONDS")
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(3_600),
     }
@@ -142,7 +152,7 @@ pub fn run() -> ! {
         idle_forever();
     };
 
-    let budget = budget_from_env();
+    let budget = budget_from(&env);
     if budget == Budget::CLOSED {
         eprintln!(
             "radar-analyst: unfunded -- RADAR_ANALYST_DAILY_USD and \
@@ -150,7 +160,7 @@ pub fn run() -> ! {
         );
     }
 
-    let limits = limits_from_env();
+    let limits = limits_from(&env);
     let mut gate = Gate::new(limits, vec!["radar".to_owned()]);
     let mut spend = Spend::open(budget, prices, paths.ledger.clone(), day_of(now()));
 
@@ -299,4 +309,110 @@ pub fn tick(
         eprintln!("radar-analyst: cannot save the ledger: {e}");
     }
     answered
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A getter over a fixed table, so the rules can be tested without touching
+    /// process-wide environment variables.
+    fn from(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |key: &str| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn a_day_is_whole_days_since_the_epoch() {
+        // The meter's window and the gate's are the same day, so this arithmetic
+        // decides when both reset. Getting it wrong by an operator means a
+        // budget that resets hourly or never.
+        assert_eq!(day_of(0), 0);
+        assert_eq!(day_of(86_399), 0, "one second before the boundary");
+        assert_eq!(day_of(86_400), 1, "the boundary itself");
+        assert_eq!(day_of(86_401), 1);
+        assert_eq!(day_of(1_788_000_000), 20_694);
+    }
+
+    #[test]
+    fn a_budget_needs_both_halves_or_it_is_closed() {
+        // Deny by default: a per-call ceiling with no daily cap is not a
+        // budget, it is a ceiling on how fast an unbounded bill accumulates.
+        let both = from(&[
+            ("RADAR_ANALYST_DAILY_USD", "5.00"),
+            ("RADAR_ANALYST_PER_CALL_USD", "0.25"),
+        ]);
+        let budget = budget_from(&both);
+        assert_eq!(budget.daily_max, MicroUsd(5_000_000));
+        assert_eq!(budget.per_call_max, MicroUsd(250_000));
+
+        for partial in [
+            vec![("RADAR_ANALYST_DAILY_USD", "5.00")],
+            vec![("RADAR_ANALYST_PER_CALL_USD", "0.25")],
+            vec![],
+        ] {
+            assert_eq!(
+                budget_from(&from(&partial)),
+                Budget::CLOSED,
+                "{partial:?} must not be a budget"
+            );
+        }
+    }
+
+    #[test]
+    fn a_ceiling_that_will_not_parse_is_closed_rather_than_ignored() {
+        // A typo in a spending ceiling must not read as permission.
+        let typo = from(&[
+            ("RADAR_ANALYST_DAILY_USD", "five dollars"),
+            ("RADAR_ANALYST_PER_CALL_USD", "0.25"),
+        ]);
+        assert_eq!(budget_from(&typo), Budget::CLOSED);
+    }
+
+    #[test]
+    fn absent_limits_refuse_everything() {
+        // Zero is the refusing value in `Gate`, so unset means nobody is
+        // answered. A default here would be a policy invented by whoever typed
+        // it.
+        let limits = limits_from(&from(&[]));
+        assert_eq!(limits.per_summoner_daily, 0);
+        assert_eq!(limits.global_daily, 0);
+        // Except the dedupe window, which is not a spending decision: zero
+        // would answer the same coin again on the very next poll.
+        assert_eq!(limits.dedupe_seconds, 3_600);
+    }
+
+    #[test]
+    fn limits_are_read_when_they_are_set() {
+        let set = from(&[
+            ("RADAR_ANALYST_PER_SUMMONER_DAILY", "3"),
+            ("RADAR_ANALYST_GLOBAL_DAILY", "50"),
+            ("RADAR_ANALYST_DEDUPE_SECONDS", "900"),
+        ]);
+        let limits = limits_from(&set);
+        assert_eq!(limits.per_summoner_daily, 3);
+        assert_eq!(limits.global_daily, 50);
+        assert_eq!(limits.dedupe_seconds, 900);
+    }
+
+    #[test]
+    fn the_paths_are_all_under_one_directory() {
+        // An operator moves one thing, and the unit grants write access to one
+        // path. A file that escaped this directory would be a file the service
+        // is not permitted to write.
+        let paths = Paths::under("/var/lib/radar/analyst");
+        for path in [&paths.log, &paths.cursor, &paths.ledger] {
+            assert!(
+                path.starts_with("/var/lib/radar/analyst/"),
+                "{path} escapes the directory"
+            );
+        }
+        // And they are three different files, not one name used three times.
+        assert_ne!(paths.log, paths.cursor);
+        assert_ne!(paths.cursor, paths.ledger);
+        assert_ne!(paths.log, paths.ledger);
+    }
 }

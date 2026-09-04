@@ -78,6 +78,59 @@ fn platform(body: &str) -> (String, std::sync::mpsc::Receiver<String>) {
     (format!("http://127.0.0.1:{port}"), rx)
 }
 
+/// A chain that answers every JSON-RPC call with an empty result.
+///
+/// Enough to produce a `Dossier`: `build` records what it could not read as a
+/// miss rather than failing, so a mint with no signatures yields a dossier with
+/// no launch and no curve — which is a complete, honest fact sheet saying Radar
+/// has no record. That is a real answer the account gives, and it is the
+/// cheapest way to walk the loop's publishing path without pretending to be
+/// mainnet.
+///
+/// Serves until dropped, because `build` makes several calls.
+fn empty_chain() -> (String, std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+    let port = listener.local_addr().expect("an address").port();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = std::sync::Arc::clone(&stop);
+
+    std::thread::spawn(move || {
+        for incoming in listener.incoming() {
+            if flag.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
+            let Ok(mut stream) = incoming else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let mut buf = vec![0_u8; 8192];
+            let mut n = 0;
+            while n < buf.len() {
+                let Ok(read) = stream.read(&mut buf[n..]) else {
+                    break;
+                };
+                if read == 0 {
+                    break;
+                }
+                n += read;
+                if buf[..n].windows(4).any(|w| w == CRLF_CRLF) {
+                    break;
+                }
+            }
+            let body = r#"{"jsonrpc":"2.0","id":1,"result":[]}"#;
+            let crlf = String::from_utf8(vec![13, 10]).expect("ascii is utf-8");
+            let head = format!(
+                "HTTP/1.1 200 OK{crlf}Content-Length: {len}{crlf}Content-Type: application/json{crlf}Connection: close{crlf}{crlf}",
+                len = body.len()
+            );
+            let _ = stream.write_all(format!("{head}{body}").as_bytes());
+            let _ = stream.flush();
+        }
+    });
+
+    (format!("http://127.0.0.1:{port}"), stop)
+}
+
 fn workspace(name: &str) -> String {
     let dir = std::env::temp_dir().join(format!("radar-loop-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -147,7 +200,22 @@ fn one_poll_reads_answers_and_advances_the_cursor() {
     // Nothing is published, because the publisher is the dry run.
     assert_eq!(answered, 0, "a dry run publishes nothing");
 
-    let request = seen.recv().expect("the platform saw a request");
+    // Bounded, not blocking. A `recv` with no timeout turns "the loop never
+    // polled" into a hang rather than a failure -- which mutation testing found
+    // by replacing `tick` with `0` and costing a runner sixty seconds to report
+    // a timeout instead of a catch.
+    // Bounded, not blocking, and generous. A `recv` with no timeout turns "the
+    // loop never polled" into a hang rather than a failure -- mutation testing
+    // found that by replacing `tick` with `0` and costing a runner sixty
+    // seconds to report a timeout instead of a catch.
+    //
+    // Twenty seconds rather than five because this also runs in a cold scratch
+    // tree under `cargo mutants`, where the first request follows a fresh
+    // build. The number only has to be smaller than the mutation timeout to do
+    // its job.
+    let request = seen
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the platform saw a request");
     assert!(
         request
             .to_lowercase()
@@ -173,6 +241,95 @@ fn one_poll_reads_answers_and_advances_the_cursor() {
     assert!(
         std::path::Path::new(&paths.ledger).exists(),
         "the ledger must survive the tick"
+    );
+}
+
+/// A publisher that posts, so the loop's success path can be walked.
+///
+/// Every other test here uses the dry run, which never returns a reply id — so
+/// the branch that charges for a reply, tells the gate about it and counts it
+/// was never executed. Mutation testing found that by turning the counter's
+/// `+=` into `-=` with nothing failing.
+#[derive(Debug)]
+struct Posts;
+
+impl radar_analyst::publish::Publisher for Posts {
+    fn name(&self) -> &'static str {
+        "posts"
+    }
+    fn reply(
+        &self,
+        in_reply_to: &str,
+        _text: &str,
+    ) -> Result<String, radar_analyst::publish::Undeliverable> {
+        Ok(format!("posted-{in_reply_to}"))
+    }
+}
+
+#[test]
+fn a_published_reply_is_counted_charged_and_remembered() {
+    // The success path, end to end, and the one every other test here misses:
+    // the reply is **charged**, the gate is **told**, the log records both the
+    // intent and the outcome, and the count comes back. Mutation testing found
+    // the gap by turning the counter's `+=` into `-=` with nothing failing,
+    // because every other test publishes through the dry run.
+    let mint = "So11111111111111111111111111111111111111112";
+    let page = format!(
+        r#"{{"data":[{{"id":"2001","author_id":"alice","text":"@radar what is {mint}"}}]}}"#
+    );
+    let (base, _seen) = platform(&page);
+    let (rpc, _stop) = empty_chain();
+
+    let dir = workspace("posted");
+    let paths = Paths::under(&dir);
+    let mut gate = Gate::new(open_limits(), vec!["radar".to_owned()]);
+    let mut spend = Spend::open(
+        Budget {
+            per_call_max: MicroUsd(50_000),
+            daily_max: MicroUsd(1_000_000),
+        },
+        prices(),
+        paths.ledger.clone(),
+        1,
+    );
+    let x = X::at(base, "tok", "u42");
+
+    let answered = tick(
+        Some(&x),
+        &Posts,
+        &mut gate,
+        &mut spend,
+        &radar_onchain::RpcClient::new(rpc),
+        None,
+        None,
+        &paths,
+    );
+
+    assert_eq!(answered, 1, "a published reply is counted");
+
+    // Charged for both the read and the reply, and for nothing else.
+    assert_eq!(
+        spend.spent_today(),
+        MicroUsd(11_000),
+        "one read at 1,000 and one reply at 10,000"
+    );
+
+    // The log holds the intent and the outcome, and the outcome carries the id.
+    let raw = radar_analyst::log::read(&paths.log).expect("a log");
+    assert_eq!(raw.len(), 2, "the intent, then the outcome");
+    assert!(raw[0].reply_id.is_none(), "the first record is the intent");
+    let folded = radar_analyst::latest(&paths.log).expect("a log");
+    assert_eq!(folded.len(), 1);
+    assert_eq!(folded[0].reply_id.as_deref(), Some("posted-2001"));
+    assert!(
+        !folded[0].fact_sheet.is_empty(),
+        "the evidence is recorded beside the reply"
+    );
+
+    // And the gate was told, so the same coin is not answered twice.
+    assert_eq!(
+        radar_analyst::read_cursor(&paths.cursor).as_deref(),
+        Some("2001")
     );
 }
 

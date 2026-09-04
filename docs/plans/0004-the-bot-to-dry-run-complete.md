@@ -243,6 +243,11 @@ job is reading a few hundred replies on `/analyst` beside their fact sheets.
 Do not: set the credential before those replies have been read, open
 `Policy::CLOSED`, or touch the custody lane.
 
+Found and deliberately not fixed here, because it is not this change's:
+`radar-cli`'s `brief.rs` has five surviving mutants in code this branch did not
+touch — `tables`, `outcomes` and `humanise`. CI mutates only changed lines so it
+will not flag them, and they are worth a separate look rather than a drive-by.
+
 Two things found here and left deliberately: the settle-at-zero bug is fixed but
 it is the shape to watch for elsewhere — a meter that hands its reservation back
 reports a budget being respected. And the sanitise-before-check ordering in

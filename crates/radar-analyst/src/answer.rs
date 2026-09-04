@@ -69,25 +69,6 @@ pub enum Answered {
     Unreadable(String),
 }
 
-/// The most RPC calls, pages and wall-clock one dossier may cost.
-///
-/// A stranger chooses when this runs and how many of them run at once, so the
-/// ceiling is not a tuning knob — it is what stops one prolific creator's
-/// history becoming an unbounded read.
-///
-/// All three come from `radar-onchain`'s own constants rather than being
-/// restated here. The wall clock matters as much as the call count: a mention is
-/// answered into a live thread, so a correct answer nobody is waiting for any
-/// more is a call that was spent for nothing.
-#[must_use]
-pub fn call_budget() -> CallBudget {
-    CallBudget::new(
-        radar_onchain::budget::DEFAULT_MAX_CALLS,
-        radar_onchain::budget::DEFAULT_MAX_PAGES,
-        radar_onchain::budget::DEFAULT_DEADLINE,
-    )
-}
-
 /// Answers one mention.
 ///
 /// Reads the chain, builds the fact sheet, writes the reply, and returns the
@@ -114,7 +95,16 @@ pub fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Answer
         return Answered::NotAnAddress;
     };
 
-    let mut budget = call_budget();
+    // `radar-onchain`'s own default, which is its three constants: sixty calls,
+    // three pages and twenty seconds. Not restated here, because a stranger
+    // chooses when this runs and how many run at once -- the ceiling is what
+    // stops one prolific creator becoming an unbounded read, and a second copy
+    // of it is a second thing to forget to change.
+    //
+    // An earlier version built the same values by hand. Mutation testing
+    // replaced the whole function with `Default::default()` and nothing failed,
+    // which was correct: they were the same budget written twice.
+    let mut budget = CallBudget::default();
     let dossier = match radar_onchain::build(ctx.client, &mut budget, &mint) {
         Ok(d) => d,
         Err(e) => return Answered::Unreadable(e.to_string()),
@@ -272,10 +262,20 @@ mod tests {
             Refused::SelfOrIgnored,
         ] {
             let text = describe(&why);
-            assert!(!text.is_empty());
+            // Each says something only it could say. Asserting "not empty and
+            // starts with a letter" passed for every refusal rendered as the
+            // same string, which mutation testing found by replacing the whole
+            // function with one word.
+            let distinctive = match why {
+                Refused::Unconfigured => "no limits",
+                Refused::SummonerDaily { .. } => "this account",
+                Refused::GlobalDaily { .. } => "daily cap",
+                Refused::AlreadyAnswered { .. } => "already answered",
+                Refused::SelfOrIgnored => "itself",
+            };
             assert!(
-                text.chars().next().is_some_and(char::is_alphabetic),
-                "{text:?} should read as a sentence"
+                text.contains(distinctive),
+                "{text:?} should name why it refused, not merely refuse"
             );
         }
     }
@@ -283,21 +283,25 @@ mod tests {
     #[test]
     fn the_call_budget_is_bounded_on_every_axis() {
         // A stranger chooses when this runs and how many run at once, so an
-        // unbounded axis is an unbounded read.
-        let mut budget = call_budget();
+        // unbounded axis is an unbounded read. Asserted against
+        // `radar-onchain`'s own constants rather than numbers written here: a
+        // test restating them would pass while the two drifted apart.
+        let mut budget = CallBudget::default();
         for i in 0..radar_onchain::budget::DEFAULT_MAX_CALLS {
-            assert!(
-                budget.take_call().is_ok(),
-                "call {i} should be within budget"
-            );
+            assert!(budget.take_call().is_ok(), "call {i} is within budget");
         }
         assert!(
             budget.take_call().is_err(),
             "the call after the ceiling must be refused"
         );
-        assert_eq!(
-            budget.calls_made(),
-            radar_onchain::budget::DEFAULT_MAX_CALLS
+
+        let mut pages = CallBudget::default();
+        for i in 0..radar_onchain::budget::DEFAULT_MAX_PAGES {
+            assert!(pages.take_page().is_ok(), "page {i} is within budget");
+        }
+        assert!(
+            pages.take_page().is_err(),
+            "the page after the ceiling must be refused"
         );
     }
 }

@@ -128,9 +128,18 @@ fn blank_addresses(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out: Vec<char> = Vec::with_capacity(chars.len());
     let mut i = 0;
-    while i < chars.len() {
+    // Bounded by the input length rather than by trusting the cursor -- see the
+    // note in `literals`, which had the same shape and cost two runners five
+    // minutes each before it was changed.
+    for _ in 0..=chars.len() {
+        if i >= chars.len() {
+            break;
+        }
         let start = i;
-        while i < chars.len() && B58.contains(chars[i]) {
+        for _ in 0..=chars.len() {
+            if i >= chars.len() || !B58.contains(chars[i]) {
+                break;
+            }
             i += 1;
         }
         let run = i - start;
@@ -163,14 +172,29 @@ pub fn literals(text: &str) -> Vec<(String, f64)> {
     let mut out = Vec::new();
     let mut i = 0;
 
-    while i < bytes.len() {
+    // Both scans are bounded by the length of the input rather than by trusting
+    // the cursor to advance. Every iteration of either moves `i` forward by at
+    // least one or stops, so `bytes.len() + 1` rounds is always enough.
+    //
+    // Written this way because CI reported the `while` forms as timeouts: an
+    // `i += 1` mutated to `i *= 1` leaves the cursor where it is and the scan
+    // never ends, costing a runner five minutes and reporting nothing useful.
+    // Bounded, the same mutation ends the scan with a wrong answer, which a test
+    // catches in milliseconds. A hang is a poor way to detect a bug.
+    for _ in 0..=bytes.len() {
+        if i >= bytes.len() {
+            break;
+        }
         if !bytes[i].is_ascii_digit() {
             i += 1;
             continue;
         }
         let start = i;
         let mut seen_dot = false;
-        while i < bytes.len() {
+        for _ in 0..=bytes.len() {
+            if i >= bytes.len() {
+                break;
+            }
             let c = bytes[i];
             if c.is_ascii_digit() {
                 i += 1;

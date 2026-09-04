@@ -330,9 +330,19 @@ lot.
 **Never block on something you are not required to watch.** A poll loop, a
 `sleep`, a background waiter — all of it holds the turn open, keeps processes
 alive on the owner's machine, and buys nothing that checking later would not.
-When a long job runs elsewhere, go and do the next unblocked task. If everything
-is blocked on it, say so and stop; that is a short message, not half an hour of
-polling.
+
+**A list of things for the owner is not the end of your turn.** When the main
+thread is blocked, sort what is left. An item needing a *decision* — money, a
+refusal, a public surface — stops and asks. An item needing only *doing* gets
+done: say what you are starting, then start it. "Here are two things for you"
+while an unblocked task sits is a handback wearing a report's clothes, and it
+makes the owner the scheduler.
+
+**Three conditions, all of them, before starting parallel work:** it does not
+depend on the blocked thing and cannot be invalidated by its outcome; it lands
+on its own branch when the blocked thing owns the current one, so neither
+delays the other; and it is finishable now. A half-done second thread is debt,
+and worse than not having started.
 
 ## 9. Communication
 

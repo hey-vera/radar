@@ -22,20 +22,13 @@
 
 use std::time::Duration;
 
-use radar_analyst::{Admitted, Asked, Entry, Gate, Limits, Refused};
+use radar_analyst::{Admitted, Asked, Entry, Gate, Limits, Mention, Refused};
 use radar_onchain::{Budget, RpcClient};
 use radar_roast::BaseRates;
 use radar_types::Address;
 
 use crate::dossier::safe;
 use crate::flag;
-
-/// One line of the mentions file.
-struct Mention {
-    id: String,
-    author: String,
-    text: String,
-}
 
 /// Reads one line, or skips it.
 ///
@@ -46,12 +39,24 @@ struct Mention {
 /// A line missing a field is **skipped**, not defaulted. A mention with no
 /// author would otherwise be attributed to `""` and share one summoner's
 /// allowance with every other malformed line.
+///
+/// The type is [`radar_analyst::Mention`], the same one the X client produces.
+/// A fixture type of its own would be free to drift away from what the account
+/// actually receives, which would make reading two hundred dry-run replies a
+/// test of the fixture rather than of the bot.
+///
+/// `parent` is read here too, under the platform's own field name, so a fixture
+/// can exercise the reply-chain path without an account.
 fn parse_mention(line: &str) -> Option<Mention> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
     Some(Mention {
         id: value.get("id")?.as_str()?.to_owned(),
         author: value.get("author")?.as_str()?.to_owned(),
         text: value.get("text")?.as_str()?.to_owned(),
+        parent: value
+            .get("parent")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
     })
 }
 

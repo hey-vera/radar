@@ -173,6 +173,23 @@ exclude_re = [
     # are weak.
     'replace / with \* in round_to',
 
+    # `X::from_env` reads two environment variables and hands them to
+    # `configured`, which decides. The decision is tested directly and
+    # thoroughly -- both halves present, each half missing, both missing, and
+    # whitespace counting as absent.
+    #
+    # What is left is the reading, and it cannot be tested here: setting an
+    # environment variable is process-global, this workspace runs its tests in
+    # parallel threads, and `std::env::set_var` is `unsafe` in edition 2024
+    # while the workspace sets `unsafe_code = "forbid"`. So a test that made
+    # this mutant fail cannot be written without turning off the lint that
+    # keeps the signer's process honest, which is a bad trade for a wrapper.
+    #
+    # The mutation's effect is also the safe direction rather than the dangerous
+    # one: `None` means "no credential", which means the binary falls back to
+    # the dry run and posts nothing. It is caught by the first live run.
+    'replace X::from_env -> Option<Self> with None',
+
     # --- category 2: unreachable in the mutation sandbox ---------------------
     #
     # `untracked_documents` shells out to `git ls-files --others`. It is covered

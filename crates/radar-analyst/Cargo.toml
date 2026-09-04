@@ -15,6 +15,11 @@ radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
+# The one impure edge in this crate: reading mentions and posting replies.
+# Matched to the client every other crate here uses rather than adding a second
+# HTTP stack to a workspace whose dependency bar is "the alternative is writing
+# it ourselves and getting it wrong".
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
 
 [lints]
 workspace = true

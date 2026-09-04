@@ -50,7 +50,7 @@ cargo := env("RADAR_CARGO", "cargo")
 # it to make a red run green is the thing that must never happen; if the number
 # has to come down, the commit says which tests went and why they went with
 # their subject.
-export MIN_TESTS := "1477"
+export MIN_TESTS := "1502"
 
 _default:
     @just --list --unsorted

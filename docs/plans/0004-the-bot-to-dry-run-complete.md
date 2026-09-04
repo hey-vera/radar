@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Plan 0004 — The bot, to dry-run complete
 
-Status: proposed
+Status: in progress
 Branch: feat/the-analyst-reads-and-posts
 Base:   8caf7b1
 Planned by: Opus 5, 2026-09-04
@@ -40,14 +40,34 @@ the operational skin that makes it safe to leave running.
 
 ## Items
 
-- [ ] 1. `radar-analyst`'s X client, behind the existing `Publisher` trait
+- [x] 1. `radar-analyst`'s X client, behind the existing `Publisher` trait
       A new `x` module holding `mentions(since_id)` and a `Publisher` that replies.
       `ureq`, matching every other client in the workspace. No credential means
       `DryRun`, which is rule 8 and already the crate's resting state.
       Backoff doubles on 429 and 5xx to a 15 minute ceiling and **never retries
       a 4xx**, because a malformed request retried is the same request.
-      done when: a fixture of recorded X responses decodes to the same
-      `Mention` shape the JSONL reader produces, and the two share one type.
+      done: `crates/radar-analyst/src/x.rs`. `Mention` now lives in the crate
+      and **`radar-cli`'s fixture reader uses it**, so the file and the API are
+      two sources of one type rather than two types that can drift.
+      Request-building and response-reading are pure functions; only `get` and
+      `post` touch the wire.
+      `just tests` 1502 passed at this commit;
+      `cargo mutants -f crates/radar-analyst/src/x.rs`: **32 caught, 0 missed**,
+      5 unviable.
+      Two things the mutation run changed rather than merely confirmed. It found
+      the whole network edge untested -- `get`, `post`, `body_of`, `mentions`
+      and the `Publisher` impl could each be replaced with `Ok(...)` with every
+      test still passing -- so there is now a one-request `TcpListener` server in
+      the test module. It checks what no unit test can: that the
+      **Authorization header actually reaches the wire**, that the cursor does,
+      that a POST names its parent, and that a 401 becomes `Refused` rather than
+      an empty page. And it showed `backoff`'s explicit 4xx arm was
+      **behaviourally redundant** with the catch-all, so that arm is gone: two
+      arms deciding one thing, and the removable one was not carrying the rule.
+      `X::from_env` is recorded in `.cargo/mutants.toml`: its decision is
+      `configured`, which is tested directly, and the remaining half cannot be
+      tested without `std::env::set_var`, which is `unsafe` in edition 2024
+      against a workspace that forbids unsafe.
 
 - [ ] 2. The poll loop, with a cursor that survives a restart
       `since_id` persisted next to the log. Adaptive interval: 60s after a

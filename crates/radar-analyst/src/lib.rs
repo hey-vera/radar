@@ -48,11 +48,13 @@ pub mod admission;
 pub mod log;
 pub mod mention;
 pub mod publish;
+pub mod x;
 
 pub use admission::{Admitted, Gate, Limits, Refused};
 pub use log::Entry;
 pub use mention::{Asked, read};
 pub use publish::{DryRun, Publisher, Undeliverable};
+pub use x::{Mention, Unreachable, X, backoff};
 
 /// What to say when a mention named a symbol rather than a mint.
 ///

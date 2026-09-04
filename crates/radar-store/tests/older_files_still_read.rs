@@ -254,3 +254,70 @@ fn an_outcome_file_written_before_the_window_extremes_still_reads() {
     assert_eq!(outcome.window_peak_price, None);
     assert_eq!(outcome.window_trough_price, None);
 }
+
+/// Files written by a **previous version of the parquet library** still read.
+///
+/// The tests above all write with the same `parquet` this test binary links, so
+/// none of them can see a change in the library's own output. That is the gap
+/// this closes, and it is not hypothetical: the `arrow`/`parquet` 56 to 59 bump
+/// landed on a store holding hundreds of megabytes written by 56, and the two
+/// crates had to move together — bumped apart, the tree holds two `RecordBatch`
+/// types and does not compile, which is why Dependabot's separate pull requests
+/// both failed while the combined change is clean.
+///
+/// The fixtures are **real production files**, copied off the recorder's store,
+/// written by `parquet` 56.2.1. Real rather than synthesised on purpose: a file
+/// this test wrote would encode whatever the writing library chose to do, and
+/// the question is what the *previous* one actually did.
+///
+/// Small on purpose — the two smallest partitions in the store, 3.5KB and 5.2KB
+/// — because a fixture is checked in forever.
+///
+/// If this ever fails after a dependency bump, the store on disk has become
+/// unreadable and no amount of green elsewhere makes that safe to ship.
+#[test]
+fn files_written_by_an_older_parquet_are_still_readable() {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+
+    // The store's layout is a directory per table, so the fixtures are laid out
+    // as one rather than read as loose files: this exercises the same path
+    // production uses, not a private entry point.
+    let store = tempfile::tempdir().expect("tempdir");
+    for (table, fixture) in [
+        ("graduations", "graduations_written_by_parquet_56.parquet"),
+        ("launches", "launches_written_by_parquet_56.parquet"),
+    ] {
+        let dir = store.path().join(table);
+        std::fs::create_dir_all(&dir).expect("create table dir");
+        std::fs::copy(fixtures.join(fixture), dir.join(fixture)).expect("copy fixture");
+    }
+
+    let reader = Reader::open(store.path());
+
+    // The watermark comes from the row data, so a non-zero answer proves the
+    // file was decoded rather than merely opened.
+    let watermark = reader
+        .watermark()
+        .expect("watermark readable")
+        .expect("a store with two partitions has a watermark");
+    assert!(
+        watermark > Slot(440_000_000),
+        "watermark {watermark:?} should be a real recorded slot"
+    );
+
+    let as_of = AsOf::at(watermark);
+    let launches = reader.read(Table::Launches, as_of).expect("launches read");
+    let graduations = reader
+        .read(Table::Graduations, as_of)
+        .expect("graduations read");
+
+    assert!(
+        !launches.is_empty(),
+        "the launches fixture decoded to zero rows, which is what an unreadable \
+         file looks like from here"
+    );
+    assert!(
+        !graduations.is_empty(),
+        "the graduations fixture decoded to zero rows"
+    );
+}

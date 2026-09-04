@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Plan 0002 — The surviving mutants CI reported
 
-Status: in progress
+Status: landed — all 13 checks green on 6c0ad34
 Branch: phase-2-3-roast-and-analyst
 Base:   b4262f9
 Planned by: Opus 5, 2026-09-03
@@ -107,7 +107,7 @@ three commits.
       the 10% bar adopted in `AGENTS.md` §5 the same day, so the rule applies to
       its own author: delete it rather than tune it. Mutation testing is the
       right detector for that class and it worked.
-- [ ] 4. Push, and read the CI result rather than assuming it
+- [x] 4. Push, and read the CI result rather than assuming it
 
       **Stopped verifying locally on purpose.** Three serial whole-file
       `cargo mutants` runs took most of an hour on the owner's workstation, and
@@ -140,13 +140,48 @@ three commits.
   thing not to do is `|| true`** — that turns a security check into decoration,
   which AGENTS.md §6 forbids by name. — no answer needed unless it recurs
 
+## What it took, and why that is the interesting part
+
+Seven rounds. Only **two** were a missing test.
+
+| Round | What the failure actually was |
+|---|---|
+| 1 | 37 survivors — real gaps, including a test reading a copy of the code |
+| 2 | 4 survivors — three of them *my* fixes, verified against the wrong expression |
+| 3 | 0 survivors, 2 timeouts — `test_paths` hangs |
+| 4 | 0 survivors, 2 timeouts — `fidelity` hangs; **one reclaimed runner** |
+| 5 | 4 survivors + 1 timeout — `decode_base58`, a loop shape the grep missed |
+| 6 | 14 survivors — **shard 0's first ever report** |
+| 7 | green |
+
+Three distinct classes wearing one uniform on the dashboard:
+
+**Missing tests** (rounds 1, 2, 5, 6). Ordinary, and what mutation testing is
+for.
+
+**Code shape** (3, 4, 5). Hand-rolled index scanners are one mutation from an
+infinite loop, and mutation testing reports that by *hanging for five minutes*
+rather than by failing. The fix is never a test — it is bounding the loop so the
+state cannot exist. Every instance in `crates/*/src` is now bounded.
+
+**Infrastructure** (4, and shard 0 throughout). A reclaimed runner and a
+cancelled job look exactly like a failure until you read the log. AGENTS.md §6's
+rule — establish that it *ran* — earned its place three times.
+
+**And one that was mine.** Shard 0 was cancelled in seven of seven runs, every
+time by my own next push, so a quarter of the mutants went unchecked all session
+while I "fixed" the other three. It reported once and held fourteen, in the
+files that read untrusted input and meter spending. `AGENTS.md` §6 forbids
+pushing over an in-flight check; I broke it every round, each time for a good
+local reason, which is exactly how a rule erodes.
+
 ## Handback
 
-Stopped at: item 3's verification, which is running.
-Next action: read the `cargo mutants -f crates/radar-roast/src/fidelity.rs`
-result. If clean, commit all three files plus `.cargo/mutants.toml` and push,
-then read the CI result — do not assume the shards pass because the local runs
-did, because the shards run `--in-diff` against `origin/main` and that is a
-different set from a whole-file run.
-Do not: add `|| true` to the `web` recipe, and do not run `just mutants` over
-the branch locally — single file only (AGENTS.md §8).
+Stopped at: **nothing outstanding.** All 13 checks green on `6c0ad34`; the four
+mutation shards each complete in under four minutes, down from fourteen.
+
+Next action: nothing here. `docs/design/0005` on branch `research/graph-vs-0024`
+is unmerged and needs a decision from Josh — it proposes no code.
+
+Do not: raise `--timeout` back to 300. It is 60 because the loops are bounded
+now, and a timeout is a signal rather than a cost. If one fires, fix the loop.

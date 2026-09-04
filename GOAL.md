@@ -282,13 +282,19 @@ Each of these is a decision, not an oversight.
   split. A green shield is "unknown rendered as safe".
 - **Something that trades faster than it can explain.** If a decision cannot be
   replayed and justified, it does not get made.
-- **A token.** Radar will not launch one, ever. The roaster's whole credibility
-  rests on naming capital that was committed before a token existed — and every
-  launch has a launch block, so any allocation to a team, a treasury or early
-  supporters **is** that set of recipients. There is no launch design that
-  escapes it, because the signal is structural rather than about intent. It would
-  also make Radar the holder of a token whose price rises with the bot's reach,
-  which is the touting fact pattern above with the bot supplying the attention.
+- **A holder of any token it comments on — including its own.** This bullet
+  said "Radar will not launch one, ever" until 2026-09-04, and
+  [ADR 0013](docs/adr/0013-a-community-token-exists-and-radar-holds-none-of-it.md)
+  is Josh deciding otherwise: a community token is launched as the analyst's
+  distribution engine, with no dev buy, no allocation, and **zero held by the
+  operator**. The original argument is not withdrawn, it is answered — it was
+  about *allocation*, and every launch block has recipients, so the answer is a
+  launch that has none but the curve. What survives unchanged is the half about
+  *holding*: a bot whose reach moves a price it is exposed to is the touting
+  fact pattern, so the exposure is refused rather than managed. The creator fee
+  is paid out in full as a public prize, and the bot never states the token's
+  price. Read the ADR's *What this costs* before quoting this bullet: the
+  coupling is reduced, not eliminated.
 
 ## The direction of travel
 

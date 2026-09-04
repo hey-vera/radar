@@ -465,6 +465,51 @@ pub fn workflow_contexts(text: &str) -> BTreeSet<String> {
     out
 }
 
+/// Shell lines a workflow actually runs, with comments and YAML keys dropped.
+///
+/// Deliberately crude, and crude in the safe direction. It keeps every line
+/// inside a `run:` block and drops anything after a `#`, so a rule built on it
+/// reads what a runner would execute rather than what a comment says about it.
+/// A `#` inside a quoted shell string would be dropped too; that under-reports,
+/// which is the direction a heuristic in a conformance check should fail in.
+#[must_use]
+pub fn workflow_run_lines(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut indent = None;
+    for line in text.lines() {
+        let depth = line.len() - line.trim_start().len();
+        let trimmed = line.trim();
+
+        // A `run:` on one line carries its command with it; a `run: |` opens a
+        // block that continues while the indentation stays deeper than the key.
+        //
+        // The `- ` is stripped first because a `run:` is usually the first key
+        // of a list item and is written `- run:`. Missing that made the first
+        // version of this find nothing at all, which the test below caught.
+        let key = trimmed.strip_prefix("- ").unwrap_or(trimmed);
+        if let Some(rest) = key.strip_prefix("run:") {
+            let rest = rest.trim();
+            indent = Some(depth);
+            if !rest.is_empty() && rest != "|" && rest != ">" {
+                out.push(rest.to_string());
+            }
+            continue;
+        }
+        match indent {
+            Some(_) if trimmed.is_empty() => {}
+            Some(open) if depth > open => {
+                let code = trimmed.split('#').next().unwrap_or("").trim();
+                if !code.is_empty() {
+                    out.push(code.to_string());
+                }
+            }
+            Some(_) => indent = None,
+            None => {}
+        }
+    }
+    out
+}
+
 /// The opening of a GitHub Actions expression, spelled out so this file does
 /// not contain a literal one for a workflow linter to trip over.
 const TEMPLATE_OPEN: &str = "${{";
@@ -631,6 +676,52 @@ mod tests {
             missing.is_empty(),
             "citations with no ADR behind them:\n  {}",
             missing.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn every_learnings_entry_referenced_by_number_exists() {
+        // `README.md` cited "LEARNINGS 29" for three days while the file ended
+        // at 28. The entry it wanted was real -- the dependency claim that was
+        // false in two documents at once -- and nobody had written it, so the
+        // most-read file in the repository pointed at nothing.
+        //
+        // Same rule as ADRs, one file instead of a directory: a number with no
+        // entry behind it is worse than no citation, because it reads as
+        // evidence.
+        let text = std::fs::read_to_string(root().join("LEARNINGS.md")).expect("LEARNINGS.md");
+        let numbers: BTreeSet<u32> = learnings_entries(&text)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            !numbers.is_empty(),
+            "no LEARNINGS entries were parsed; the check would pass vacuously"
+        );
+
+        let mut missing = Vec::new();
+        for document in documents() {
+            let Ok(text) = std::fs::read_to_string(&document) else {
+                continue;
+            };
+            // "LEARNINGS 29" and "LEARNINGS entry 29" are both in use, and both
+            // are citations. A trailing "." or "," ends the number; anything
+            // else after a digit means this was not one.
+            for (index, _) in text.match_indices("LEARNINGS ") {
+                let rest = text[index + "LEARNINGS ".len()..].trim_start_matches("entry ");
+                let cited: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                let Ok(number) = cited.parse::<u32>() else {
+                    continue;
+                };
+                if !numbers.contains(&number) {
+                    missing.push(format!("{} cites LEARNINGS {number}", document.display()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "citations with no LEARNINGS entry behind them: {}",
+            missing.join(", ")
         );
     }
 
@@ -1033,6 +1124,111 @@ mod tests {
             collisions.is_empty(),
             "these test files are accounted for by more than one document: {collisions:?} -- pick the one that owns the account and have the other link that document instead. Two documents describing one test is how the same sentence gets corrected in one place and not the other"
         );
+    }
+
+    #[test]
+    fn no_workflow_runs_the_node_toolchain_itself() {
+        // On 2026-09-04 `just web` was taught to retry `npm audit` when the
+        // registry's advisory endpoint is unreachable -- a vulnerability and an
+        // unreachable registry are different answers, and the exit code alone
+        // does not tell them apart. The `web` job went green with the fix. The
+        // release job failed eight minutes later, on a 503 from that same
+        // endpoint, because it held its own inline copy of the three commands
+        // and the fix had landed in the recipe.
+        //
+        // So the rule is narrow and it is exactly the failure: the Node
+        // toolchain has one definition, in the `web` recipe, and a workflow
+        // reaches it through `just`. Anything a future job needs from npm is a
+        // change to that recipe, which is also what makes this check cheap --
+        // there is no reasonable change it fires on.
+        //
+        // `cargo` is deliberately NOT included. `release-linux` builds the
+        // binaries directly and should: that is a release artifact rather than
+        // a check, and no recipe owns it.
+        let dir = root().join(".github/workflows");
+        let mut offenders = Vec::new();
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&dir).expect(".github/workflows must be readable") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.extension().is_none_or(|e| e != "yml") {
+                continue;
+            }
+            seen += 1;
+            let text = std::fs::read_to_string(&path).expect("a readable workflow");
+            for line in workflow_run_lines(&text) {
+                if line.split_whitespace().next() == Some("npm") {
+                    offenders.push(format!("{}: {line}", path.display()));
+                }
+            }
+        }
+        // Without this the check passes when the directory is empty, misread or
+        // renamed -- which is LEARNINGS 5's shape, an absent answer reported the
+        // same way as a clean one.
+        assert!(
+            seen > 0,
+            "no workflows were read; the check would pass vacuously"
+        );
+        assert!(
+            offenders.is_empty(),
+            "a workflow runs npm directly instead of `just web`: {}. The recipe owns the Node toolchain, and a second copy is a fix that lands in only one of them.",
+            offenders.join(", ")
+        );
+    }
+
+    #[test]
+    fn a_run_block_is_read_as_commands_and_a_comment_is_not_one() {
+        // The rule above is only as good as this: a comment that *mentions* the
+        // command it forbids must not be read as running it, and the comment
+        // written beside that fix does mention it.
+        let one = |t: &str| workflow_run_lines(t);
+
+        assert_eq!(one("      - run: just web"), vec!["just web"]);
+        assert_eq!(
+            one("      - run: |
+          npm ci
+          npm run build
+"),
+            vec!["npm ci", "npm run build"]
+        );
+        // A comment inside the block, and a trailing comment on a real command.
+        assert_eq!(
+            one("      - run: |
+          # npm ci is what this replaced
+          just web # not npm
+"),
+            vec!["just web"]
+        );
+        // A comment *outside* any run block, which is where the explanation for
+        // the fix actually lives.
+        assert!(
+            one("      # this step used to run npm ci inline
+      - uses: actions/checkout@v5")
+            .is_empty()
+        );
+        // A blank line inside a block does not end it. YAML block scalars
+        // allow them and a long `run:` uses them to group commands, so reading
+        // one as the end of the block would silently stop checking everything
+        // after it -- which is the worst way for this to be wrong, because the
+        // check would still pass. CI found this one: the guard that skips a
+        // blank line survived mutation to `false`, and with it false a blank
+        // line falls through to the arm that closes the block.
+        assert_eq!(
+            one("      - run: |
+          npm ci
+
+          npm run build
+"),
+            vec!["npm ci", "npm run build"]
+        );
+        // The block ends when the indentation returns to the key's level.
+        assert_eq!(
+            one("      - run: |
+          npm ci
+      - uses: actions/checkout@v5
+"),
+            vec!["npm ci"]
+        );
+        assert!(one("").is_empty());
     }
 
     #[test]

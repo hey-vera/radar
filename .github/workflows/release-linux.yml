@@ -42,13 +42,25 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - uses: extractions/setup-just@f8a3cce218d9f83db3a2ecd90e41ac3de6cdfd9b # v3
 
+      # `just web`, not a second copy of what it does.
+      #
+      # This step used to run `npm ci && npm audit && npm run build` inline,
+      # which is the same three commands the recipe runs -- and on 2026-09-04
+      # that cost a release. `just web` had just been taught to retry `npm audit`
+      # when the registry's advisory endpoint is unreachable, because a
+      # vulnerability and an unreachable registry are different answers and the
+      # exit code alone does not tell them apart. The `web` job on `main` went
+      # green with the retry; this job failed eight minutes later on a 503 from
+      # the same endpoint, because the fix landed in the recipe and this file
+      # held its own copy.
+      #
+      # The justfile's header states the rule for CI and this file is the one
+      # place that was not following it: a check cannot mean one thing locally
+      # and another here if there is only one definition of it.
       - name: Build the interface
-        working-directory: web
-        run: |
-          npm ci
-          npm audit --audit-level=high
-          npm run build
+        run: just web
 
       - name: Build release binaries
         run: cargo build --release --locked -p radar-serve -p radar-cli -p radar-backfill -p radar-signer

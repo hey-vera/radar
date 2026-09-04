@@ -2,10 +2,20 @@
 # Design 0001 — The flywheel
 
 **Date:** 2026-09-03
-**Status:** proposal, for Josh to accept, change or reject. **Not a decision.**
-An accepted version of this becomes a section in [GOAL.md](../../GOAL.md) and an
-ADR for anything it commits code to.
-**Decides nothing yet.** Nothing in the repository depends on it.
+**Status:** **partly decided, and one part of it was rejected.**
+[ADR 0013](../adr/0013-a-community-token-exists-and-radar-holds-none-of-it.md)
+settles the token question this document opens, and
+[design 0007](0007-the-end-to-end-plan.md) section 6 is the mechanism actually
+being built. Two differences worth reading before quoting anything below:
+
+- The **usage-linked burn** in section 3 is **not adopted**. Burning means
+  holding, and ADR 0013's constraint 2 is that the operator holds zero tokens.
+- The **treasury** in section 3 is not a treasury. The creator fee is paid out
+  in full each week as the prize; nothing accumulates to be spent later.
+
+Everything else here — the record as the thing that compounds, holders
+pointing rather than deciding, the appointment, the self-audit being recurring
+rather than a launch stunt — stands, and is the reasoning ADR 0013 rests on.
 
 ## What this is answering
 

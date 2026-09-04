@@ -48,11 +48,27 @@ Two processes on the guardian VPS under `setsid nohup`, plus an hourly cron:
 `radar-backfill --follow` recording launches ~5 minutes behind chain,
 `radar-serve` on `127.0.0.1:8402`, and the outcome pass at `17 * * * *`.
 
-**Not verified from here.** This is the claim in this document most likely to be
-stale, and the cheapest to check: `ssh guardian-vps-tail`, then
-`pgrep -x radar-backfill`. The follow recorder has exited silently before —
-[LEARNINGS](../../LEARNINGS.md) 8 — so an absent process is a plausible state,
-not a surprising one.
+**Not verified from here, and something else in the repository says otherwise.**
+[`deploy/README.md`](../../deploy/README.md) records `radar-serve.service`,
+`radar-follow.service` and `radar-brief.timer` as enabled and active, checked
+2026-08-25 — which is systemd, not `setsid nohup`. Both accounts cannot be
+right, and neither was checked on the day this was written.
+
+So resolve it rather than picking one, and the runbook already gives the
+command:
+
+```bash
+ssh guardian-vps-tail 'systemctl list-unit-files "radar*" --no-pager'
+ssh guardian-vps-tail 'pgrep -ax radar-backfill; pgrep -ax radar-serve'
+```
+
+Whichever document is wrong gets fixed in the same change as the answer. The
+follow recorder has exited silently before — [LEARNINGS](../../LEARNINGS.md) 8
+— so an absent process is a plausible state rather than a surprising one, and
+a supervised unit and an unsupervised process fail very differently.
+
+An attempt on 2026-09-04 got as far as Tailscale asking for a browser check, so
+the answer is one click away and not in this file.
 
 **The trading lane is shut.** `Policy::CLOSED` ships and has never been handed a
 real proposal. `radar-cli` reaches `radar_exec::route` for `radar route`, which
@@ -106,7 +122,7 @@ tokens on Raydium and Whirlpool already route in a form the signer can read.
 | 3 | **`docs/research/0002`** — eleven feature requests to clawapis, written and never sent. Items 1 and 3 would let Radar buy all its data pay-per-call. | [`0002`](../research/0002-clawapis-feature-requests.md) |
 | 4 | **`radar-graph`'s thresholds** — the gate is tuned to numbers `0024` withdrew, and its decay detector is calibrated so it cannot fire. Two of five proposals change what Radar refuses. | [`0005`](0005-what-radar-graph-should-refuse-after-0024.md) |
 | 5 | **`radar-provider`'s `Cache`, `Breaker` and planner** — 733 of 1,897 lines with no caller. Wire or delete; it is the third instance of the shape LEARNINGS 1, 9 and 10 record. | [`docs/STATE.md`](../STATE.md) "Where to start" |
-| 6 | **`fix/interface-truth-repairs`** — 19 commits pushed, unmerged, three blockers. | that branch |
+| 6 | ~~`fix/interface-truth-repairs` — 19 commits pushed, unmerged, three blockers.~~ **Merged as [#105](https://github.com/hey-vera/radar/pull/105) on 2026-09-03, `e1b82d7`** — the day *before* this table was written. Corrected 2026-09-04. | — |
 | 7 | **x402 paid surface is OFF.** Implemented and verified; needs `RADAR_X402_PAY_TO` and `RADAR_X402_FACILITATOR`. | `crates/radar-serve/src/x402.rs` |
 
 None of 1–7 blocks §3b. That matters: **research can proceed while every one of

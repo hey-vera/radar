@@ -77,11 +77,16 @@ disagreeing.
       `radar-asof`'s own tests, so those two types now have none — see Q4.
       `MIN_TESTS` 1503 -> 1476: 27 tests went with the code they tested. The
       floor caught the drop, which is the floor working.
-- [ ] 8. `just orient` (A9)
-      next: one recipe printing branch, that branch's last CI result, this
-      file's Handback block, `target/` size, and the four claims
-      `docs/STATE.md` names as most likely to be stale. It makes design 0006
-      section 6 a command instead of a paragraph asking somebody to remember.
+- [x] 8. `just orient` (A9)
+      done: `just orient` run against this branch and against a branch with no
+      runs; `cargo test -p repo-conformance` 33 passed. It prints the branch,
+      that branch's last CI result, every plan whose status is not landed or
+      abandoned together with its Handback block, the sentence `docs/STATE.md`
+      uses to name its own decaying claims, and the size of `target/`.
+      Every line is read from the file that owns it at the moment it prints, so
+      there is no copy here to go stale — which is the failure design 0006's
+      own table demonstrated. Design 0006 section 6 now opens with the command
+      instead of asking a reader to remember four documents.
 
 ## Open questions for Josh
 
@@ -104,11 +109,13 @@ disagreeing.
 
 ## Handback
 
-Stopped at: items 0 to 3 and 7 landed. Items 4 and 5 are blocked on Q1 and Q2.
-Items 6 and 8 are unblocked.
-Next action: item 8, `just orient` — it is small, it has no dependency on
-anything blocked, and every session after this one pays for its absence.
-Then item 6, the Dependabot batch.
+Stopped at: items 0 to 3, 7 and 8 landed. Items 4 and 5 are blocked on Q1 and
+Q2. Item 6 is unblocked and is the only one left.
+Next action: item 6, the Dependabot batch — the last unblocked item. Fourteen
+PRs; the two grouped minor/patch ones go together, `arrow`/`parquet` 56 to 59
+needs `older_files_still_read.rs` on its own branch because it touches the
+store's format, and `ed25519-dalek` 3 is read by hand because it is under the
+signer.
 Do not: open `Policy::CLOSED`, edit the custody lane, or retune `radar-graph`.
 All three are in Not in scope above, and each has a document saying why.
 Do not delete `Observed<T>` on the strength of Q4 without answering it — an

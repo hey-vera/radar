@@ -397,6 +397,16 @@ hooks:
 
 # --- operator commands --------------------------------------------------------
 
+# Design 0006 section 6 asked a fresh session to remember to read four things in
+# order. That is prose, the weakest rung of the ladder in AGENTS.md section 5 --
+# and the very session that wrote it produced a table whose row 6 pointed at a
+# branch that had merged the day before. This reads each fact from the file that
+# owns it at the moment it prints, so there is no second copy to go stale.
+#
+# Where a session starts: branch, its last CI result, the plan in flight, and what decays.
+orient:
+    @bash scripts/orient.sh
+
 # What the system is doing right now: ingestion lag, store contents, the serving
 # surface, and what the trading lane is authorised to do. Reads live state, so it
 # can never be stale.

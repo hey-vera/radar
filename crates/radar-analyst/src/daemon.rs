@@ -181,6 +181,15 @@ pub fn run() -> ! {
     if rates.is_none() {
         eprintln!("radar-analyst: no base rates; replies will carry no population context");
     }
+    // The fact that makes one reply differ from another. Absent, every reply
+    // about a fresh launch says the same thing, so its absence is reported
+    // rather than left to be noticed in the output.
+    let creators = radar_roast::CreatorIndex::read(radar_roast::creator::DEFAULT_PATH).ok();
+    if creators.is_none() {
+        eprintln!(
+            "radar-analyst: no creator index; replies will say nothing about who launched              the token. Build one with `radar creator-index`."
+        );
+    }
     let provider = radar_model::from_vars(&env).ok();
 
     eprintln!(
@@ -198,6 +207,7 @@ pub fn run() -> ! {
             &mut spend,
             &client,
             rates.as_ref(),
+            creators.as_ref(),
             provider.as_deref(),
             &paths,
         );
@@ -226,6 +236,7 @@ pub fn tick(
     spend: &mut Spend,
     client: &radar_onchain::RpcClient,
     rates: Option<&BaseRates>,
+    creators: Option<&radar_roast::CreatorIndex>,
     provider: Option<&dyn radar_model::Provider>,
     paths: &Paths,
 ) -> usize {
@@ -264,6 +275,7 @@ pub fn tick(
     let ctx = Answering {
         client,
         rates,
+        creators,
         provider,
         now: at,
     };

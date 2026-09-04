@@ -17,6 +17,9 @@ blake3.workspace = true
 radar-asof.workspace = true
 radar-store.workspace = true
 radar-strategy.workspace = true
+# The index's type, which the analyst reads. The consumer owns the shape and
+# this crate writes it -- the same split BaseRates uses.
+radar-roast.workspace = true
 radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -24,4 +27,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 radar-risk.workspace = true
+# The index's type, so a test can read back what the builder wrote.
+radar-roast.workspace = true
 tempfile = "3"

@@ -88,7 +88,23 @@ pub fn run(args: &[String]) -> Result<(), String> {
     // environment, not to this file.
     let provider = radar_model::from_vars(&|k| std::env::var(k).ok()).ok();
 
-    let (sheet, reply) = radar_roast::roast(&dossier, rates.as_ref(), provider.as_deref());
+    // The creator's record, and its absence is worth saying out loud: without
+    // it every reply about a fresh launch says the same thing, because the cost
+    // line is a constant and most launches sit in the same recipient band.
+    let creators = radar_roast::CreatorIndex::read(radar_roast::creator::DEFAULT_PATH).ok();
+    if creators.is_none() {
+        eprintln!(
+            "no creator index at {}; the reply will say nothing about who launched this.              Build one with `radar creator-index --store <dir>`.",
+            radar_roast::creator::DEFAULT_PATH
+        );
+    }
+
+    let (sheet, reply) = radar_roast::roast(
+        &dossier,
+        rates.as_ref(),
+        creators.as_ref(),
+        provider.as_deref(),
+    );
 
     if wants_sheet(args) {
         println!("--- fact sheet ---");

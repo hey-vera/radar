@@ -39,6 +39,13 @@ pub struct Answering<'a> {
     /// with no population to quote it against is a number without a meaning,
     /// and rule 9 says a missing rate means the claim cannot be made.
     pub rates: Option<&'a BaseRates>,
+    /// Every creator's record, or `None` when the index is missing.
+    ///
+    /// The fact that makes one reply differ from another. Without it three
+    /// coins launched in the same minute produce the same sentences, because
+    /// the cost line is a constant and most launches sit in the same recipient
+    /// band. `None` makes the reply say so rather than say nothing.
+    pub creators: Option<&'a radar_roast::CreatorIndex>,
     /// The model, or `None` for the deterministic template.
     pub provider: Option<&'a dyn radar_model::Provider>,
     /// Seconds since the epoch, supplied rather than read.
@@ -110,7 +117,7 @@ pub fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Answer
         Err(e) => return Answered::Unreadable(e.to_string()),
     };
 
-    let (sheet, reply) = radar_roast::roast(&dossier, ctx.rates, ctx.provider);
+    let (sheet, reply) = radar_roast::roast(&dossier, ctx.rates, ctx.creators, ctx.provider);
 
     Answered::Reply(Box::new(Entry {
         at: ctx.now,
@@ -171,6 +178,7 @@ mod tests {
         Answering {
             client,
             rates: None,
+            creators: None,
             provider: None,
             now: 1_788_000_000,
         }

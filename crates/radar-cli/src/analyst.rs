@@ -126,9 +126,15 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
 
+    let creators = radar_roast::CreatorIndex::read(radar_roast::creator::DEFAULT_PATH).ok();
+    if creators.is_none() {
+        eprintln!("no creator index; replies will say nothing about who launched the token");
+    }
+
     let ctx = Answering {
         client: &client,
         rates: rates.as_ref(),
+        creators: creators.as_ref(),
         provider: provider.as_deref(),
         now,
     };

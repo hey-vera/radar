@@ -131,6 +131,11 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
         &analyst_dir(&get),
         get("RADAR_ANALYST_DIR").is_some(),
     ));
+    checks.push(creator_index(
+        &get("RADAR_CREATOR_INDEX")
+            .unwrap_or_else(|| radar_roast::creator::DEFAULT_PATH.to_owned()),
+        now,
+    ));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -211,6 +216,113 @@ fn ingestion(store: &Path, now: i64) -> Check {
 /// would fight over.
 fn analyst_dir(get: &impl Fn(&str) -> Option<String>) -> String {
     get("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned())
+}
+
+/// How old the creator index may be before the timer is considered stopped.
+///
+/// Twelve hours: the timer runs every six with `Persistent=true`, so this
+/// tolerates one missed run and a late catch-up, and complains at two. The same
+/// shape as [`DECISIONS_STALE_AFTER`] and for the same reason -- a threshold
+/// that fires on one skipped run is a threshold that fires on a reboot.
+const INDEX_STALE_AFTER_SECS: i64 = 12 * 60 * 60;
+
+/// The rebuild interval the window above is reasoned against.
+const INDEX_REBUILD_INTERVAL_SECS: i64 = 6 * 60 * 60;
+
+// Held at compile time rather than by a test, because it is a fact about two
+// constants and nothing at runtime can make it more or less true -- AGENTS.md
+// section 5, the cheapest level that can hold the property.
+//
+// It exists because every test of the window is written *relative* to it, so
+// widening it to a day leaves all of them passing while the timer could stop for
+// twenty-three hours in silence. Asserting the number equals itself would be the
+// redundancy that section refuses; what is pinned here is the reasoning. Past one
+// interval, so a single skipped run or a reboot is not an outage. Short of three,
+// so two consecutive failures are.
+const _: () = assert!(
+    INDEX_STALE_AFTER_SECS > INDEX_REBUILD_INTERVAL_SECS,
+    "one missed rebuild must not alarm"
+);
+const _: () = assert!(
+    INDEX_STALE_AFTER_SECS < INDEX_REBUILD_INTERVAL_SECS * 3,
+    "two consecutive failed rebuilds must alarm"
+);
+
+/// Whether the creator index is being rebuilt.
+///
+/// # Why absence is fine here and was not for the analyst
+///
+/// The reply log is absent in two different situations -- the daemon was never
+/// installed, and the daemon is installed and has answered nobody -- so
+/// [`analyst`] has to be told which host it is on.
+///
+/// This file has no such ambiguity. The **first** timer run writes it and every
+/// later run rewrites it, so on a host that builds the index it is never
+/// missing. Absent means the timer was never installed here, which is true of
+/// every workstation checkout and is not a fault.
+///
+/// **Present and old** is the state worth catching, and nothing else would.
+/// The unit is a `oneshot` with no `Restart=`, so a build that starts failing
+/// leaves the last good file exactly where it was and the replies keep quoting
+/// a frozen population -- confidently, and with a stale date nobody reads. That
+/// is [LEARNINGS] entry 5: a job that did not run must not look like a job that
+/// ran and found nothing. Entry 8 is what it costs when nobody is watching.
+///
+/// Pure over the loaded index so both directions are testable without a store.
+///
+/// [LEARNINGS]: https://github.com/hey-vera/radar/blob/main/LEARNINGS.md
+fn grade_index(index: &radar_roast::CreatorIndex, now: i64) -> Check {
+    let built = i64::try_from(index.built_at).unwrap_or(i64::MAX);
+    let age = now.saturating_sub(built);
+    let creators = index.len();
+
+    // Printed whichever way it is graded: the population is what the replies
+    // quote, so an operator reading this line wants to see it.
+    let measured = index.population.map_or_else(
+        // Rule 9. An index from before the field existed has not measured this,
+        // and printing zeroes here would be a claim rather than a gap.
+        || "population not measured — rebuilt by an older binary".to_owned(),
+        |p| match p.graduated_share() {
+            Some(share) => format!("{} measured, {:.2}% graduated", p.measured, share * 100.0),
+            None => format!("{} launches, none measured yet", p.launches),
+        },
+    );
+
+    let detail = format!(
+        "{creators} creators, {measured}; rebuilt {} ago",
+        humanise(age.max(0))
+    );
+    if age > INDEX_STALE_AFTER_SECS {
+        return Check::new(
+            Status::Fail,
+            "index",
+            format!(
+                "{detail} — the rebuild timer has stopped, so replies are quoting a frozen population"
+            ),
+        );
+    }
+    Check::new(Status::Ok, "index", detail)
+}
+
+/// Reads the creator index and grades it.
+///
+/// Absent is `Ok` and said plainly -- see [`grade_index`]. Present but
+/// unreadable is `Unknown`: something wrote a file there and it is not an index,
+/// which is a different situation from nobody having written one.
+fn creator_index(path: &str, now: i64) -> Check {
+    match radar_roast::CreatorIndex::read(path) {
+        Ok(index) => grade_index(&index, now),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Check::new(
+            Status::Ok,
+            "index",
+            format!("no creator index at {path} — the rebuild timer is not installed here"),
+        ),
+        Err(e) => Check::new(
+            Status::Unknown,
+            "index",
+            format!("creator index at {path} cannot be read: {e}"),
+        ),
+    }
 }
 
 /// Whether the public analyst is answering, and when it last did.
@@ -1779,6 +1891,124 @@ mod tests {
         // And zero, which an operator sees when the cursor is current.
         assert_eq!(humanise(0), "0s");
     }
+    /// An index with one creator, built at a given time.
+    fn index_built_at(
+        built_at: u64,
+        population: Option<radar_roast::Population>,
+    ) -> radar_roast::CreatorIndex {
+        let mut creators = std::collections::BTreeMap::new();
+        creators.insert("aaa".to_owned(), radar_roast::creator::Record::default());
+        radar_roast::CreatorIndex {
+            watermark_slot: 444_363_233,
+            built_at,
+            population,
+            creators,
+        }
+    }
+
+    fn a_population() -> radar_roast::Population {
+        // The shape of the real one on 2026-09-04, rounded: 505,506 measured,
+        // 2.807% graduated.
+        radar_roast::Population {
+            launches: 507_486,
+            measured: 505_506,
+            organic: 8_973,
+            instant: 5_216,
+            stillborn: 116_267,
+        }
+    }
+
+    #[test]
+    fn a_rebuild_timer_that_stopped_is_a_failure_and_a_recent_one_is_not() {
+        // The state nothing else would notice. The unit is a `oneshot` with no
+        // `Restart=`, so a build that starts failing leaves the last good file
+        // exactly where it was -- and every reply keeps quoting a frozen
+        // population, confidently. LEARNINGS 5.
+        let now = 1_788_000_000;
+        let fresh = grade_index(
+            &index_built_at(u64::try_from(now).expect("positive"), Some(a_population())),
+            now,
+        );
+        assert_eq!(fresh.status, Status::Ok, "{}", fresh.detail);
+
+        // The boundary, both sides, so the comparison cannot be reversed or
+        // widened without this failing.
+        let at = grade_index(
+            &index_built_at(
+                u64::try_from(now - INDEX_STALE_AFTER_SECS).expect("positive"),
+                Some(a_population()),
+            ),
+            now,
+        );
+        assert_eq!(at.status, Status::Ok, "exactly at the limit is tolerated");
+
+        let past = grade_index(
+            &index_built_at(
+                u64::try_from(now - INDEX_STALE_AFTER_SECS - 1).expect("positive"),
+                Some(a_population()),
+            ),
+            now,
+        );
+        assert_eq!(past.status, Status::Fail, "{}", past.detail);
+        assert!(past.detail.contains("frozen population"), "{}", past.detail);
+    }
+
+    #[test]
+    fn the_index_line_carries_the_population_the_replies_quote() {
+        let now = 1_788_000_000;
+        let check = grade_index(
+            &index_built_at(u64::try_from(now).expect("positive"), Some(a_population())),
+            now,
+        );
+        assert!(check.detail.contains("505506 measured"), "{}", check.detail);
+        assert!(check.detail.contains("2.81% graduated"), "{}", check.detail);
+    }
+
+    #[test]
+    fn an_index_from_an_older_binary_says_so_rather_than_reporting_zeroes() {
+        // Rule 9. The file on the production box had no `population` key until
+        // the timer next ran, and "0 measured, 0.00% graduated" would be a claim
+        // that nothing on this venue ever graduates.
+        let now = 1_788_000_000;
+        let check = grade_index(
+            &index_built_at(u64::try_from(now).expect("positive"), None),
+            now,
+        );
+        assert_eq!(check.status, Status::Ok);
+        assert!(check.detail.contains("older binary"), "{}", check.detail);
+        assert!(!check.detail.contains("0.00%"), "{}", check.detail);
+    }
+
+    #[test]
+    fn no_index_at_all_is_reported_and_not_alarmed() {
+        // Every workstation checkout is in this state, and unlike the analyst's
+        // reply log this file is unambiguous: the first timer run writes it and
+        // every later run rewrites it, so on a host that builds one it is never
+        // missing. Absent means the timer is not installed here.
+        let path = std::env::temp_dir().join(format!("radar-no-index-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let check = creator_index(path.to_str().expect("a path"), 1_788_000_000);
+        assert_eq!(check.status, Status::Ok, "{}", check.detail);
+        assert!(
+            check.detail.contains("not installed here"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_an_index_is_unknown_rather_than_absent() {
+        // Something wrote that path and it is not an index -- a truncated write,
+        // a wrong `--out`, a disk that filled. Different from nobody having
+        // written one, and never a pass.
+        let path =
+            std::env::temp_dir().join(format!("radar-bad-index-{}.json", std::process::id()));
+        std::fs::write(&path, "{ not json").expect("written");
+        let check = creator_index(path.to_str().expect("a path"), 1_788_000_000);
+        assert_eq!(check.status, Status::Unknown, "{}", check.detail);
+        let _ = std::fs::remove_file(&path);
+    }
+
     #[test]
     fn the_analyst_directory_falls_back_to_the_daemons_own_default() {
         // The same default and the same variable the daemon uses. A brief

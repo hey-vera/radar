@@ -738,6 +738,14 @@ two figures also exist in `0024-base-rates.json`, where they came from a public
 RPC walking 45 slots; here they are counted over the whole recorded population
 instead, and refreshed every six hours by this timer rather than by hand.
 
+`radar brief` gains an `index` line reporting the creator count, the population
+the replies quote, and how long ago it was rebuilt. **It fails when the rebuild
+is more than twelve hours old** — two missed runs. That is the state nothing else
+would catch: this unit is a `oneshot` with no `Restart=`, so a build that starts
+failing leaves the last good file exactly where it is, and every reply keeps
+quoting a frozen population, confidently. On a host with no index at all the line
+says so and passes, because that is every workstation checkout.
+
 An index written before this existed has no `population` key and still loads:
 absent means *not measured*, and a reply says nothing rather than quoting five
 zeroes. So the first run after upgrading is what starts the figures flowing.

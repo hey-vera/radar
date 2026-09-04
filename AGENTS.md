@@ -252,7 +252,11 @@ branch.** `cargo mutants -f <one file>` takes a couple of minutes and is the one
 form of this §8 permits locally. Twenty-one survivors on an open PR is the same
 information, arriving after it is expensive to act on.
 
-**Do not push while a check you are waiting on is in flight.** The workflow sets
+**Do not push while a check you are waiting on is in flight** — `just hooks`
+installs a `pre-push` that now refuses this rather than warning, with
+`RADAR_PUSH_OVER_CI=1` as the deliberate override. It warned for one session and
+was overridden every round; `mutants-shards (0)` was cancelled seven times out
+of seven and a quarter of the mutants went unchecked. The workflow sets
 `cancel-in-progress`, so every push kills the run before it — the fast jobs go
 green either way and the slow one never finishes, which reads exactly like a
 broken check. Before concluding a check is broken, establish that it **ran**:

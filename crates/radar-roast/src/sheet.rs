@@ -172,6 +172,26 @@ impl FactSheet {
             unknown.push(phrase_for(miss.fact));
         }
 
+        // **Said once, not twice.** Every unreadable fact reaches this list by
+        // two routes: the field is `None`, and `Dossier::build` also recorded a
+        // reason for it in `unavailable`. Both fire for the same failure, so a
+        // reply about a token whose launch block could not be read told the
+        // reader so twice, and a token where nothing could be read said four
+        // lines that were two.
+        //
+        // Found by running the thing against a real mint, which is the only
+        // place it shows: every fixture in this crate's tests supplies one route
+        // or the other, never both, so the duplication was invisible to all of
+        // them.
+        //
+        // Deduplicated rather than removing one route. Keeping both is what
+        // guarantees an absent fact is always reported -- if `build` ever stops
+        // recording a reason, the `None` branch still speaks, and rule 9 says an
+        // absence must never pass silently. Order is preserved because it is the
+        // order the reader meets the facts in.
+        let mut seen = std::collections::BTreeSet::new();
+        unknown.retain(|miss| seen.insert(miss.clone()));
+
         Self {
             mint: dossier.mint.to_string(),
             read_at: dossier.read_at,

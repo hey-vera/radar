@@ -63,11 +63,20 @@ disagreeing.
       merge together; `arrow`/`parquet` 56 to 59 touches the store and needs
       `older_files_still_read.rs` run against it on its own branch;
       `ed25519-dalek` 3 touches the signer's dependency and is read by hand.
-- [ ] 7. Delete `radar-provider`'s cache, breaker and planner (A8)
-      next: about 700 of 1,897 lines with no caller anywhere, flagged three
-      times (LEARNINGS 1 and 9 are the same shape). Design 0007 J9 is Josh
-      choosing delete over wire. `README.md`, `docs/STATE.md` and design 0006
-      row 5 all describe it and change in the same commit.
+- [x] 7. Delete `radar-provider`'s cache, breaker and planner (A8)
+      done: `just tests` 1476 passed, `just lint`, `just fmt`,
+      `just licence-headers` clean; `cargo test -p repo-conformance` 33 passed.
+      **1,350 lines, not the 700 the plan estimated** — the planner lived in
+      `lib.rs` and its doctest composed the two deleted modules, so both went
+      with them.
+      Two things the estimate missed, and both are recorded rather than
+      absorbed. AGENTS.md rule 3 cited that cache as the place the watermark
+      gate lived *in the type system*; it does not any more, and the rule says
+      so instead of describing a deleted module. And that cache was the only
+      caller of `radar-asof`'s `Observed<T>` and `LookAhead` outside
+      `radar-asof`'s own tests, so those two types now have none — see Q4.
+      `MIN_TESTS` 1503 -> 1476: 27 tests went with the code they tested. The
+      floor caught the drop, which is the floor working.
 - [ ] 8. `just orient` (A9)
       next: one recipe printing branch, that branch's last CI result, this
       file's Handback block, `target/` size, and the four claims
@@ -83,12 +92,24 @@ disagreeing.
   free, one minute to create, and it reaches a phone. — unanswered
 - Q3 (2026-09-04): the two X billing figures, which gate workstream B and are
   settleable with one live test post. Not needed for this plan. — unanswered
+- Q4 (2026-09-04): `radar-asof`'s `Observed<T>` and `LookAhead` have no caller
+  now that the provider cache is gone. Three honest options: delete them and
+  leave `radar-asof` as `AsOf` alone; keep them for the `radar-serve` cache
+  work in design 0007 D5, which is the next thing that genuinely needs a
+  watermark-gated read; or keep them and say plainly in the crate that they are
+  a pattern with no current user. **Recommendation: keep, and say so** — D5 is
+  weeks away rather than hypothetical, and this is 40 lines rather than 1,300.
+  Deleting them is also the harder change to reverse, because what would be
+  lost is the reasoning rather than the code. — unanswered
 
 ## Handback
 
-Stopped at: item 3 landed; items 4 and 5 blocked on Q1 and Q2; items 6 to 8 are
-unblocked and are the next work.
-Next action: item 7, on its own branch — it is the largest unblocked one, it is
-pure deletion, and design 0007 J9 already decided it.
+Stopped at: items 0 to 3 and 7 landed. Items 4 and 5 are blocked on Q1 and Q2.
+Items 6 and 8 are unblocked.
+Next action: item 8, `just orient` — it is small, it has no dependency on
+anything blocked, and every session after this one pays for its absence.
+Then item 6, the Dependabot batch.
 Do not: open `Policy::CLOSED`, edit the custody lane, or retune `radar-graph`.
 All three are in Not in scope above, and each has a document saying why.
+Do not delete `Observed<T>` on the strength of Q4 without answering it — an
+unused type and a deleted invariant look identical in a diffstat.

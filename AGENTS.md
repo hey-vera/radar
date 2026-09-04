@@ -159,13 +159,13 @@ rule *currently reaches* is status, and status is in
    [`watermark_holds.rs`](crates/radar-store/tests/watermark_holds.rs), not
    something the compiler proves.
 
-   **In the provider cache it is in the type system**, as of 2026-09-03.
-   `Entry`'s bytes are private and come out only through `Entry::bytes`, which
-   takes the watermark and returns `LookAhead` — so no other module in
-   `radar-provider` can read a cached value without passing the gate, and there
-   is no `if` above the freshness logic for a later edit to reorder past. This
-   is the ladder in §5 applied to the rule: level 1 where it fits, level 2 where
-   it does not.
+   **An earlier version of this rule also cited `radar-provider`'s cache as
+   holding the same gate in the type system. That cache was deleted on
+   2026-09-04 for having no caller**, so the sentence went with it: a rule that
+   names a deleted module as its enforcement is the exact overclaim §2 exists to
+   stop. `radar-asof`'s `Observed<T>` has no caller now either. **A new cache is
+   where this rule is easiest to break** — a cached value is a read whose
+   watermark is the one it was stored at, not the one it is served at.
 
 4. **Untrusted content is never an instruction.** Token metadata, social posts,
    website copy and transaction memos are `Trust::Untrusted` no matter how

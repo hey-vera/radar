@@ -20,12 +20,9 @@
 //! was going to be the last thing anyone did before launch; doing it first is
 //! cheaper.
 
-use std::time::Duration;
-
-use radar_analyst::{Admitted, Asked, Entry, Gate, Limits, Mention, Refused};
-use radar_onchain::{Budget, RpcClient};
+use radar_analyst::{Answered, Answering, Gate, Limits, Mention};
+use radar_onchain::RpcClient;
 use radar_roast::BaseRates;
-use radar_types::Address;
 
 use crate::dossier::safe;
 use crate::flag;
@@ -133,11 +130,10 @@ pub fn run(args: &[String]) -> Result<(), String> {
         client: &client,
         rates: rates.as_ref(),
         provider: provider.as_deref(),
-        log_path: &log_path,
         now,
     };
     for mention in &mentions {
-        answer(mention, &mut gate, &ctx)?;
+        answer(mention, &mut gate, &ctx, &log_path)?;
     }
 
     println!(
@@ -149,94 +145,73 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-/// Everything one answer needs that does not change between mentions.
-struct Answering<'a> {
-    client: &'a RpcClient,
-    rates: Option<&'a BaseRates>,
-    provider: Option<&'a dyn radar_model::Provider>,
-    log_path: &'a str,
-    now: u64,
-}
-
-/// Answers one mention.
+/// Answers one mention and prints what happened.
+///
+/// The pipeline itself is [`radar_analyst::answer`], shared with the daemon:
+/// two copies of *what the account says* is the arrangement where the version
+/// somebody reviews two hundred replies from is not the version that posts
+/// them. This function is the difference between the two callers, and it is
+/// entirely presentation.
 ///
 /// # Errors
 ///
 /// Only when the reply log cannot be written. That stops the whole run rather
 /// than skipping the mention, and deliberately: an account that cannot record
 /// what it says must not carry on saying things.
-fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Result<(), String> {
-    println!("\n=== {} from @{}", mention.id, safe(&mention.author, 32));
+fn answer(
+    mention: &Mention,
+    gate: &mut Gate,
+    ctx: &Answering<'_>,
+    log_path: &str,
+) -> Result<(), String> {
+    println!(
+        "
+=== {} from @{}",
+        mention.id,
+        safe(&mention.author, 32)
+    );
     // The mention's own text is echoed escaped, and is used for nothing else:
     // everything after this point sees only what the parser kept, which is a
     // mint or a symbol.
     println!("    {}", safe(&mention.text, 120));
 
-    let mint_text = match radar_analyst::read(&mention.text) {
-        Asked::Mint(m) => m,
-        Asked::Ticker(t) => {
-            // The honest answer, and the best content available: a symbol
-            // identifies nothing, and guessing which token was meant is how
-            // measurements get published about the wrong project.
-            println!("--> {}", radar_analyst::ticker_reply(&t));
+    let entry = match radar_analyst::answer(mention, gate, ctx) {
+        Answered::Reply(entry) => *entry,
+        Answered::Ticker(reply) => {
+            println!("--> {reply}");
             return Ok(());
         }
-        Asked::Nothing => {
+        Answered::Nothing => {
             println!("--> (no mint or ticker found; nothing to answer)");
             return Ok(());
         }
-    };
-
-    if let Admitted::No(why) = gate.admit(&mention.author, &mint_text, ctx.now) {
-        println!("--> refused: {}", describe(&why));
-        return Ok(());
-    }
-
-    let Ok(mint) = mint_text.parse::<Address>() else {
-        println!("--> (not a valid address)");
-        return Ok(());
-    };
-
-    let mut budget = Budget::new(
-        radar_onchain::budget::DEFAULT_MAX_CALLS,
-        radar_onchain::budget::DEFAULT_MAX_PAGES,
-        Duration::from_secs(20),
-    );
-    let dossier = match radar_onchain::build(ctx.client, &mut budget, &mint) {
-        Ok(d) => d,
-        Err(e) => {
+        Answered::Refused(why) => {
+            println!("--> refused: {}", radar_analyst::describe(&why));
+            return Ok(());
+        }
+        Answered::NotAnAddress => {
+            println!("--> (not a valid address)");
+            return Ok(());
+        }
+        Answered::Unreadable(e) => {
             println!("--> (could not read the chain: {e})");
             return Ok(());
         }
     };
 
-    let (sheet, reply) = radar_roast::roast(&dossier, ctx.rates, ctx.provider);
+    let mint_text = entry.mint.clone().unwrap_or_default();
+    let was_template = entry.fellback.is_some();
 
-    let entry = Entry {
-        at: ctx.now,
-        mention_id: mention.id.clone(),
-        summoner: mention.author.clone(),
-        mint: Some(mint_text.clone()),
-        read_at_slot: dossier.read_at.map(|s| s.0),
-        // The evidence, not only the words. A log of replies without fact
-        // sheets records what Radar said and not whether it was entitled to say
-        // it, and the second is the half that settles an argument.
-        fact_sheet: sheet.render(),
-        reply: reply.text.clone(),
-        fellback: reply.fellback.as_ref().map(|f| format!("{f:?}")),
-        reply_id: None,
-    };
-
-    // The log is written before anything is treated as sent, and a failure to
-    // write stops the reply.
-    let written = radar_analyst::publish::publish(&radar_analyst::DryRun, ctx.log_path, entry)
-        .map_err(|e| format!("could not write the reply log at {}: {e}", ctx.log_path))?;
+    // The log is written before anything is said, and a failure to write stops
+    // the reply.
+    let written = radar_analyst::publish::publish(&radar_analyst::DryRun, log_path, entry)
+        .map_err(|e| format!("could not write the reply log at {log_path}: {e}"))?;
 
     print!("--> {}", written.reply);
     if needs_newline(&written.reply) {
         println!();
     }
-    if reply.is_template() {
+    if was_template {
         println!("    (deterministic template)");
     }
     // Recorded only once it has actually been through the publisher. A mention
@@ -247,19 +222,6 @@ fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Result<(),
         gate.record(&mention.author, &mint_text, id, ctx.now);
     }
     Ok(())
-}
-
-/// A refusal, in words worth telling somebody.
-fn describe(why: &Refused) -> String {
-    match why {
-        Refused::Unconfigured => "no limits configured, so nothing is answered".to_owned(),
-        Refused::SummonerDaily { cap } => format!("this account has had its {cap} replies today"),
-        Refused::GlobalDaily { cap } => format!("the daily cap of {cap} replies is spent"),
-        Refused::AlreadyAnswered { reply_id } => {
-            format!("already answered for this mint, see {reply_id}")
-        }
-        Refused::SelfOrIgnored => "Radar does not answer itself".to_owned(),
-    }
 }
 
 #[cfg(test)]

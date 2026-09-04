@@ -152,14 +152,42 @@ the operational skin that makes it safe to leave running.
       are authorised and the joined figure is not**.
       `cargo mutants -f render.rs`: 9 of 9 caught.
 
-- [ ] 5. The binary, the unit, and the brief check
+- [x] 5. The binary, the unit, and the brief check
       `radar-analyst` as a binary beside `radar-follow.service`, with
       `MemoryMax`, `Restart=always`, and its own `EnvironmentFile`.
       `radar brief` gains an `analyst` check reporting cursor age and last
       reply age, `Unknown` when it cannot see — which alarms, per the existing
       convention.
-      done when: the unit runs 24 hours in dry run on the VPS against real
-      mentions of a throwaway account, and `radar brief` reports it.
+      done, except the 24-hour live dry run, which needs the X account Josh is
+      setting up last. Everything that does not need one is finished and proved.
+      **The per-mention pipeline moved out of `radar-cli` into
+      `radar-analyst::answer`**, so the command and the daemon share one path
+      rather than two copies of what the account says. The command is now
+      presentation and nothing else.
+      The loop lives in `daemon.rs` rather than in `main.rs`, which is four
+      lines, so one poll can be driven by a test against a fake platform. That
+      is not a testing convenience: the orderings this loop enforces are the
+      ones that cost money or credibility when wrong.
+      `crates/radar-analyst/tests/one_poll_end_to_end.rs` runs `tick` once
+      against a real socket and checks four things the unit tests cannot: the
+      **credential reaches the wire**; the cursor takes the largest id from a
+      deliberately out-of-order page (1001, 1003, 1002) rather than the last;
+      a refused poll **charges nothing and does not advance the cursor**, which
+      would lose those questions permanently; and an exhausted budget stops the
+      poll before it costs anything.
+      A bug found while writing it and worth recording: the first draft settled
+      every reservation at **zero**, which hands the whole budget back and makes
+      the meter decorative. Settling now uses `Commitment::reserved`.
+      `deploy/radar-analyst.service` (`Restart=always`, `MemoryMax=256M`, write
+      access to its own directory and nowhere else) and
+      `deploy/analyst.env.example`. `radar brief` gains an `analyst` line, and
+      it counts **replies rather than log lines** — `publish` writes twice per
+      reply, so counting raw lines reports double. Never-run and empty are
+      `Unknown`, which alarms; a quiet day is not, because nobody asking is a
+      fact about the world rather than a fault.
+      `RADAR_X_API_BASE` is the one setting here that defaults to production
+      rather than to refusing, and the reason is the same: the default must be
+      the outcome that cannot surprise anybody, and for a base URL that is X.
 
 - [ ] 6. The reply log, readable
       `/v1/analyst/replies` (Operator) and a page listing what was asked, the

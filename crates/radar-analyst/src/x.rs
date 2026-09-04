@@ -197,7 +197,17 @@ impl X {
         .map(|(bearer, user_id)| Self {
             bearer,
             user_id,
-            base: API.to_owned(),
+            // Overridable, and defaulted to the real thing. This exists so the
+            // daemon's loop can be driven against a fake platform end to end
+            // rather than only in pieces, and so a staging account can point
+            // elsewhere without a rebuild.
+            //
+            // It is the one setting here that is safe to default on absence,
+            // because what it defaults to is production: a dropped variable
+            // points at X rather than at nothing. Every other switch in this
+            // crate defaults to refusing, and for the same underlying reason —
+            // the default must be the outcome that cannot surprise anybody.
+            base: std::env::var("RADAR_X_API_BASE").unwrap_or_else(|_| API.to_owned()),
         })
     }
 

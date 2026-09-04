@@ -241,7 +241,9 @@ changed *behaviour*, not on every changed line — Google got a typical change f
 mutants die anyway
 ([`0025`](docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md) §2).
 Mutate the logic; skip the plumbing and say so rather than writing a test to
-protect it. When a mutant survives, either write the test or record in
+protect it. **When CI names a survivor, reproduce it at the exact
+`file:line:column` it names** — a line can hold two of the same operator, and
+three fixes on 2026-09-03 were verified against the wrong one. When a mutant survives, either write the test or record in
 [`.cargo/mutants.toml`](.cargo/mutants.toml) *why* it is equivalent, having
 applied it by hand.
 

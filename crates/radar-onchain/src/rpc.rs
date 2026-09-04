@@ -597,7 +597,17 @@ pub fn decode_base58(s: &str) -> Option<Vec<u8>> {
             *byte = u8::try_from(carry & 0xFF).ok()?;
             carry >>= 8;
         }
-        while carry > 0 {
+        // Bounded by the width of the type: `carry` is a `usize` and each round
+        // shifts it right by eight, so it reaches zero within `size_of` rounds.
+        //
+        // Written as a bound rather than as `while carry > 0` because that form
+        // mutated to `while carry == 0` never ends -- it pushes a zero byte for
+        // ever and grows the vector until the process dies. CI reported it as a
+        // five-minute timeout, which is an expensive way to be told.
+        for _ in 0..size_of::<usize>() {
+            if carry == 0 {
+                break;
+            }
             bytes.push(u8::try_from(carry & 0xFF).ok()?);
             carry >>= 8;
         }

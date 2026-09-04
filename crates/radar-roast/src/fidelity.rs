@@ -290,6 +290,36 @@ mod tests {
         let inner = literals("it is 6.5 here");
         assert_eq!(inner.len(), 1);
         assert_eq!(inner[0].0, "6.5");
+
+        // A comma at the very end of the text, which is the group-separator
+        // branch's version of the same edge. Its guard is `i + 1 <
+        // bytes.len()`, and every way of getting that guard wrong -- `<=`,
+        // `i - 1`, `i * 1` -- makes it true at the last index and reads
+        // `bytes[i + 1]` off the end.
+        assert_eq!(literals("counted 6,").len(), 1);
+        assert_eq!(literals("counted 6,")[0].0, "6");
+
+        // And the separator still works where it should, so the guard is not
+        // simply refusing everything.
+        assert_eq!(literals("counted 17,497 launches")[0].0, "17497");
+
+        // The guard has to read *forward*. Reading the character behind instead
+        // consumes the comma, and the decimal-point branch then takes the `.`,
+        // so "1,.5" becomes a single 1.5 where there were two numbers.
+        //
+        // That is not cosmetic. Both 1 and 5 can be authorised figures, and
+        // their merge is a third number that appears in the reply and in no
+        // fact sheet -- the exact fabrication this module exists to refuse,
+        // arriving out of two values that were each allowed.
+        //
+        // Found by checking the mutation exhaustively over short strings rather
+        // than by reasoning about it: the argument that it could not matter was
+        // wrong for 2,232 of 97,655 cases.
+        assert_eq!(
+            literals("1,.5").len(),
+            2,
+            "a comma before a decimal point is not a group separator"
+        );
     }
 
     #[test]

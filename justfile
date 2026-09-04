@@ -234,7 +234,40 @@ web:
     set -euo pipefail
     cd web
     npm ci
-    npm audit --audit-level=high
+    # `npm audit`, retried -- but only when it could not *run*.
+    #
+    # A vulnerability and an unreachable registry are different answers and this
+    # must not confuse them. The exit code alone does, so the transport failure
+    # is matched on the output: npm prints `audit endpoint returned an error`
+    # when the advisory endpoint refuses it, and says nothing of the kind when it
+    # has actually found something. A findings failure exits on the first
+    # attempt, unretried.
+    #
+    # Three different transport failures were seen in seven runs on 2026-09-03/04
+    # -- a bulk-endpoint timeout, a 400 from the retired quick endpoint that npm
+    # falls back to, and a 503 -- each costing a hand re-run of a job that says
+    # nothing about this repository.
+    #
+    # `|| true` is deliberately not the fix. That turns a security check into
+    # decoration, which AGENTS.md §6 forbids by name. This keeps the gate and
+    # retries the network.
+    audit_log=$(mktemp)
+    for attempt in 1 2 3; do
+      if npm audit --audit-level=high 2>&1 | tee "$audit_log"; then
+        break
+      fi
+      if ! grep -q 'audit endpoint returned an error' "$audit_log"; then
+        echo "--- npm audit found something; not a transport failure, not retrying ---" >&2
+        exit 1
+      fi
+      if [ "$attempt" = 3 ]; then
+        echo "--- npm audit could not reach the registry in 3 attempts ---" >&2
+        echo "--- that is not a clean audit; it is an unknown one, and it fails ---" >&2
+        exit 1
+      fi
+      echo "--- npm audit could not reach the registry (attempt $attempt); retrying ---" >&2
+      sleep $((attempt * 15))
+    done
     # `NO_COLOR` because the count is grepped out of this, and vitest wraps the
     # number in ANSI escapes that a naive pattern reads straight past -- which
     # would leave the floor comparing against an empty string forever.

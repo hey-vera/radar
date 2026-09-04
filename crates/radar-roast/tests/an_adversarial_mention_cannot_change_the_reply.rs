@@ -334,3 +334,63 @@ fn the_slot_is_authorised_so_a_citable_reply_is_not_refused() {
     let _ = cited;
     assert!(fidelity::check("Read at slot 444007820.", &sheet.authorised()).is_empty());
 }
+
+/// A dossier where nothing could be read, recorded **both** ways.
+///
+/// This is what `radar-onchain` actually produces for a mint it cannot reach:
+/// the field is `None` **and** `build` records a reason in `unavailable`. Every
+/// other fixture in this crate supplies one route or the other, which is why the
+/// duplication below was invisible to all of them until the command was run
+/// against a real mint.
+fn dossier_that_could_not_be_read() -> Dossier {
+    Dossier {
+        mint: Address::new([7u8; 32]),
+        read_at: None,
+        launch: None,
+        curve: None,
+        creator_transactions: None,
+        unavailable: vec![
+            radar_onchain::Unavailable {
+                fact: "launch block",
+                why: "rpc transport: http status: 429".to_owned(),
+            },
+            radar_onchain::Unavailable {
+                fact: "curve",
+                why: "no account at that address".to_owned(),
+            },
+        ],
+        calls: 4,
+        elapsed_ms: 2_700,
+    }
+}
+
+#[test]
+fn an_unreadable_fact_is_reported_once_and_not_twice() {
+    // Found by running `radar roast` against a real mint the public endpoint
+    // rate-limited: the reply said "the launch block could not be read" twice
+    // and "the bonding curve could not be read" twice -- four lines that were
+    // two.
+    //
+    // A reader seeing the same absence stated twice does not read it as
+    // thorough; they read it as broken, on the one product whose entire claim
+    // is that it is careful with what it says.
+    let sheet = FactSheet::build(&dossier_that_could_not_be_read(), Some(&rates()));
+
+    let launch = sheet
+        .unknown
+        .iter()
+        .filter(|u| u.contains("launch block"))
+        .count();
+    let curve = sheet
+        .unknown
+        .iter()
+        .filter(|u| u.contains("bonding curve"))
+        .count();
+
+    assert_eq!(launch, 1, "said once: {:?}", sheet.unknown);
+    assert_eq!(curve, 1, "said once: {:?}", sheet.unknown);
+
+    // And still said at all. Deduplicating must not become dropping: rule 9,
+    // an absence that goes unmentioned reads as reassurance.
+    assert_eq!(sheet.unknown.len(), 2, "{:?}", sheet.unknown);
+}

@@ -220,6 +220,79 @@ mod tests {
     }
 
     #[test]
+    fn the_day_boundary_is_a_day_and_the_allowance_survives_inside_it() {
+        // `roll_to` divides the clock into days. Mutated to multiply, every
+        // distinct instant becomes a distinct "day" and the per-summoner
+        // allowance is cleared on every single call -- so one summoner could
+        // ask without limit, which is the whole thing this gate exists to stop.
+        let mut gate = Gate::new(limits(), Vec::new());
+
+        assert_eq!(gate.admit("alice", "MintOne", DAY), Admitted::Yes);
+        gate.record("alice", "MintOne", "r1", DAY);
+        assert_eq!(gate.admit("alice", "MintTwo", DAY + 1), Admitted::Yes);
+        gate.record("alice", "MintTwo", "r2", DAY + 1);
+
+        // Two used, two allowed, still the same day: the third is refused.
+        assert!(
+            matches!(
+                gate.admit("alice", "MintThree", DAY + 2),
+                Admitted::No(Refused::SummonerDaily { .. })
+            ),
+            "a second passing instant is not a new day"
+        );
+
+        // And a real new day does restore it.
+        assert_eq!(gate.admit("alice", "MintThree", 2 * DAY), Admitted::Yes);
+    }
+
+    #[test]
+    fn the_dedupe_window_is_exclusive_at_its_edge() {
+        // `now - at < dedupe_seconds`. One character from `<=`, and the two
+        // disagree only at the boundary -- so without this the window is a
+        // second longer than it says, for ever, and nothing notices.
+        let mut gate = Gate::new(limits(), Vec::new());
+        let l = limits();
+
+        assert_eq!(gate.admit("alice", "MintOne", DAY), Admitted::Yes);
+        gate.record("alice", "MintOne", "r1", DAY);
+
+        // A second inside the window: pointed at the existing answer.
+        assert!(matches!(
+            gate.admit("alice", "MintOne", DAY + l.dedupe_seconds - 1),
+            Admitted::No(Refused::AlreadyAnswered { .. })
+        ));
+
+        // Exactly the window: outside it, and answerable again.
+        assert!(
+            !matches!(
+                gate.admit("alice", "MintOne", DAY + l.dedupe_seconds),
+                Admitted::No(Refused::AlreadyAnswered { .. })
+            ),
+            "the window is exclusive at its edge"
+        );
+    }
+
+    #[test]
+    fn the_reply_count_is_the_count_and_not_a_constant() {
+        // Every other test here asserts `sent_today() == 0`, which a function
+        // returning zero satisfies for ever. That is LEARNINGS 5 in a counter:
+        // a meter reading zero because nothing happened and one reading zero
+        // because it is broken are the same number.
+        let mut gate = Gate::new(limits(), Vec::new());
+        assert_eq!(gate.sent_today(), 0);
+
+        gate.record("alice", "MintOne", "r1", DAY);
+        assert_eq!(gate.sent_today(), 1, "one reply is one reply");
+
+        gate.record("bob", "MintTwo", "r2", DAY);
+        assert_eq!(
+            gate.sent_today(),
+            2,
+            "the count is global, not per summoner"
+        );
+    }
+
+    #[test]
     fn an_unconfigured_gate_answers_nothing() {
         // Rule 8, and the failure it prevents is a deploy that dropped its
         // config and started answering the world for free.

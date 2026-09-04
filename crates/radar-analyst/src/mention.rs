@@ -106,7 +106,12 @@ fn first_address(text: &str) -> Option<String> {
                 return Some(chars[start..i].iter().collect());
             }
         }
-        if i < chars.len() && i == start {
+        // `i == start` means the base58 scan consumed nothing, so the cursor
+        // has to move or the outer loop spins. The `i < chars.len()` this used
+        // to carry was redundant -- the loop above already broke at the end --
+        // and CI reported both of its mutations as survivors, which is what a
+        // condition that cannot be false looks like from the outside.
+        if i == start {
             i += 1;
         }
     }
@@ -127,14 +132,19 @@ fn first_ticker(text: &str) -> Option<String> {
             }
             j += 1;
         }
-        if j > i + 1 {
-            let ticker: String = chars[i + 1..j].iter().collect();
-            // A run of digits is a dollar amount, not a symbol. "$50" is the
-            // asker talking about position size, and answering it as a token
-            // would be answering a question nobody asked.
-            if !ticker.chars().all(|c| c.is_ascii_digit()) {
-                return Some(ticker.to_uppercase());
-            }
+        let ticker: String = chars[i + 1..j].iter().collect();
+        // A symbol needs at least one character that is not a digit. "$50" is
+        // the asker talking about position size, and answering it as a token
+        // would be answering a question nobody asked; "$" alone is nothing.
+        //
+        // Both fall out of this one test, because an empty string has no
+        // non-digit character either. Two guards used to sit above it for the
+        // empty case -- `j > i + 1`, and later an explicit `!is_empty()` -- and
+        // neither could change the answer. CI reported every mutation of both
+        // as a survivor, which is what a condition that cannot be false looks
+        // like from outside. Written positively so that is visible.
+        if ticker.chars().any(|c| !c.is_ascii_digit()) {
+            return Some(ticker.to_uppercase());
         }
     }
     None
@@ -216,6 +226,66 @@ mod tests {
             read(&format!("https://example.invalid/x{REAL}y")),
             Asked::Nothing
         );
+    }
+
+    #[test]
+    fn an_address_must_be_clear_on_both_sides_not_just_one() {
+        // The two guards are joined by AND: clear before *and* clear after.
+        // Mutated to OR, a run glued to a word character on one side is taken
+        // -- and that is the whole of the URL case, where the address is clear
+        // on the left and glued on the right, or the reverse.
+        //
+        // This is a rule about who chooses what Radar looks up. A stranger who
+        // can get a run accepted out of a longer token chooses it for us.
+        // The glue character must be alphanumeric and *not* base58, or it
+        // joins the run instead of bounding it and the length check refuses it
+        // for the wrong reason. '0' is excluded from base58 precisely because
+        // it is confusable, which makes it the right probe here.
+        assert_eq!(read(&format!("0{REAL}")), Asked::Nothing, "glued before");
+        assert_eq!(read(&format!("{REAL}0")), Asked::Nothing, "glued after");
+        assert_eq!(read(&format!("0{REAL}0")), Asked::Nothing, "glued both");
+        // And clear on both sides is still read.
+        assert_eq!(
+            read(&format!("about {REAL} please")),
+            Asked::Mint(REAL.to_owned())
+        );
+    }
+
+    #[test]
+    fn a_ticker_stops_at_its_length_limit() {
+        // `j - i > MAX_TICKER` bounds how much of a long word is taken as a
+        // symbol. Both comparisons around it are one character from wrong, and
+        // the two edges disagree only at the limit.
+        let at_limit: String = "A".repeat(MAX_TICKER);
+        assert_eq!(
+            read(&format!("${at_limit}")),
+            Asked::Ticker(at_limit.clone()),
+            "a symbol exactly at the limit is a symbol"
+        );
+
+        // One character over: the limit binds, so what comes back is the
+        // truncation rather than the whole word -- and it must not be the whole
+        // word, or the limit does nothing.
+        let over = format!("{at_limit}B");
+        let got = read(&format!("${over}"));
+        assert_ne!(
+            got,
+            Asked::Ticker(over.clone()),
+            "a word past the limit must not be taken whole"
+        );
+    }
+
+    #[test]
+    fn a_lone_dollar_sign_is_not_a_ticker() {
+        // `j > i + 1` is what requires at least one character after the `$`.
+        // Mutated to `>=`, or with the `+ 1` neutered, a bare `$` becomes a
+        // symbol -- an empty one -- and the analyst answers a question nobody
+        // asked.
+        assert_eq!(read("@radar $"), Asked::Nothing);
+        assert_eq!(read("@radar $ "), Asked::Nothing);
+        assert_eq!(read("costs $ and time"), Asked::Nothing);
+        // One character after it is enough to be a symbol.
+        assert_eq!(read("@radar $A"), Asked::Ticker("A".to_owned()));
     }
 
     #[test]

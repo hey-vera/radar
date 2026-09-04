@@ -130,6 +130,18 @@ pub fn publish(
 mod tests {
     use super::*;
 
+    #[test]
+    fn the_dry_run_publisher_says_which_publisher_it_is() {
+        // The name goes into the reply log, which is the durable record of what
+        // this account said and through what. A run recorded under the wrong
+        // publisher is a run somebody later reads as live.
+        //
+        // One line, because the alternative was an entry in
+        // `.cargo/mutants.toml` claiming a name in a permanent record is arid,
+        // and it is cheaper to be sure than to argue that.
+        assert_eq!(DryRun.name(), "dry-run");
+    }
+
     fn entry() -> Entry {
         Entry {
             at: 1_788_000_000,

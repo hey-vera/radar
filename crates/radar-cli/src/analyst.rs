@@ -55,6 +55,27 @@ fn parse_mention(line: &str) -> Option<Mention> {
     })
 }
 
+/// The mentions in a JSONL file's text.
+///
+/// Blank lines are skipped, and a line that does not parse is dropped rather
+/// than failing the run: one malformed line in a feed is not a reason to answer
+/// nobody.
+///
+/// Its own function so the blank-line filter can be tested. Inline, deleting
+/// the `!` kept only the blank lines and parsed nothing, and no test could see
+/// that -- CI reported it as a survivor.
+fn mentions_in(text: &str) -> Vec<Mention> {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(parse_mention)
+        .collect()
+}
+
+/// Whether a reply needs a newline before the shell prompt returns.
+fn needs_newline(text: &str) -> bool {
+    !text.ends_with('\n')
+}
+
 /// Runs the command.
 ///
 /// # Errors
@@ -71,11 +92,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     })?;
 
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{path}: {e}"))?;
-    let mentions: Vec<Mention> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(parse_mention)
-        .collect();
+    let mentions = mentions_in(&text);
 
     let log_path = flag(args, "--log").unwrap_or_else(|| "analyst-log.jsonl".to_owned());
 
@@ -211,7 +228,7 @@ fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Result<(),
         .map_err(|e| format!("could not write the reply log at {}: {e}", ctx.log_path))?;
 
     print!("--> {}", written.reply);
-    if !written.reply.ends_with('\n') {
+    if needs_newline(&written.reply) {
         println!();
     }
     if reply.is_template() {
@@ -237,5 +254,44 @@ fn describe(why: &Refused) -> String {
             format!("already answered for this mint, see {reply_id}")
         }
         Refused::SelfOrIgnored => "Radar does not answer itself".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blank_lines_are_skipped_and_real_ones_are_kept() {
+        // The filter is `not empty`. Deleting the `!` keeps only the blank
+        // lines, so a full mentions file parses to nothing and the run answers
+        // nobody -- while exiting zero, which looks exactly like a quiet day.
+        // That is LEARNINGS 5, and it lived inline where no test could see it.
+        let file = concat!(
+            "\n",
+            "   \n",
+            r#"{"id":"1","author":"alice","text":"@radar what about $ABC"}"#,
+            "\n",
+            "\t\n",
+            r#"{"id":"2","author":"bob","text":"@radar and $DEF"}"#,
+            "\n",
+        );
+        let found = mentions_in(file);
+        assert_eq!(found.len(), 2, "two real lines among four blank ones");
+
+        // Blank input is not an error, and it is not two mentions either.
+        assert!(mentions_in("").is_empty());
+        assert!(mentions_in("\n  \n\t\n").is_empty());
+
+        // A line that does not parse is dropped, not fatal.
+        let with_junk = format!("not json\n{}", r#"{"id":"3","author":"c","text":"$GHI"}"#);
+        assert_eq!(mentions_in(&with_junk).len(), 1);
+    }
+
+    #[test]
+    fn a_reply_gets_a_newline_only_when_it_lacks_one() {
+        assert!(needs_newline("no trailing newline"));
+        assert!(!needs_newline("has one\n"));
+        assert!(needs_newline(""));
     }
 }

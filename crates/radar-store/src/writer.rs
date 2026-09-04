@@ -359,6 +359,7 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
     let mut cost_bps = UInt64Builder::new();
     let (mut coordination, mut kernel) = (StringBuilder::new(), StringBuilder::new());
     let mut prevalence = StringBuilder::new();
+    let (mut recipients, mut block_txs) = (UInt32Builder::new(), UInt32Builder::new());
     let mut kernel_reasons = ListBuilder::new(StringBuilder::new()).with_field(reason_item());
     let mut entry_price = UInt64Builder::new();
     let mut digest = StringBuilder::new();
@@ -382,6 +383,8 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
         capacity.append_option(d.exit_capacity_micro_usd);
         cost_bps.append_value(d.assumed_round_trip_bps);
         coordination.append_option(d.coordination.as_deref());
+        recipients.append_option(d.launch_recipients);
+        block_txs.append_option(d.launch_transactions);
         prevalence.append_option(d.authority_prevalence.as_deref());
         kernel.append_option(d.kernel_outcome.map(|k| match k {
             KernelOutcome::Authorised => "authorised",
@@ -410,6 +413,8 @@ fn build_decision_batch(decisions: &[Decision]) -> Result<RecordBatch, StoreErro
             Arc::new(capacity.finish()),
             Arc::new(cost_bps.finish()),
             Arc::new(coordination.finish()),
+            Arc::new(recipients.finish()),
+            Arc::new(block_txs.finish()),
             Arc::new(prevalence.finish()),
             Arc::new(kernel.finish()),
             Arc::new(kernel_reasons.finish()),

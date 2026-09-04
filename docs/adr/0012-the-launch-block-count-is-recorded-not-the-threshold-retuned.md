@@ -2,7 +2,10 @@
 # ADR 0012 — Record the launch-block count; do not retune the threshold
 
 **Date:** 2026-09-03
-**Status:** accepted
+**Status:** accepted. **Commitment 1 is implemented as of 2026-09-04** —
+`Decision.launch_recipients` and `Decision.launch_transactions` are recorded
+columns. Commitments 2 and 3 are not, and the threshold is therefore still the
+one 0024 superseded, which is what this ADR decided should happen meanwhile.
 **Decides:** what to do about `radar-graph`'s coordination thresholds now that
 [research 0024](../research/0024-the-spike-became-a-hump-and-the-signal-moved.md)
 has superseded the measurement they were derived from.

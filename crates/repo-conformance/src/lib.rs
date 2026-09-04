@@ -680,6 +680,52 @@ mod tests {
     }
 
     #[test]
+    fn every_learnings_entry_referenced_by_number_exists() {
+        // `README.md` cited "LEARNINGS 29" for three days while the file ended
+        // at 28. The entry it wanted was real -- the dependency claim that was
+        // false in two documents at once -- and nobody had written it, so the
+        // most-read file in the repository pointed at nothing.
+        //
+        // Same rule as ADRs, one file instead of a directory: a number with no
+        // entry behind it is worse than no citation, because it reads as
+        // evidence.
+        let text = std::fs::read_to_string(root().join("LEARNINGS.md")).expect("LEARNINGS.md");
+        let numbers: BTreeSet<u32> = learnings_entries(&text)
+            .into_iter()
+            .map(|(n, _)| n)
+            .collect();
+        assert!(
+            !numbers.is_empty(),
+            "no LEARNINGS entries were parsed; the check would pass vacuously"
+        );
+
+        let mut missing = Vec::new();
+        for document in documents() {
+            let Ok(text) = std::fs::read_to_string(&document) else {
+                continue;
+            };
+            // "LEARNINGS 29" and "LEARNINGS entry 29" are both in use, and both
+            // are citations. A trailing "." or "," ends the number; anything
+            // else after a digit means this was not one.
+            for (index, _) in text.match_indices("LEARNINGS ") {
+                let rest = text[index + "LEARNINGS ".len()..].trim_start_matches("entry ");
+                let cited: String = rest.chars().take_while(char::is_ascii_digit).collect();
+                let Ok(number) = cited.parse::<u32>() else {
+                    continue;
+                };
+                if !numbers.contains(&number) {
+                    missing.push(format!("{} cites LEARNINGS {number}", document.display()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "citations with no LEARNINGS entry behind them: {}",
+            missing.join(", ")
+        );
+    }
+
+    #[test]
     fn the_readme_crate_table_matches_the_workspace() {
         // A table listing a crate that does not exist, or omitting one that
         // does, is the most-read wrong thing in the repository.

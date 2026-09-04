@@ -13,7 +13,7 @@ benefit of the doubt on everything else.
 
 ## Index
 
-**20 of these 28 name something mechanical that would catch a
+**21 of these 29 name something mechanical that would catch a
 recurrence. 8 name only a habit, and say so** — which is this file's opening
 standard rather than a gap in it. The habit-only rows are the ones worth reading
 twice; nothing will stop those repeating except somebody remembering.
@@ -53,6 +53,7 @@ quietly absent.
 | [26](#26-a-shard-that-was-never-run-behind-a-shard-that-failed-loudly) | A shard that was never run, behind a shard that failed loudly | the `mutants` job |
 | [27](#27-half-a-cache-key-left-to-the-caller-to-remember) | Half a cache key, left to the caller to remember | *habit only* |
 | [28](#28-a-mutant-that-killed-the-machine-so-the-check-could-not-report) | A mutant that killed the machine, so the check could not report | *habit only* |
+| [29](#29-a-sentence-that-was-false-on-the-day-it-was-written-in-two-documents-at-once) | A sentence that was false on the day it was written, in two documents at once | `repo-conformance`'s `the_documented_dependency_claims_are_true`,… |
 
 ---
 
@@ -1390,3 +1391,36 @@ log: shard 1, every run, same three minutes.
 **What catches a recurrence:** nothing mechanical. The habit: when one shard of a
 parallel job dies and the rest pass, look at
 what that shard was given before looking at the runner.
+
+## 29. A sentence that was false on the day it was written, in two documents at once
+
+**Found:** 2026-09-03, by design 0004's audit, reading the manifests instead of
+the prose.
+
+`README.md` and `docs/STATE.md` both said, in near-identical words:
+
+> "No production crate depends on `radar-exec`; the composition reaches it
+> through a dev-dependency, so the shipped dependency graph is unchanged."
+
+`crates/radar-cli/Cargo.toml` had listed `radar-exec.workspace = true` under
+`[dependencies]` since `402e76a` on **2026-08-31**, and `radar-cli` builds the
+`radar` binary that `deploy/radar-brief.sh` runs in production. Both sentences
+were committed on **2026-09-03**. Neither was true on the day it was written,
+and the claim went uncorrected for three days.
+
+**Why it is not a stale sentence.** It is the sentence that says the trading
+lane cannot be reached from anything that ships. A reader deciding whether it
+is safe to change something in `radar-exec` was being told the blast radius was
+tests. It was not.
+
+**Two documents is the mechanism, not an aggravating detail.** The claim existed
+twice because each document wanted its own account of the same evidence, so
+correcting one leaves the other standing, and the one a reader happens to open
+is a coin flip. That is the same shape as entry 27 at a different altitude: a
+thing that looked like a check and was a comment.
+
+**What catches a recurrence:** `repo-conformance`'s
+`the_documented_dependency_claims_are_true`, which reads the manifests and pins
+all three statements rather than the prose describing them, and
+`one_test_file_is_accounted_for_by_one_document`, which stops two documents
+owning one account in the first place.

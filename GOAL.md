@@ -194,10 +194,10 @@ the answer at the same time. Being *funny* is a distribution strategy; being
 *right* is the product.
 
 > The round trip on a $50 position here is about 4.6%, and at Radar's own $1
-> floor it is about 30%. Eleven recipients in the launch block: 0.7% of launches
+> floor it is about 30%. Eleven recipients in the launch block: 0.5% of launches
 > that never graduated look like that, and 12% of blocks in that band graduate
-> instantly — eleven times the base rate. The creator has twelve prior launches
-> and none graduated. Exit capacity at Radar's 1% impact budget is $31 — that is
+> instantly — ten times the base rate. The creator has twelve prior launches and
+> none graduated. Exit capacity at Radar's 1% impact budget is $31 — that is
 > Radar's setting, not the venue's ceiling.
 
 Every number in that reply is a measurement with a citation, and the ordering is
@@ -211,7 +211,7 @@ trip", which is the venue *fee* and understated the measured cost by about 3.4×
 
 The bundle line is deliberately **not** "six recipients".
 [research 0024](docs/research/0024-the-spike-became-a-hump-and-the-signal-moved.md)
-re-measured that on 18,268 launches and found six is 25.6% of instant
+re-measured that on 17,497 launches and found six is 25.1% of instant
 graduations rather than 0008's 68%, with the strongest band now at ten to
 thirteen. Six was a tool's default and the default moved. Whatever the bot says
 here reads its band from the published snapshot, with the date it was measured —

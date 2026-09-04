@@ -6,6 +6,13 @@
 3,430 lines, 124 numbered sections, authored by ChatGPT and opening with a
 disclaimer of its own accuracy.
 
+**Status:** a verdict, not a measurement — Radar's reading of a third-party
+document, with the source kept unedited under `vendor/` so the verdict can be
+disagreed with. Its central finding, that the document was written for a latency
+sniper competing on speed, is the expectation
+[`0015`](0015-the-second-considerations-document-classified.md) checked the
+second document against.
+
 The document sat untracked in `docs/research/` for days and had never been read
 by anyone. `git add -A` swept it into two pull requests, and it was removed from
 both. This note is Radar's view of it.

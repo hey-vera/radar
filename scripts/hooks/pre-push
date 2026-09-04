@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Says how the branch's last CI run finished, before this push starts another.
+#
+# Against a failure that has already happened: `mutants-shards` went red at
+# `6c68a80` on 2026-09-03 and three more commits landed on top before anyone
+# read it. Nothing was broken that a check did not catch -- the check caught it
+# immediately and reported to a page nobody opened.
+#
+# **It never blocks.** Exit is always zero. A red previous run is often exactly
+# why you are pushing, and a hook that argued with that would be turned off
+# within a day. It prints one paragraph and gets out of the way.
+#
+# It is also silent when it cannot know: no `gh`, no network, no runs yet, or a
+# slow API. An absent answer is not a red answer, and printing a scary line
+# because a request timed out is how a useful notice becomes noise (AGENTS.md §5:
+# a check that fires on nothing is worse than no check).
+#
+# Installed by `just hooks`, alongside `pre-commit`.
+
+set -uo pipefail
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+[ -n "$branch" ] || exit 0
+command -v gh >/dev/null 2>&1 || exit 0
+
+# A push must not wait on GitHub. `timeout` is not everywhere, so it is used
+# when present and skipped when not.
+run_gh() {
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 10 gh "$@"
+    else
+        gh "$@"
+    fi
+}
+
+last=$(run_gh run list --branch "$branch" --limit 1 \
+    --json status,conclusion,headSha \
+    --jq '.[0] | "\(.status)\t\(.conclusion // "")\t\(.headSha[0:7])"' 2>/dev/null || true)
+
+# No runs, no answer, or a shape this does not recognise: say nothing.
+[ -n "$last" ] || exit 0
+
+status=$(printf '%s' "$last" | cut -f1)
+conclusion=$(printf '%s' "$last" | cut -f2)
+sha=$(printf '%s' "$last" | cut -f3)
+
+case "$status:$conclusion" in
+    completed:failure | completed:timed_out | completed:startup_failure)
+        printf '\n  the last CI run on %s (%s) FAILED.\n' "$branch" "$sha" >&2
+        jobs=$(run_gh run list --branch "$branch" --limit 1 --json databaseId \
+            --jq '.[0].databaseId' 2>/dev/null || true)
+        if [ -n "$jobs" ]; then
+            failed=$(run_gh run view "$jobs" --json jobs \
+                --jq '.jobs[] | select(.conclusion=="failure") | .name' 2>/dev/null || true)
+            if [ -n "$failed" ]; then
+                printf '\n' >&2
+                printf '%s\n' "$failed" | sed 's/^/    /' >&2
+            fi
+        fi
+        printf '\n  If this push is the fix, good. If it is more work on top, that is\n' >&2
+        printf '  how a red check collects three commits before anybody reads it.\n\n' >&2
+        ;;
+    completed:cancelled)
+        # `cancel-in-progress` means every push kills the run before it, so a
+        # cancelled run is the normal state after a quick second push and says
+        # nothing about the code. AGENTS.md §6 records a session lost to reading
+        # it as a failure.
+        printf '\n  the last CI run on %s (%s) was cancelled, not failed -- the workflow\n' "$branch" "$sha" >&2
+        printf '  sets cancel-in-progress, so a push kills the run before it.\n\n' >&2
+        ;;
+    in_progress:* | queued:* | requested:* | waiting:*)
+        printf '\n  a CI run on %s (%s) is still %s; this push will cancel it.\n\n' \
+            "$branch" "$sha" "$status" >&2
+        ;;
+esac
+
+exit 0

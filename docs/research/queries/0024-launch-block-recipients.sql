@@ -63,6 +63,21 @@
 -- Ran in about 75 seconds per two hours of chain against the public endpoint on
 -- 2026-09-03, with `user=crypto`.
 --
+-- # A failed launch is not a launch
+--
+-- `solana.token_transfers` and `solana.instructions` both carry rows for
+-- transactions that FAILED. The first version of this query did not filter them
+-- and counted failed launches as launches -- 218 of 2,607 in one measured hour,
+-- 8.4%. That is 0006's mistake exactly: 35 of 97 migration instructions in an
+-- hour were in failed transactions, and counting them overstated the label by
+-- more than a third.
+--
+-- So every row here is joined to `solana.transactions` and required to be
+-- `status = 'Success'`, in both places it matters: the launch instruction, and
+-- the transfers the recipient count is taken from. Note the join key is
+-- `transactions.signature`, not `tx_signature` -- that column exists on
+-- `instructions` and `token_transfers` but not on `transactions`.
+--
 -- Substitute the slice bounds for :FROM and :TO. Graduation labels are NOT in
 -- this query: they come from Radar's own store, joined on the mint afterwards,
 -- because CryptoHouse cannot distinguish an instant graduation from an organic
@@ -70,11 +85,14 @@
 
 WITH
 launch_tx AS (
-  SELECT DISTINCT tx_signature
-  FROM solana.instructions
-  WHERE program_id = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
-    AND block_timestamp >= :FROM AND block_timestamp < :TO
-    AND lower(hex(substring(base58Decode(data), 1, 8)))
+  SELECT DISTINCT i.tx_signature AS sig
+  FROM solana.instructions i
+  INNER JOIN solana.transactions tr ON tr.signature = i.tx_signature
+  WHERE i.program_id = '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+    AND i.block_timestamp >= :FROM AND i.block_timestamp < :TO
+    AND tr.block_timestamp >= :FROM AND tr.block_timestamp < :TO
+    AND tr.status = 'Success'
+    AND lower(hex(substring(base58Decode(i.data), 1, 8)))
         IN ('181ec828051c0777', 'd6904cec5f8b31b4')
 ),
 launched AS (
@@ -83,16 +101,23 @@ launched AS (
   -- the market rather than the token.
   SELECT t.mint AS m, min(t.block_slot) AS launch_slot
   FROM solana.token_transfers t
-  INNER JOIN launch_tx x ON t.tx_signature = x.tx_signature
+  INNER JOIN launch_tx x ON t.tx_signature = x.sig
   WHERE t.block_timestamp >= :FROM AND t.block_timestamp < :TO
     AND t.mint != ''
     AND t.mint NOT IN ('So11111111111111111111111111111111111111112',
                        'So11111111111111111111111111111111111111111')
   GROUP BY t.mint
+),
+ok AS (
+  -- Successful transactions in the window. A transfer inside a failed
+  -- transaction did not happen, so it is not a recipient.
+  SELECT signature FROM solana.transactions
+  WHERE block_timestamp >= :FROM AND block_timestamp < :TO AND status = 'Success'
 )
 SELECT l.m AS m, uniqExact(t.destination) AS recipients
 FROM solana.token_transfers t
 INNER JOIN launched l ON t.mint = l.m AND t.block_slot = l.launch_slot
+INNER JOIN ok ON ok.signature = t.tx_signature
 WHERE t.block_timestamp >= :FROM AND t.block_timestamp < :TO
 GROUP BY l.m
 ORDER BY l.m

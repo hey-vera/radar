@@ -5,6 +5,11 @@ Ordered by leverage to radar. Each item states what it costs us today, what the 
 would save, and why it is plausibly worth it to clawapis as well — these are not favours,
 most of them reduce their own costs or widen their market.
 
+**Status:** written, **not sent.** Eleven asks; nothing has been requested of
+clawapis and no item here has been agreed by anyone. Items 1 and 3 are the two
+that would let Radar buy all of its data pay-per-call and drop the flat-rate
+heartbeat account.
+
 Context: radar is a Solana research/trading platform that wants to buy **all** its data
 pay-per-call rather than hold flat-rate subscriptions. Today three things stop that from
 being possible. Items 1–4 are those three things.

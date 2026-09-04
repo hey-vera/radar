@@ -89,11 +89,20 @@ pub fn relative_links(markdown: &str) -> Vec<String> {
     let bytes: Vec<char> = markdown.chars().collect();
     let mut i = 0;
 
-    while i < bytes.len() {
+    // Bounded by the input length rather than by trusting the cursor to
+    // advance -- see `test_paths` below, which had the same shape and was
+    // reported by CI as two five-minute timeouts before it was changed.
+    for _ in 0..=bytes.len() {
+        if i >= bytes.len() {
+            break;
+        }
         if bytes[i] == ']' && bytes.get(i + 1) == Some(&'(') {
             let mut j = i + 2;
             let mut target = String::new();
-            while j < bytes.len() && bytes[j] != ')' {
+            for _ in 0..=bytes.len() {
+                if j >= bytes.len() || bytes[j] == ')' {
+                    break;
+                }
                 target.push(bytes[j]);
                 j += 1;
             }
@@ -327,8 +336,199 @@ pub fn crate_sources(excluding: &str) -> Vec<String> {
         .collect()
 }
 
+/// Whether `crate_name` lists `dependency` outside `[dev-dependencies]`.
+///
+/// The distinction is load-bearing rather than pedantic. `radar-pumpfun`
+/// depends on `radar-signer` under `[dev-dependencies]` so that the signer can
+/// check what the builder produces; a rule that read the whole manifest would
+/// forbid the very test that enforces rule 1. What ships is what sits above
+/// that header.
+#[must_use]
+pub fn production_dependency(crate_name: &str, dependency: &str) -> bool {
+    let manifest = root().join("crates").join(crate_name).join("Cargo.toml");
+    std::fs::read_to_string(&manifest).is_ok_and(|text| {
+        text.lines()
+            .take_while(|l| !l.trim_start().starts_with("[dev-dependencies]"))
+            .any(|l| l.split('#').next().unwrap_or("").contains(dependency))
+    })
+}
+
+/// Markdown files present in the working tree that `git` does not know about.
+///
+/// Every check in this crate reads [`known_files`], which is `git ls-files`. A
+/// markdown document is therefore checked by *nothing* until it is added to the
+/// index -- its links are not resolved, the paths it names are not verified, its
+/// status field is not required. This was found by verifying design `0004`,
+/// which passed only once it had been `git add -N`'d, and it is the same hole
+/// the justfile already closes for Rust.
+///
+/// `--exclude-standard` means `.gitignore` is the escape hatch: a scratch file
+/// that should not be checked should say so there.
+#[must_use]
+pub fn untracked_documents() -> Vec<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(root())
+        .args(["ls-files", "--others", "--exclude-standard"])
+        .output();
+    let Ok(out) = out else { return Vec::new() };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    parse_ls_files(&String::from_utf8_lossy(&out.stdout))
+        .into_iter()
+        .filter(|f| {
+            Path::new(f.as_str())
+                .extension()
+                .is_some_and(|e| e.eq_ignore_ascii_case("md"))
+        })
+        .collect()
+}
+
+/// Parses `.github/required-checks.txt` into `(context, command)` pairs.
+///
+/// Left of the first `=` is the status-check context exactly as the branch
+/// ruleset names it; right of it is how the job runs. Comments and blank lines
+/// are dropped. Split out from the test because a parser can be tested and a
+/// file read cannot.
+#[must_use]
+pub fn required_checks(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(c, r)| (c.trim().to_string(), r.trim().to_string()))
+        .collect()
+}
+
+/// Recipe names defined in the justfile.
+///
+/// A recipe is a line beginning at column zero with a name and a colon. Two
+/// shapes have to be told apart from it, and the first version of this function
+/// got both wrong:
+///
+/// - **`name := value` is a variable**, not a recipe. `cargo := env(...)` read
+///   as a recipe called `cargo`.
+/// - **A recipe may take parameters**, and they sit between the name and the
+///   colon: `mutants base="origin/main" shard="":`. Taking everything before
+///   the colon read that as a recipe nobody could ever have named, so the check
+///   reported a real recipe as missing.
+///
+/// Recipes starting with `_` are internal and are not checks.
+#[must_use]
+pub fn justfile_recipes(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter(|l| !l.starts_with([' ', '\t', '#']))
+        .filter_map(|l| {
+            let (head, rest) = l.split_once(':')?;
+            if rest.starts_with('=') {
+                return None;
+            }
+            head.split_whitespace().next()
+        })
+        .filter(|name| {
+            !name.is_empty()
+                && !name.starts_with('_')
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// Status-check contexts a workflow can actually produce.
+///
+/// Two sources, because the workflow has two shapes. A job's `name:` at four
+/// spaces of indentation is a context directly; a step's `- name:` is not, and
+/// the indentation is what tells them apart. A `matrix.recipe` list fans one
+/// job out into one context per entry, which is where five of the nine come
+/// from.
+#[must_use]
+pub fn workflow_contexts(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    for line in text.lines() {
+        if let Some(name) = line.strip_prefix("    name: ") {
+            let name = name.trim();
+            // A templated job name names no context on its own; the matrix
+            // below it does.
+            if !name.contains(TEMPLATE_OPEN) {
+                out.insert(name.to_string());
+            }
+        }
+        if let Some(list) = line.trim().strip_prefix("recipe: [")
+            && let Some(list) = list.strip_suffix(']')
+        {
+            out.extend(list.split(',').map(|r| r.trim().to_string()));
+        }
+    }
+    out
+}
+
+/// The opening of a GitHub Actions expression, spelled out so this file does
+/// not contain a literal one for a workflow linter to trip over.
+const TEMPLATE_OPEN: &str = "${{";
+
+/// Integration-test paths named anywhere in a document.
+///
+/// Normalised so that `../crates/x/tests/y.rs` from inside `docs/` and
+/// `crates/x/tests/y.rs` from the root are recognised as the same file --
+/// otherwise the rule built on this would pass precisely when the collision is
+/// between a document in `docs/` and one at the root, which is the common case.
+#[must_use]
+pub fn test_paths(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let bytes: Vec<char> = text.chars().collect();
+    let needle: Vec<char> = "/tests/".chars().collect();
+    for start in 0..bytes.len() {
+        if !bytes[start..].starts_with(needle.as_slice()) {
+            continue;
+        }
+        let is_path = |c: &char| c.is_ascii_alphanumeric() || matches!(*c, '_' | '-' | '.' | '/');
+
+        // The run of path characters containing this match, found by searching
+        // rather than by walking an index in a loop.
+        //
+        // The loops this replaces were `from -= 1` and `to += 1`, and CI
+        // reported both as timeouts: mutated to `/=` and `*=` the counters stop
+        // moving and the scan never ends, so each one cost five minutes and
+        // failed the job. A hang is a poor way to detect a bug, and a search
+        // cannot hang at all -- which is cheaper than a test that catches it
+        // after 300 seconds.
+        let from = bytes[..start]
+            .iter()
+            .rposition(|c| !is_path(c))
+            .map_or(0, |i| i + 1);
+        let to = start
+            + bytes[start..]
+                .iter()
+                .position(|c| !is_path(c))
+                .unwrap_or(bytes.len() - start);
+        let path: String = bytes[from..to].iter().collect();
+        if let Some(path) = path.strip_suffix(".rs") {
+            let path = path.trim_start_matches("../");
+            out.insert(format!("{path}.rs"));
+        }
+    }
+    out
+}
+
+/// The numbered entries in `LEARNINGS.md`, as `(number, heading)`.
+#[must_use]
+pub fn learnings_entries(text: &str) -> Vec<(u32, String)> {
+    text.lines()
+        .filter_map(|l| l.strip_prefix("## "))
+        .filter_map(|h| {
+            let (number, _) = h.split_once(". ")?;
+            Some((number.parse().ok()?, h.to_string()))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     #[test]
@@ -530,6 +730,544 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn the_documented_dependency_claims_are_true() {
+        const NOT_REACHABLE: &[&str] = &[
+            "radar_exec::pipeline::execute",
+            "radar_exec::signer_client",
+            "radar_exec::submit",
+            "radar_exec::customer_signing",
+        ];
+
+        // `README.md` and `docs/STATE.md` each carried the sentence "No
+        // production crate depends on `radar-exec`; the composition reaches it
+        // through a dev-dependency" from 2026-09-03. It was false when it was
+        // written: `radar-cli` had listed `radar-exec` under `[dependencies]`
+        // since 2026-08-31, for `radar route`.
+        //
+        // The sentence mattered more than most, because it is the one that says
+        // the shipped dependency graph cannot reach the trading path — the
+        // property AGENTS.md rule 1 exists to hold. A claim of that shape is
+        // exactly what this crate is for, so it is pinned rather than merely
+        // corrected. Three rows, deliberately: enough to make the prose
+        // falsifiable, narrow enough that ordinary manifest edits do not trip
+        // it. When one of them does trip, the fix is to re-read the paragraphs
+        // it names before editing the row.
+
+        // Row 1 — exactly one crate outside `radar-exec` depends on it.
+        // The documents may say "one production caller, and it is the router";
+        // they may not say "none".
+        let dependents: BTreeSet<String> = crate_directories()
+            .into_iter()
+            .filter(|c| c != "radar-exec")
+            .filter(|c| production_dependency(c, "radar-exec"))
+            .collect();
+        let expected: BTreeSet<String> = ["radar-cli".to_string()].into_iter().collect();
+        assert_eq!(
+            dependents, expected,
+            "the set of production crates depending on radar-exec changed. \
+             README.md and docs/STATE.md both describe this set in prose; \
+             re-read those paragraphs, correct them, then update this row"
+        );
+
+        // Row 2 — and that one caller reaches the router only. `execute` is the
+        // function that signs and sends; the crates that lead to it are its
+        // siblings. A production `use` of any of them is the trading path
+        // acquiring a caller, which is a decision about money and not a wiring
+        // change.
+        for source in crate_sources("crates/radar-exec/") {
+            let text = std::fs::read_to_string(root().join(&source))
+                .unwrap_or_else(|e| panic!("cannot read {source}: {e}"));
+            for symbol in NOT_REACHABLE {
+                assert!(
+                    code_references(&text, symbol).is_empty(),
+                    "{source} names {symbol}. Production code reaching the send \
+                     path is what README.md's \"there is no production caller \
+                     for the trading path\" denies -- correct the documents \
+                     first, or do not add the call"
+                );
+            }
+        }
+
+        // Row 2b -- the other pinned edge, and the reason it is here rather
+        // than in a rule of its own: docs/STATE.md describes `radar-provider` as
+        // the crate `radar-agent` meters through, and that sentence has already
+        // been stale once. Design 0004 §5 named this edge alongside the other
+        // two.
+        let provider_dependents: BTreeSet<String> = crate_directories()
+            .into_iter()
+            .filter(|c| c != "radar-provider")
+            .filter(|c| production_dependency(c, "radar-provider"))
+            .collect();
+        assert!(
+            provider_dependents.contains("radar-agent"),
+            "docs/STATE.md says radar-agent meters through radar-provider and the manifest does not agree; production dependents of radar-provider are {provider_dependents:?}"
+        );
+
+        // Row 3 — nothing outside `radar-exec` binds a key. Rows 1 and 2 are
+        // about a graph and a symbol; this one is about the sentence's actual
+        // subject, which is that no shipped process can sign. It is cheap and
+        // it fails for a reason the other two would miss -- a new crate that
+        // depends on `radar-signer` directly rather than through the executor.
+        //
+        // It is a *production* dependency that is forbidden, not any mention.
+        // `radar-pumpfun` lists `radar-signer` under `[dev-dependencies]` on
+        // purpose and says why in its manifest: the builder is checked by the
+        // signer, and the direction is the point. A rule that read the whole
+        // file would forbid the test that enforces rule 1.
+        for c in crate_directories() {
+            if c == "radar-exec" || c == "radar-signer" {
+                continue;
+            }
+            assert!(
+                !production_dependency(&c, "radar-signer"),
+                "{c} depends on radar-signer outside [dev-dependencies]; only radar-exec may, and only through the signer process (AGENTS.md rule 1)"
+            );
+        }
+    }
+
+    #[test]
+    fn the_context_file_stays_within_its_budget() {
+        // `AGENTS.md` is loaded on every turn of every task in this repository,
+        // and instructions in a file like it are followed at well above baseline
+        // rates -- so a line that is merely unnecessary is obeyed rather than
+        // ignored, and billed. Gloaguen et al. (MemAgents @ ICLR 2026) measured
+        // no task-success improvement from repository context files against a
+        // cost over 20% higher. See
+        // `docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md`
+        // §1.
+        //
+        // That finding was prose until this test existed, which meant the file
+        // could drift back. It went 519 -> 361 on 2026-09-03 by moving status to
+        // `docs/STATE.md`; the ceiling exists so the next fifty lines of status
+        // have to be argued for rather than merely added.
+        //
+        // **This is a budget, not a target.** Being under it is not a reason to
+        // add anything, and the right way to come back under it is almost always
+        // to move something to STATE.md, LEARNINGS.md or a check -- not to
+        // compress a rule until it misleads. Rules 1 and 3 are long on purpose:
+        // both record that an earlier, terser version of themselves was read as
+        // claiming more than it did.
+        //
+        // If a genuine new rule needs the room, raise the number in the same
+        // commit and say why. The number moving is the signal; a file quietly
+        // growing is what this prevents.
+        const CEILING: usize = 400;
+
+        let text = std::fs::read_to_string(root().join("AGENTS.md")).expect("AGENTS.md");
+        let lines = text.lines().count();
+        assert!(
+            lines <= CEILING,
+            "AGENTS.md is {lines} lines against a ceiling of {CEILING}. Move status to docs/STATE.md, war stories to LEARNINGS.md, and anything a check already enforces to a pointer -- or raise the ceiling in this commit and say what rule needed the room"
+        );
+
+        // And the other direction, because a ceiling alone is satisfied by an
+        // empty file. This is not a quality measure -- it catches the file being
+        // truncated or emptied, which is how it was lost once already
+        // (2026-09-02, a careless `git add -A`).
+        assert!(
+            lines > 150,
+            "AGENTS.md is only {lines} lines, which is too few to still contain rules 1 through 9. It has been deleted by accident before"
+        );
+
+        // `CLAUDE.md` imports it rather than restating it. Two files with the
+        // same content is two files that drift, and this repository has the
+        // comment in `CLAUDE.md` saying exactly that.
+        let claude = std::fs::read_to_string(root().join("CLAUDE.md")).expect("CLAUDE.md");
+        assert!(
+            claude.contains("@AGENTS.md"),
+            "CLAUDE.md must import AGENTS.md rather than carry its own copy of the policy"
+        );
+        assert!(
+            claude.lines().count() < 20,
+            "CLAUDE.md is {} lines. It is an import, not a second policy file",
+            claude.lines().count()
+        );
+    }
+
+    #[test]
+    fn every_learnings_entry_names_what_catches_a_recurrence_and_is_indexed() {
+        // The file opens by promising that "each entry names the check that
+        // would catch a recurrence, or says plainly that nothing does". Design
+        // 0004 §3.2 measured the promise: entries 1 to 19 kept it, 20 to 28 used
+        // a different header for a weaker thing, and five kept it in neither
+        // form. A standard the file states about itself and does not hold is
+        // the same defect as a document describing code that changed.
+        //
+        // The header is one spelling on purpose. "Nothing mechanical, the habit
+        // is X" is a valid answer -- eight entries give it -- and it is only
+        // legible as an answer when it appears in the same place as the others.
+        const HEADER: &str = "**What catches a recurrence:**";
+
+        let text = std::fs::read_to_string(root().join("LEARNINGS.md")).expect("LEARNINGS.md");
+        let entries = learnings_entries(&text);
+        assert!(
+            entries.len() > 20,
+            "LEARNINGS.md parsed to {} entries, which is too few to be right and would make the assertions below vacuous",
+            entries.len()
+        );
+
+        // Split once, on the headings, so each entry is checked against its own
+        // body rather than against the whole file.
+        let mut sections: Vec<(u32, String, String)> = Vec::new();
+        let mut current: Option<(u32, String, String)> = None;
+        for line in text.lines() {
+            if let Some(heading) = line.strip_prefix("## ")
+                && let Some((number, _)) = heading.split_once(". ")
+                && let Ok(number) = number.parse::<u32>()
+            {
+                if let Some(done) = current.take() {
+                    sections.push(done);
+                }
+                current = Some((number, heading.to_string(), String::new()));
+                continue;
+            }
+            if let Some((_, _, body)) = current.as_mut() {
+                body.push_str(line);
+                body.push('\n');
+            }
+        }
+        if let Some(done) = current.take() {
+            sections.push(done);
+        }
+
+        let mut missing = Vec::new();
+        let mut unindexed = Vec::new();
+        for (number, heading, body) in &sections {
+            if !body.contains(HEADER) {
+                missing.push(heading.clone());
+            }
+            // The index links each entry by number. A new entry with no row is
+            // not visibly absent from a table of twenty-eight, which is exactly
+            // how a navigation aid stops being one.
+            if !text.contains(&format!("| [{number}](#")) {
+                unindexed.push(*number);
+            }
+        }
+
+        assert!(
+            missing.is_empty(),
+            "these LEARNINGS entries do not say what catches a recurrence: {missing:?}. The file's own opening requires it, and {HEADER:?} is the spelling -- `nothing mechanical, the habit is ...` is a valid answer and eight entries give it"
+        );
+        assert!(
+            unindexed.is_empty(),
+            "these LEARNINGS entries have no row in the index table: {unindexed:?}. An entry missing from a table of {} is not visibly missing, which is how a navigation aid quietly stops being one",
+            sections.len()
+        );
+    }
+
+    #[test]
+    fn a_test_path_is_read_to_its_edges_and_no_further() {
+        // `test_paths` had no direct test: it was exercised only through the
+        // ownership rule, which passes trivially when there are no collisions --
+        // so a suite with zero collisions could not tell a working extractor
+        // from one that returned nothing. CI reported nine survivors here.
+        let one = |t: &str| test_paths(t).into_iter().collect::<Vec<_>>();
+
+        // A path that is the whole string. The backward walk has to stop at
+        // index 0 without reading before it, and the forward walk has to stop at
+        // the end without reading past it.
+        assert_eq!(one("crates/a/tests/b.rs"), vec!["crates/a/tests/b.rs"]);
+
+        // Surrounded by characters that are not part of a path -- a markdown
+        // link is the real case. Without a correct backward walk the opening
+        // bracket is swallowed into the path.
+        assert_eq!(
+            one("see [b](crates/a/tests/b.rs) for it"),
+            vec!["crates/a/tests/b.rs"]
+        );
+
+        // Relative from inside `docs/`, normalised to the same path. This is the
+        // whole reason the rule works between a root document and a docs/ one.
+        assert_eq!(one("../crates/a/tests/b.rs"), vec!["crates/a/tests/b.rs"]);
+
+        // Two in one line, and a `/tests/` path that is not Rust.
+        assert_eq!(
+            one("crates/a/tests/x.rs and crates/b/tests/y.rs"),
+            vec!["crates/a/tests/x.rs", "crates/b/tests/y.rs"]
+        );
+        assert!(one("crates/a/tests/fixture.json").is_empty());
+
+        // A Rust file that is not a test file. This is the case that pins the
+        // `/tests/` filter itself: without it, inverting the filter still finds
+        // every path, because the backward walk from any earlier position
+        // expands to the same string. The rule is about test files, and a `src`
+        // path must not be read as one.
+        assert!(one("crates/a/src/b.rs").is_empty());
+        assert!(one("see [x](crates/a/src/b.rs) and nothing else").is_empty());
+
+        // Prose with no path in it at all.
+        assert!(one("the tests directory").is_empty());
+        assert!(one("").is_empty());
+    }
+
+    #[test]
+    fn one_test_file_is_accounted_for_by_one_document() {
+        // Three documents make claims about behaviour: AGENTS.md says what the
+        // rules are, README.md is the front page, docs/STATE.md is what has
+        // actually been built. When two of them name the same test file, two of
+        // them are describing the same evidence -- and design 0004 §3.1 is the
+        // case for why that matters: the sentence about radar-exec was wrong in
+        // both README.md and docs/STATE.md, because it had been written twice
+        // and corrected in neither.
+        //
+        // The rule is ownership, not silence. A document that wants to mention
+        // a test links the document that owns the account instead, which is what
+        // README.md now does for the composition tests.
+        const CLAIMANTS: &[&str] = &["AGENTS.md", "README.md", "docs/STATE.md"];
+
+        let mut owner: BTreeMap<String, &str> = BTreeMap::new();
+        let mut collisions: Vec<String> = Vec::new();
+        for document in CLAIMANTS {
+            let text = std::fs::read_to_string(root().join(document))
+                .unwrap_or_else(|e| panic!("cannot read {document}: {e}"));
+            for path in test_paths(&text) {
+                if let Some(first) = owner.insert(path.clone(), document) {
+                    collisions.push(format!("{path} in both {first} and {document}"));
+                }
+            }
+        }
+        assert!(
+            collisions.is_empty(),
+            "these test files are accounted for by more than one document: {collisions:?} -- pick the one that owns the account and have the other link that document instead. Two documents describing one test is how the same sentence gets corrected in one place and not the other"
+        );
+    }
+
+    #[test]
+    fn the_required_checks_file_agrees_with_the_justfile_and_the_workflow() {
+        // The file says it itself: "Adding a check means adding it in three
+        // places: the ruleset, a workflow job, and here." Two of those three are
+        // in this repository and can be compared. The ruleset is not, which is
+        // why the file writes the `gh api` query rather than the answer -- and
+        // why LEARNINGS 13 happened, where the document describing the
+        // enforcement was the only evidence the enforcement existed.
+        //
+        // So this checks the half that is checkable: every context the file
+        // requires is one a workflow can actually produce, and every command it
+        // names is a recipe that exists.
+        let checks = std::fs::read_to_string(root().join(".github/required-checks.txt"))
+            .expect("required-checks.txt");
+        let justfile = std::fs::read_to_string(root().join("justfile")).expect("justfile");
+        let workflow =
+            std::fs::read_to_string(root().join(".github/workflows/ci.yml")).expect("ci.yml");
+
+        let checks = required_checks(&checks);
+        assert!(
+            !checks.is_empty(),
+            "required-checks.txt parsed to nothing, which would make every assertion below vacuous"
+        );
+        let recipes = justfile_recipes(&justfile);
+        let contexts = workflow_contexts(&workflow);
+
+        for (context, command) in &checks {
+            assert!(
+                contexts.contains(context),
+                "required-checks.txt requires the context {context:?}, and no job in ci.yml produces it. A required check no workflow reports is a check that never turns green. Produced: {contexts:?}"
+            );
+
+            // `github-only:` is the escape hatch and it is used once, for msrv,
+            // whose toolchain the host may not have. It is spelled out rather
+            // than inferred so that adding a second one is a deliberate act.
+            if command.starts_with("github-only:") {
+                continue;
+            }
+            let recipe = command.strip_prefix("just ").unwrap_or_else(|| {
+                panic!(
+                    "required-checks.txt maps {context:?} to {command:?}, which is neither `just <recipe>` nor `github-only: <reason>`. The point of the file is that the workflow holds no copy of the command"
+                )
+            });
+            assert!(
+                recipes.contains(recipe),
+                "required-checks.txt maps {context:?} to `just {recipe}`, and the justfile has no such recipe. Recipes: {recipes:?}"
+            );
+        }
+
+        // And the other direction, for the fan-out only. A job may exist without
+        // being required -- `mutants-shards` is one, deliberately, since
+        // `mutants` gates on it. But a recipe added to the `check` matrix is a
+        // check somebody meant to run, and one that runs while gating nothing is
+        // the quieter failure the file's own comment records about `web`.
+        let required: BTreeSet<&str> = checks.iter().map(|(c, _)| c.as_str()).collect();
+        for line in workflow.lines() {
+            if let Some(list) = line.trim().strip_prefix("recipe: [")
+                && let Some(list) = list.strip_suffix(']')
+            {
+                for recipe in list.split(',').map(str::trim) {
+                    assert!(
+                        required.contains(recipe),
+                        "ci.yml runs {recipe:?} in the check matrix and required-checks.txt does not require it. A check that runs and gates nothing looks like a gate and is not one -- require it, or take it out of the matrix"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_required_checks_parsers_read_what_the_files_actually_say() {
+        // Three parsers, three ways to be silently empty -- and an empty result
+        // makes the assertions above pass for any repository at all. Each is
+        // pinned against the shape it must not misread.
+        let parsed = required_checks(
+            "# a comment = not a check\n\n  build = just build\nmsrv = github-only: no local recipe\n",
+        );
+        assert_eq!(
+            parsed,
+            vec![
+                ("build".to_string(), "just build".to_string()),
+                (
+                    "msrv".to_string(),
+                    "github-only: no local recipe".to_string()
+                ),
+            ],
+            "a comment containing `=` must not read as a check, and the value keeps its own colons"
+        );
+
+        // Every shape this has to tell apart, including the two that were wrong
+        // on the first run: a variable assignment, and a recipe with parameters.
+        // `Web:` is here for the third conjunct in the name filter -- a name
+        // outside the allowed character set is not a recipe name, and without
+        // that clause an arbitrary capitalised line reads as one.
+        let recipes = justfile_recipes(concat!(
+            "cargo := env(\"RADAR_CARGO\", \"cargo\")\n",
+            "check: _disk build\n",
+            "    cargo test --cfg a:b\n",
+            "_disk:\n",
+            "Web:\n",
+            "mutants base=\"origin/main\" shard=\"\":\n",
+            "web:\n",
+        ));
+        assert_eq!(
+            recipes,
+            ["check", "mutants", "web"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<BTreeSet<_>>(),
+            "`:=` is a variable, a parameterised recipe is named by its first word, an indented body line is not a recipe, an underscore recipe is not a check, and `Web` is not a recipe name this repository can have"
+        );
+
+        let templated = format!("    name: {TEMPLATE_OPEN} matrix.recipe }}}}");
+        let workflow = format!(
+            "  check:\n{templated}\n        recipe: [build, tests]\n  web:\n    name: web\n    steps:\n      - name: every shard passed\n"
+        );
+        assert_eq!(
+            workflow_contexts(&workflow),
+            ["build".to_string(), "tests".to_string(), "web".to_string()]
+                .into_iter()
+                .collect::<BTreeSet<_>>(),
+            "a step name is not a context and a templated job name names none by itself"
+        );
+    }
+
+    #[test]
+    fn no_markdown_document_is_invisible_to_these_checks() {
+        // Declared first: an item after a statement is a clippy warning, and CI
+        // builds with `-D warnings`.
+        struct Probe(PathBuf);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                // Best effort on purpose: a failed assertion must not be
+                // replaced by a panic-in-drop about the cleanup.
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+
+        // The hole this closes is not hypothetical and was not found by
+        // reasoning: design 0004 was written, run against this suite, and
+        // passed -- because the suite could not see it. It passed for real only
+        // after `git add -N`. Everything in this crate reads `git ls-files`, so
+        // an unstaged document is checked by nothing at the moment when its
+        // links and its claims are most likely to be wrong.
+        //
+        // The justfile already guards the identical hole for Rust. This is that
+        // guard for prose.
+        let untracked = untracked_documents();
+        assert!(
+            untracked.is_empty(),
+            "these markdown files exist but git does not know about them, so every check in this crate silently skipped them: {untracked:?} -- run `git add -N <path>` to make them visible, or add them to .gitignore to say they are not documents"
+        );
+
+        // And the other half, in the same test rather than its own, because a
+        // second test creating an untracked file would race the assertion above.
+        //
+        // The assertion above is satisfied by a function that always returns
+        // nothing, which is exactly what CI reported: two survivors that gutted
+        // `untracked_documents` and nothing failed. A rule that cannot tell "no
+        // untracked documents" from "I did not look" is LEARNINGS 5, and this
+        // crate exists to catch that shape.
+        // Skipped where there is no git directory to ask -- under `cargo
+        // mutants`, which works in a copy of the sources without one. There
+        // `untracked_documents` is dead whatever its body says, so failing here
+        // would be failing for the environment. `.cargo/mutants.toml` records
+        // the two mutants that consequently survive a mutation run, as
+        // unreachable in that sandbox rather than as equivalent: they are not
+        // equivalent, they disable the rule.
+        //
+        // Written inline rather than as a `git_is_usable()` helper, which was
+        // the first attempt: a function whose only job is to gate a test is a
+        // function whose mutation to `false` skips the test and can never be
+        // killed. Introducing an unkillable mutant to kill two others is a bad
+        // trade.
+        if !root().join(".git").exists() {
+            return;
+        }
+
+        let probe = Probe(root().join("zz-untracked-probe.md"));
+        std::fs::write(&probe.0, "# not a document, a probe\n").expect("write the probe");
+        let seen = untracked_documents();
+        assert!(
+            seen.iter().any(|f| f.ends_with("zz-untracked-probe.md")),
+            "untracked_documents did not report a markdown file that is present and untracked, so the assertion above proves nothing. It saw: {seen:?}"
+        );
+    }
+
+    #[test]
+    fn every_numbered_document_declares_a_status() {
+        // Design 0004 measured this convention at 38 of 48: every ADR carried
+        // `**Status:**` and ten research notes did not -- and the ten were the
+        // oldest, which is to say the ones most likely to have been overtaken.
+        // A reader cannot tell an old note that still holds from one that was
+        // corrected two months ago, and the notes that were corrected are
+        // exactly the ones a fresh session is most likely to reason from.
+        //
+        // The field is deliberately free text rather than an enum. In
+        // `docs/adr/` it says accepted or superseded; in `docs/research/` it
+        // says how strongly the thing was measured, which is a sentence and not
+        // a keyword. What is checkable is that the question was answered at all,
+        // near the top, where somebody skimming will see it.
+        const HEADER_LINES: usize = 15;
+
+        let mut missing = Vec::new();
+        for dir in ["docs/adr", "docs/design", "docs/research"] {
+            let path = root().join(dir);
+            let entries = std::fs::read_dir(&path)
+                .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
+            for entry in entries {
+                let file = entry.expect("directory entry").path();
+                if file.extension().is_none_or(|e| e != "md") {
+                    continue;
+                }
+                // `README.md` describes a directory rather than making a claim
+                // in it, so there is nothing for a status to be about.
+                if file.file_name().is_some_and(|n| n == "README.md") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&file)
+                    .unwrap_or_else(|e| panic!("cannot read {}: {e}", file.display()));
+                if !text
+                    .lines()
+                    .take(HEADER_LINES)
+                    .any(|l| l.contains("**Status:**"))
+                {
+                    missing.push(format!("{dir}/{}", file.file_name().unwrap().display()));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "these documents do not declare a status in their first {HEADER_LINES} lines: {missing:?} -- a numbered document without one cannot be told apart from a superseded one, and the oldest are the likeliest to have been overtaken; say what it is worth now, in a sentence, not a keyword"
+        );
     }
 
     #[test]

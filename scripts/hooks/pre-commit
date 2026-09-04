@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+#
+# Refuses a commit on `main`, and prints the staged diffstat.
+#
+# Design 0002 §5. Both halves are against accidents that have already happened
+# here and that AGENTS.md §7 already forbade in prose:
+#
+#   - a commit landed on local `main` and had to be moved by hand;
+#   - `git add -A` swept unrelated files into a commit whose message described
+#     something else, and on 2026-09-02 deleted AGENTS.md that way. A deleted
+#     file is the change least likely to look wrong in a diffstat nobody opened,
+#     so this opens it.
+#
+# It **fails open**. Anything it cannot determine is not grounds to block
+# somebody's commit -- a hook that refuses for its own reasons is worse than no
+# hook, and this one is installed on the owner's machine. The only refusal is
+# the branch check, which is unambiguous.
+#
+# Install:  just hooks
+# Bypass:   git commit --no-verify   (deliberate, and it leaves no trace, so
+#                                     prefer moving the commit to a branch)
+
+set -uo pipefail
+
+branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+
+if [ "$branch" = "main" ]; then
+    cat >&2 <<'MSG'
+
+  refusing: this commit would land on local `main`.
+
+  Work goes on a branch and reaches `main` through a pull request; the ruleset
+  enforces that on the remote, and this is the same rule ten seconds earlier
+  rather than after the fact. A commit already made here has to be moved by
+  hand.
+
+      git branch <name>
+      git reset --hard origin/main
+      git switch <name>
+
+  If this really is intended, `git commit --no-verify`.
+
+MSG
+    exit 1
+fi
+
+# Not a refusal. The staged diff is what the message has to describe, and the
+# cheapest way to notice a file nobody meant to include is to see it named.
+staged=$(git diff --cached --stat 2>/dev/null || true)
+if [ -n "$staged" ]; then
+    printf '\n  staged (%s):\n\n' "${branch:-detached HEAD}" >&2
+    printf '%s\n' "$staged" | sed 's/^/    /' >&2
+
+    # Deletions specifically, because that is the one that cost this repository
+    # a file, and a diffstat line for a deletion reads like any other.
+    deleted=$(git diff --cached --name-only --diff-filter=D 2>/dev/null || true)
+    if [ -n "$deleted" ]; then
+        printf '\n  deleting:\n\n' >&2
+        printf '%s\n' "$deleted" | sed 's/^/    /' >&2
+        printf '\n  If the message does not say why, it is not describing this commit.\n' >&2
+    fi
+    printf '\n' >&2
+fi
+
+exit 0

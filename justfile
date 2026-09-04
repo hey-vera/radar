@@ -171,7 +171,17 @@ mutants base="origin/main" shard="":
     #
     # Sharding is what buys the parallelism now, across machines that each have
     # their own disk, rather than inside one.
-    {{ cargo }} mutants --in-diff "$diff_file" --jobs 1 $shard_arg         --timeout 300 --minimum-test-timeout 60 -- --offline
+    # `--timeout 60`, lowered from 300 on 2026-09-03. That budget existed
+    # because a mutant that hangs was an expected outcome: several loops in this
+    # workspace were a single mutation away from never terminating, and each one
+    # cost a runner five full minutes to report nothing useful. Two of them took
+    # ten minutes of a fourteen-minute shard in one run.
+    #
+    # Those loops are bounded now, so a timeout is a signal rather than a cost of
+    # doing business. If this fires, the mutant found a loop that can be made not
+    # to terminate -- fix the loop, do not raise the number back. Raise it only
+    # for a genuinely slow *test*, and say which test in the same commit.
+    {{ cargo }} mutants --in-diff "$diff_file" --jobs 1 $shard_arg         --timeout 60 --minimum-test-timeout 60 -- --offline
 
 # Advisories, licences, and source provenance.
 cargo-deny:
@@ -316,6 +326,18 @@ tidy:
     before=$(du -sk target 2>/dev/null | awk '{print int($1/1048576)}' || echo 0)
     rm -rf target/debug mutants.out mutants.out.old
     echo "freed ~${before}GB of build cache; the next build starts cold."
+
+# Points git at the versioned hooks. Run once per clone.
+hooks:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # `core.hooksPath` rather than copying into `.git/hooks`: the hook is then
+    # the file in the tree, so a change to it takes effect without reinstalling
+    # and a review of the hook is a review of the diff.
+    git config core.hooksPath scripts/hooks
+    chmod +x scripts/hooks/* 2>/dev/null || true
+    echo "hooks: $(git config --get core.hooksPath)"
+    echo "undo with: git config --unset core.hooksPath"
 
 # --- operator commands --------------------------------------------------------
 

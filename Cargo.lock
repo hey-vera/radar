@@ -1403,6 +1403,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-analyst"
+version = "0.0.1"
+dependencies = [
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "radar-asof"
 version = "0.0.1"
 dependencies = [
@@ -1431,14 +1441,18 @@ dependencies = [
 name = "radar-cli"
 version = "0.0.1"
 dependencies = [
+ "radar-analyst",
  "radar-asof",
  "radar-backfill",
  "radar-decode",
  "radar-exec",
  "radar-graph",
  "radar-instruments",
+ "radar-model",
+ "radar-onchain",
  "radar-research",
  "radar-risk",
+ "radar-roast",
  "radar-sim",
  "radar-store",
  "radar-strategy",
@@ -1528,6 +1542,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-onchain"
+version = "0.0.1"
+dependencies = [
+ "radar-decode",
+ "radar-pumpfun",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
 name = "radar-provider"
 version = "0.0.1"
 dependencies = [
@@ -1578,6 +1605,19 @@ dependencies = [
  "radar-types",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "radar-roast"
+version = "0.0.1"
+dependencies = [
+ "radar-agent",
+ "radar-model",
+ "radar-onchain",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
 ]
 
 [[package]]

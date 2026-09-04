@@ -11,14 +11,17 @@ use std::process::ExitCode;
 
 use radar_asof::AsOf;
 use radar_instruments::{Context, CreatorHistory, CreatorTrackRecord, Registry, SimulateExit};
+mod analyst;
 mod basis;
 mod brief;
 mod consider;
 mod control;
 mod cost;
+mod dossier;
 mod exits;
 mod graduations;
 mod replay;
+mod roast;
 mod route;
 mod selection;
 mod study;
@@ -75,6 +78,25 @@ commands:
   cost --from <ts> --to <ts>     what a round trip costs, bucketed by notional;
                                  re-derives the 850 bps constant and says
                                  whether it is fixed or proportional
+  dossier <mint> [--rpc URL] [--seconds N]
+                                 everything Radar can say about one token, read
+                                 from the chain on demand rather than from the
+                                 store. Works for a mint forty seconds old, which
+                                 the store cannot: it is minutes behind by design
+                                 and holds the launch-block verdict rather than
+                                 the number. Read-only, holds no key
+  roast <mint> [--rpc URL] [--rates PATH] [--sheet]
+                                 the reply the public analyst would post, built
+                                 from the dossier and the published base rates.
+                                 The model picks the headline and the tone; a
+                                 check after generation refuses any number that
+                                 is not on the fact sheet, and the deterministic
+                                 template ships instead. Prints; never posts
+  analyst --mentions <file.jsonl> [--log <file>]
+                                 the whole summoned-reply loop over mentions
+                                 from a file: strict parse, admission gate,
+                                 dossier, reply, log. Dry run -- it holds no
+                                 credential and posts nothing
   exits --store <dir> [--cost-bps N]
                                  would a stop or a take-profit have beaten
                                  holding; reports both tie-break bounds
@@ -649,6 +671,9 @@ fn main() -> ExitCode {
         "route" => route::run(&args),
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
+        "dossier" => dossier::run(&args),
+        "roast" => roast::run(&args),
+        "analyst" => analyst::run(&args),
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
         "control" => control_report(&args),

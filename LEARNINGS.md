@@ -11,6 +11,51 @@ benefit of the doubt on everything else.
 
 ---
 
+## Index
+
+**20 of these 28 name something mechanical that would catch a
+recurrence. 8 name only a habit, and say so** — which is this file's opening
+standard rather than a gap in it. The habit-only rows are the ones worth reading
+twice; nothing will stop those repeating except somebody remembering.
+
+Generated from each entry's heading and its `What catches a recurrence:` line.
+`repo-conformance` checks that every entry has that line and that this table has
+a row for every entry, so a new entry with no row fails rather than being
+quietly absent.
+
+| # | What it was | What catches it |
+|---|---|---|
+| [1](#1-a-design-documented-as-canonical-with-its-source-lost) | A design documented as canonical, with its source lost | `repo-conformance`, this crate's reason to exist |
+| [2](#2-a-test-that-asserted-an-implementation-detail-it-had-guessed) | A test that asserted an implementation detail it had guessed | the test suite, but only by luck |
+| [3](#3-an-exact-match-on-a-name-that-had-been-versioned) | An exact-match on a name that had been versioned | printing the evidence beside the conclusion |
+| [4](#4-two-u64s-that-swap-meaning-between-instruction-variants) | Two `u64`s that swap meaning between instruction variants | the unit now lives in the type ([`Amount::Tokens`]… |
+| [5](#5-reading-an-empty-result-as-a-pass) | Reading an empty result as a pass | *habit only* |
+| [6](#6-a-constant-that-grew-a-member-the-callers-could-not-handle) | A constant that grew a member the callers could not handle | `Table::EVENT_TABLES` now exists alongside `ALL`,… |
+| [7](#7-a-filter-that-was-right-for-one-instruction-and-inverted-for-another) | A filter that was right for one instruction and inverted for another | the resolution is now keyed on the instruction,… |
+| [8](#8-a-daemon-that-exited-on-a-transient-upstream-error) | A daemon that exited on a transient upstream error | follow mode no longer exits on a query error. It… |
+| [9](#9-an-invariant-documented-as-stronger-than-its-enforcement) | An invariant documented as stronger than its enforcement | `radar-store/tests/watermark_holds.rs` |
+| [10](#10-a-hardcoded-probe-size-that-made-the-answer-a-constant) | A hardcoded probe size that made the answer a constant | `discover_capacity` removes the constant entirely |
+| [11](#11-a-vendors-derived-field-trusted-as-a-measurement) | A vendor's derived field, trusted as a measurement | `discover_capacity` derives impact from the… |
+| [12](#12-an-aggregate-that-included-an-event-that-was-not-a-trade) | An aggregate that included an event that was not a trade | the query asserts its own filter… |
+| [13](#13-documentation-that-asserted-a-state-instead-of-a-way-to-check-it) | Documentation that asserted a state instead of a way to check it | *habit only* |
+| [14](#14-a-fix-for-one-instance-of-a-problem-mistaken-for-a-fix-for-the-problem) | A fix for one instance of a problem, mistaken for a fix for the problem | the floor is a share of the mint's own median… |
+| [15](#15-a-binary-deployed-ahead-of-the-configuration-it-needed) | A binary deployed ahead of the configuration it needed | stating the ordering in the runbook, at the top,… |
+| [16](#16-a-security-property-argued-in-a-comment-and-then-actually-run) | A security property argued in a comment, and then actually run | the run itself, kept |
+| [17](#17-a-schema-change-that-would-have-made-the-history-unreadable) | A schema change that would have made the history unreadable | `older_files_still_read.rs`, which builds a… |
+| [18](#18-two-instruments-compared-as-if-they-were-one) | Two instruments compared as if they were one | `radar basis`, which measures the gap instead of… |
+| [19](#19-a-counter-that-counts-the-same-thing-again-every-hour) | A counter that counts the same thing again every hour | the consumer no longer asks `fills`. It asks… |
+| [20](#20-a-bound-that-was-a-date-not-a-width) | A bound that was a date, not a width | *habit only* |
+| [21](#21-a-monitor-whose-window-was-longer-than-the-outage) | A monitor whose window was longer than the outage | *habit only* |
+| [22](#22-an-exemption-whose-reasoning-named-the-wrong-quantity) | An exemption whose reasoning named the wrong quantity | *habit only* |
+| [23](#23-a-guarantee-that-was-about-a-bug-described-as-being-about-an-attacker) | A guarantee that was about a bug, described as being about an attacker | *habit only* |
+| [24](#24-three-constraints-that-were-each-correct-and-could-not-all-hold) | Three constraints that were each correct and could not all hold | `radar route` |
+| [25](#25-a-published-interface-that-was-not-the-deployed-program) | A published interface that was not the deployed program | the fixture-first ordering ADR 0009 requires: every… |
+| [26](#26-a-shard-that-was-never-run-behind-a-shard-that-failed-loudly) | A shard that was never run, behind a shard that failed loudly | the `mutants` job |
+| [27](#27-half-a-cache-key-left-to-the-caller-to-remember) | Half a cache key, left to the caller to remember | *habit only* |
+| [28](#28-a-mutant-that-killed-the-machine-so-the-check-could-not-report) | A mutant that killed the machine, so the check could not report | *habit only* |
+
+---
+
 ## 1. A design documented as canonical, with its source lost
 
 **Found:** 2026-08-22, while evaluating whether to reuse a sibling repo.
@@ -25,7 +70,7 @@ disagree with each other about a constant.
 built", which was wrong in a way that mattered — it was built, and the source is
 gone. Correcting it required going back through the evidence.
 
-**What catches a recurrence here:** `repo-conformance`'s
+**What catches a recurrence:** `repo-conformance`'s
 `every_file_path_named_in_the_documentation_exists_and_is_tracked`, written on
 2026-08-25 — the check this entry asked for on the day it was opened.
 
@@ -812,6 +857,10 @@ assert and cheap to test, and the gap between the two is where entries 1, 9 and
 13 live. If a claim is worth a paragraph of comment, it is worth the twenty
 minutes of running the attack it describes.
 
+**What catches a recurrence:** the run itself, kept. A security property
+argued in a comment is an assertion; the same property with a failing run beside
+it is a check.
+
 ---
 
 ## 17. A schema change that would have made the history unreadable
@@ -1038,7 +1087,8 @@ A launch block is only ever asked about for a candidate, and the candidate windo
 is 216,000 slots — about a day. The bound had been thirty times wider than
 anything it could be asked about, and widening.
 
-**The check:** a bound relative to a fixed point in time is a bound that grows.
+**What catches a recurrence:** nothing mechanical. The habit: a bound relative
+to a fixed point in time is a bound that grows.
 If the window is meant to be a width, write it as a width, and test that two
 moments a year apart produce the same one.
 
@@ -1060,7 +1110,8 @@ one of three runs for a collapse in progress. Three rather than one because the
 per-run unreadable share genuinely does move between 5% and 40%, and a monitor
 that fires on weather teaches its reader to ignore it.
 
-**The check, and it is a question to ask of every monitor here:** how long does
+**What catches a recurrence:** nothing mechanical, and the habit is a question
+to ask of every monitor here: how long does
 this take to notice the thing it watches for? Compare that against how long the
 thing takes to do its damage. A monitor slower than its failure is reporting
 history.
@@ -1101,6 +1152,13 @@ only cases derived from what the code does. Every existing test in this file was
 of the second kind, which is why forty of them passed over a wallet-draining
 transaction.
 
+**What catches a recurrence:** nothing mechanical, and it is two habits.
+When an exemption is justified by a concern, confirm the exempted quantity is
+the one the concern is about — here "a large sale" and "lamports transferred
+out" were treated as the same thing across one sentence. And a security check
+needs at least one test written from the attacker's side: *what is the worst
+transaction that passes this?*
+
 ## 23. A guarantee that was about a bug, described as being about an attacker
 
 Found immediately after entry 22, in a document written the same day.
@@ -1120,7 +1178,8 @@ Isolating the key is still worth doing: it stops the key being exfiltrated and
 used later or elsewhere, which is most of the value. But the sentence claimed the
 other thing.
 
-**The check:** when writing down what a boundary protects against, name the
+**What catches a recurrence:** nothing mechanical. The habit: when writing down
+what a boundary protects against, name the
 adversary. "Protects against a mistake" and "protects against an attacker" are
 different claims, they are one word apart in English, and a design note that
 means the first while saying the second is how a system ends up trusting a
@@ -1168,6 +1227,13 @@ did not say "and this requires every venue we trade on to offer legacy routing",
 because that consequence lived in a different crate and nobody owned the sentence
 that joined them.
 
+**What catches a recurrence:** `radar route`, which is the production caller
+the pipeline did not have. A component with no production caller has not been
+tested however many tests it has, because its traits are satisfied by stubs
+shaped like what the author expected. The habit alongside it: when a decision
+constrains an external system ("we will only accept X"), write down what happens
+if that system stops offering X, and go and look.
+
 ## 25. A published interface that was not the deployed program
 
 pump.fun publishes an Anchor IDL on chain, signed into an account by the program
@@ -1204,6 +1270,12 @@ a search has been exhausted, the next authority is the runtime. Two accounts are
 still unidentified, and the way to learn whether they matter is to simulate a
 transaction without them and read the error — not to widen the search again.
 
+**What catches a recurrence:** the fixture-first ordering ADR 0009 requires:
+every discriminator and account in `radar-pumpfun` comes from a mainnet capture,
+and a buy rebuilt from one simulates without error. The habit: let the reference
+propose and let the capture dispose — including a first-party reference signed
+on chain by the program authority.
+
 ## 26. A shard that was never run, behind a shard that failed loudly
 
 The mutation job was split across four parallel runners to make it finish
@@ -1234,7 +1306,10 @@ than when it found nothing** — and splitting work across workers is a
 particularly easy way to lose that property, because each worker reports on
 itself and nothing reports on the union.
 
-Worth doing when sharding anything: assert the parts sum to the whole.
+**What catches a recurrence:** the `mutants` job, which gates on
+`needs.mutants-shards.result == success` and treats `skipped` and `cancelled`
+as failures, so a shard that did not run can no longer pass quietly. The habit
+when sharding anything: assert the parts sum to the whole.
 
 ## 27. Half a cache key, left to the caller to remember
 
@@ -1269,7 +1344,8 @@ caller can forget to check it. `Cache<Report>` for the scoreboard,
 `Cache<TokenEvidence, String>` for the token, and the fall-through that caused
 this cannot be written.
 
-**The check:** if a cache's correctness depends on a caller comparing something,
+**What catches a recurrence:** nothing mechanical. The habit: if a cache's
+correctness depends on a caller comparing something,
 that something is part of the key. A comment saying a caller must check is a
 comment saying the type is wrong.
 
@@ -1311,5 +1387,6 @@ the infrastructure.** Sharding is deterministic, so the same shard drawing the
 same fatal mutant every time is a signature. The tell was there in the first
 log: shard 1, every run, same three minutes.
 
-**The check:** when one shard of a parallel job dies and the rest pass, look at
+**What catches a recurrence:** nothing mechanical. The habit: when one shard of a
+parallel job dies and the rest pass, look at
 what that shard was given before looking at the runner.

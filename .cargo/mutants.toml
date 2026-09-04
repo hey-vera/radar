@@ -1,7 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
 #
-# Mutants that survive because they are *equivalent*, not because a test is
-# missing.
+# Mutants that survive for a reason other than a missing test.
+#
+# Two categories, and they are not the same claim:
+#
+#   1. **Equivalent** -- the mutation cannot change behaviour. Most of this file.
+#   2. **Unreachable in the mutation sandbox** -- the mutation *would* change
+#      behaviour, and a test does cover it, but `cargo mutants` works in a copy
+#      of the sources with no `.git`, so the code path is dead there whatever its
+#      body says. Marked explicitly, because calling one of these "equivalent"
+#      would be exactly the wrong claim the paragraph below warns about.
 #
 # This file is the place where "we looked and it does not matter" is written
 # down. It has to stay short. Every entry is a claim that a mutation cannot
@@ -130,4 +138,65 @@ exclude_re = [
     # covered where the implementations live -- the mutation of the CryptoHouse
     # one is caught.
     'replace LaunchBlockSource::bundle_slots -> Result<Vec<\(u64, LaunchBlockShape\)>, Self::Error> with Ok\(vec!\[\]\)',
+    # `radar-onchain`'s `decode_base64`: the accumulator is
+    # `buffer = (buffer << 6) | value`, where `value` is a position in a
+    # 64-character alphabet and so is always under 64. Shifting left by six
+    # leaves the low six bits of `buffer` zero, and `value` sets only those six
+    # bits, so the two operands share no set bit and `|` and `^` are the same
+    # value. Nothing a test could distinguish.
+    #
+    # Same argument as `encode_url` above, and verified the same way: the
+    # mutation was applied by hand and the crate's suite -- which round-trips
+    # all 256 byte values through the decoder and sweeps every padding class --
+    # passes identically, because the two expressions are equal rather than
+    # because the tests are weak.
+    'replace \| with \^ in decode_base64',
+    # `radar-roast`'s `round_to`: `(v * factor).round() / factor` mutated to
+    # `... * factor`. Its only caller compares two of its results for equality:
+    #
+    #     round_to(*a, decimals) == round_to(value, decimals)
+    #
+    # Both sides go through the same transform, and multiplying by a positive
+    # finite `factor` is strictly monotone, so
+    #
+    #     (a*f).round()/f == (v*f).round()/f   <=>   (a*f).round() == (v*f).round()
+    #     (a*f).round()*f == (v*f).round()*f   <=>   (a*f).round() == (v*f).round()
+    #
+    # The two forms decide the same question. They differ in the *value*
+    # returned, which nothing reads -- `round_to` is private and has exactly one
+    # call site, checked above. If a second caller ever wants the rounded number
+    # itself, this entry stops being true and must come out.
+    #
+    # Applied by hand and the crate's suite passes identically, including the two
+    # tests added on 2026-09-03 that pin the epsilon branch either side of its
+    # boundary. It passes because the expressions agree, not because the tests
+    # are weak.
+    'replace / with \* in round_to',
+
+    # --- category 2: unreachable in the mutation sandbox ---------------------
+    #
+    # `untracked_documents` shells out to `git ls-files --others`. It is covered
+    # by the probe in `no_markdown_document_is_invisible_to_these_checks`, which
+    # writes an untracked markdown file, asserts the function reports it, and
+    # removes it again -- and that probe runs in `just tests` and in CI, where
+    # there is a git directory.
+    #
+    # `cargo mutants` copies the sources to a scratch tree with no `.git`, so
+    # `git ls-files` fails there and the function returns empty whatever its body
+    # says. Both mutations below are therefore invisible to a mutation run and
+    # visible to the test suite. They are **not equivalent** -- each one disables
+    # the rule that a new markdown document is checked before it is committed.
+    #
+    # If `cargo mutants` ever runs against a real checkout, delete these two
+    # lines first and confirm the probe kills them.
+    'replace untracked_documents -> Vec<String> with vec!\[\]',
+    'delete ! in untracked_documents',
 ]
+
+# A note on what does NOT belong here, learned on 2026-09-03 and worth the four
+# lines. A `git_is_usable()` helper was added so the probe above could skip
+# itself where there is no git directory. CI immediately reported
+# `replace git_is_usable -> bool with false` as a survivor, and it was right: a
+# function whose only job is to gate a test is a function whose mutation skips
+# the test, and nothing can ever kill it. The gate is inline now. Do not add a
+# helper here to silence a mutant -- it adds one that cannot be silenced.

@@ -1,8 +1,13 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
 # 0005 — The first end-to-end decision pass
 
 **Date:** 2026-08-23
 **Command:** `radar consider --store <store>`
 **Store:** the live guardian VPS recorder, copied at slot 441068845
+**Status:** a run, not a measurement. It establishes that the decision lane
+executes end to end. It establishes nothing about whether `creator_edge` works —
+see its own "What it does not establish" — and that question was answered later
+by [`0007`](0007-does-creator-history-predict-anything.md).
 
 ## What was run
 

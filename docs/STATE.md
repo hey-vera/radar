@@ -93,16 +93,16 @@ Both were measured on a two-day window at 72,193 launches. The store now holds
 re-ran both on 2026-09-03.
 
 **The launch-block signal did not survive intact.** `0008`'s headline — 68% of
-instantly-graduating launches have exactly six recipients — is **25.6%** on
-18,268 launches. The enrichment over the 5.2% control is real; the magnitude was
+instantly-graduating launches have exactly six recipients — is **25.1%** on
+17,497 launches. The enrichment over the 5.5% control is real; the magnitude was
 wrong by 2.7×, and the "spike with holes either side" that made the structural
 argument was sampling rather than structure. The strongest band has moved off six
-to **ten to thirteen** (11.0× base). `0008` predicted exactly this failure — *"six
+to **ten to thirteen** (10.1× base). `0008` predicted exactly this failure — *"six
 is a tool's default, not a law"* — and nothing was built to notice it, so it was
 found nine days later by hand.
 
 What replaces it is stronger and points the same way the project already points:
-**one to three recipients covers 71.6% of launches and graduates instantly in
+**one to three recipients covers 70.5% of launches and graduates instantly in
 0.02% of them.** The reliable signal is the refusal.
 
 **The creator signal strengthened.** `0007`'s separation holds on 2,957 creators
@@ -181,9 +181,12 @@ does not pay for itself never reaches the process holding the key. And
 which is what makes the other tests statements about the lane rather than about
 the fixture.
 
-**What it does not.** No production crate depends on `radar-exec`; the
-composition reaches it through a dev-dependency, so the shipped dependency graph
-is unchanged. Nothing has been signed, sent, or filled.
+**What it does not.** One production crate depends on `radar-exec`:
+`radar-cli` reaches `radar_exec::route` for `radar route`, which prints unsigned
+bytes. Nothing in production reaches `pipeline::execute`, the signer client or
+the submitter — the composition reaches *those* through a dev-dependency, so the
+shipped graph still cannot sign. Nothing has been signed, sent, or filled.
+`repo-conformance`'s `the_documented_dependency_claims_are_true` pins it.
 
 **As of 2026-09-01 the pipeline's traits have real implementations**, which they
 did not before: `Routing` and `Sending` were satisfied only by stubs inside
@@ -198,6 +201,25 @@ inert.
 **There is still no production caller** for the *trading* path. Nothing invokes
 the pipeline, for the local wallet or a customer's. Writing one is opening the
 trading path, and it is a decision about money rather than a wiring task.
+
+**The customer lane also composes, as of 2026-09-01**, in
+[`the_customer_lane_composes.rs`](../crates/radar-exec/tests/the_customer_lane_composes.rs),
+and its shape differs from the local one in the way that matters: **no process in
+Radar can produce a signature on its own.** Three parties hold one thing each —
+the executor an application credential that authorises nothing, `radar-signer` a
+P-256 key that authorises one request it has checked, and Privy the wallet key.
+Moved here from AGENTS.md rule 1 on 2026-09-03: it is status, and rule 1 is a
+rule.
+
+**What that test establishes.** An authorised trade reaches Privy signed. A trade
+for another token stops **inside Radar** and never reaches the network. A
+`Policy::CLOSED` in the signer's own file refuses the identical request a
+permissive one allows. The body Privy receives is the body the signer authorised.
+A spent signature allowance refuses before anything is signed. The signer in it
+is the real `verify::check`, not a stub.
+
+**What it does not.** Nothing has been signed by Privy, sent, or filled, and no
+customer has ever existed. `Policy::CLOSED` is still what ships.
 
 `radar route` is the first thing that runs any of it. It builds a swap
 transaction and describes it, holding no key and no RPC endpoint, so it cannot
@@ -264,8 +286,8 @@ nothing has ever tested.
   a restart. That is rule 8 enforced in the running system.
 
   What does not: `Cache`, `Breaker` and the planner are exported and **called
-  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 712 of
-  its 1,876 lines. This is the third documented-as-central layer with no caller
+  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 733 of
+  its 1,897 lines. This is the third documented-as-central layer with no caller
   ([LEARNINGS](../LEARNINGS.md) 1 and 9 are the same shape), and it should be
   wired to a real caller or deleted rather than left a third time.
 

@@ -23,15 +23,20 @@ said it was *"built and tested end to end"* with *"nothing missing"*. That
 sentence is exactly what [LEARNINGS](LEARNINGS.md) 10 retracts, so here is the
 distinction it was hiding:
 
-- **Composed** — `radar-exec`'s
-  [`lane_composes.rs`](crates/radar-exec/tests/lane_composes.rs) and
-  [`the_customer_lane_composes.rs`](crates/radar-exec/tests/the_customer_lane_composes.rs)
-  run strategy → kernel → signer → executor, and `Policy::CLOSED` refuses what a
-  permissive policy authorises.
-- **Not exercised** — nothing has been signed by a wallet, sent, or filled. No
-  production crate depends on `radar-exec`; the composition reaches it through a
-  dev-dependency. **There is no production caller for the trading path**, and
-  writing one is a decision about money rather than a wiring task.
+- **Composed** — `radar-exec`'s composition tests run strategy → kernel →
+  signer → executor, and `Policy::CLOSED` refuses what a permissive policy
+  authorises. [docs/STATE.md](docs/STATE.md) owns the account of what those
+  tests do and do not establish, for the local lane and the customer one, and
+  names them.
+- **Not exercised** — nothing has been signed by a wallet, sent, or filled.
+  One production crate depends on `radar-exec`: `radar-cli`, which reaches
+  `radar_exec::route` for `radar route` and prints unsigned bytes. Nothing in
+  production reaches `pipeline::execute`, the signer client or the submitter, so
+  **there is no production caller for the trading path**, and writing one is a
+  decision about money rather than a wiring task. `repo-conformance`'s
+  `the_documented_dependency_claims_are_true` pins all three statements; the
+  earlier claim that *nothing* depended on `radar-exec` was false from
+  2026-08-31 and went uncaught for three days (LEARNINGS 29).
 - **`Policy::CLOSED` has never refused a real proposal, because it has never been
   handed one.** A live run over 41,254 candidates raised zero proposals — the
   cause was a hardcoded probe size that made a proposal arithmetically
@@ -106,12 +111,15 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-sim` | Exit analysis. Structural disqualification from the mint account, then a measured sell curve — never a single liquidity number. |
 | `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
 | `radar-strategy` | Deterministic strategies. They emit proposals, which are inert data, and assemble candidates in one place so look-ahead is prevented once rather than per strategy. |
-| `radar-graph` | Coordination detection. Scores what a launch block contained. Its thresholds derive from [0008](docs/research/0008-the-launch-block-gives-the-bundle-away.md), which [0024](docs/research/0024-the-spike-became-a-hump-and-the-signal-moved.md) superseded on 18,268 launches: exactly six recipients is **25.6%** of instant graduations, not 68%, and the strongest band has moved to ten-to-thirteen. The rule has not been re-derived. |
+| `radar-graph` | Coordination detection. Scores what a launch block contained. Its thresholds derive from [0008](docs/research/0008-the-launch-block-gives-the-bundle-away.md), which [0024](docs/research/0024-the-spike-became-a-hump-and-the-signal-moved.md) superseded on 17,497 launches: exactly six recipients is **25.1%** of instant graduations, not 68%, and the strongest band has moved to ten-to-thirteen. The rule has not been re-derived. |
 | `radar-research` | Replay. Re-runs a recorded decision at its original watermark and separates a store that gained history from a strategy that is not a pure function of its inputs. |
 | `radar-signer` | A separate process holding the key. Re-decodes every transaction and trusts nothing the caller said about it. |
 | `radar-exec` | Route, gate, sign, submit, reconcile. The last stage, and the one holding the least authority. |
 | `radar-pumpfun` | Builds pump.fun instructions and prices them off the bonding curve. Pure: no clock, no network, no key. The curve is `x·y=k` over published reserves, so a fill is computed rather than quoted — see ADR 0009. |
 | `radar-customer` | The customer model. Pure: a bounded grant derived from the kernel's authorisation, and a signature meter. No account table — see ADR 0006. |
+| `radar-onchain` | The on-demand chain read behind `radar dossier`. Rebuilds a token's launch block and prices its curve from RPC in a bounded number of calls, for a mint that may be forty seconds old — which the store cannot answer, being minutes behind by design and holding the launch-block verdict rather than the number. Read-only: no key, no signer in its tree. |
+| `radar-roast` | The public analyst's reply. A typed fact sheet built from the dossier and the published base rates, a deterministic verdict, a voice pass that picks the headline and the tone, and two checks after generation: every numeral must appear on the sheet, and a list of claims may never be published. Either check failing ships the deterministic template instead. Prints; it holds no credential and cannot post. |
+| `radar-analyst` | The summoned-reply loop. Only a base58 mint or a `$TICKER` survives parsing a mention, so there is no field an instruction can travel in; an admission gate caps replies per summoner, per day and per mint, and answers nothing at all when unconfigured; every reply is logged with the fact sheet it came from. The publisher is a trait whose only implementation here is a dry run — the X client is not written, and [`publish`](crates/radar-analyst/src/publish.rs) says which two billing figures gate it. |
 | `radar-cli` | The operator command line. Reads live state and computes nothing it does not have. |
 
 Every crate in that table exists and is a workspace member; `repo-conformance`

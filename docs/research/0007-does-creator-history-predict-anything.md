@@ -4,6 +4,11 @@
 **Date:** 2026-08-25
 **Command:** `radar study --store <store>`
 **Store:** the live guardian VPS recorder, slots 441,040,080 – 441,520,140 (~2 days)
+**Status:** measured, and the first evidence the creator signal is real —
+prior organic graduation predicts a materially higher future rate, on intervals
+that do not overlap. **One regime.** The confound the note names itself is time:
+both halves of every band sit inside the same two days. Re-run weekly, and watch
+the prior-coverage line.
 
 This is the question the whole system exists to answer. `creator_edge` gates on
 organic graduation history because that is the *plausible* rule, not because

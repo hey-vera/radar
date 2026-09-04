@@ -1,7 +1,8 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Plan 0003 — Foundation before the bot
 
-Status: in progress
+Status: blocked — every item is done except the half of item 5 that is not
+        code, which needs one root command from Josh
 Branch: fix/foundation-before-the-bot
 Base:   192bf63
 Planned by: Fable 5.1, plan mode, 2026-09-04 —
@@ -93,7 +94,32 @@ disagreeing.
       carry the setup for each.
       next: Josh runs the three commands in `deploy/README.md` under
       "Where a failure goes".
-- [ ] 6. Dependabot triage (A6)
+- [x] 6. Dependabot triage (A6)
+      done: fourteen pull requests became **four**, one per thing that actually
+      had to be decided, and two findings came out of it that merging on green
+      would have missed.
+      **arrow/parquet (#122, replacing #66 and #68) failed because they were
+      two.** Bumped apart the tree holds two `RecordBatch` types; together at
+      59.3.0 it compiles with no source change. The real risk was never the
+      compile: every existing test writes and reads with the same `parquet`, so
+      none could see the library's own output format change, while the recorder
+      holds 345MB written by 56. Two real production partitions are now
+      fixtures and `files_written_by_an_older_parquet_are_still_readable` reads
+      them; truncating one fails the test, restoring it passes.
+      **vite 8 does not work and the peer range says it does (#124).**
+      `@tailwindcss/vite@4.3.3` declares `peer vite: "...|| ^8"` and still calls
+      `transformWithEsbuild`, which vite 8 removed. Resolution is clean and only
+      the build knows — AGENTS.md rule 1's "a reference proposes, a capture
+      disposes", in a package manifest. #67 and #69 closed with that reason
+      rather than left looking mergeable; typescript 7, vitest 4 and jsdom 30
+      landed.
+      **The five action bumps (#123) verify themselves** — every job is checked
+      out and tooled by the actions being bumped.
+      **sha2 0.11 and ed25519-dalek 3 (#125) were read, not ticked.** `sha2`
+      derives every PDA and `ed25519-dalek` is the signing key. What establishes
+      safety is that the PDA tests assert derived addresses against mainnet
+      captures, over every captured mint — a digest changed by one bit fails
+      them. Workspace 1,477 passed, unchanged, which is the point.
       triaged 2026-09-04 by reading every one of the fourteen; **the batch is
       not uniform and the grouping in the plan was wrong** — Dependabot opened
       all fourteen individually because every one of them is a major.
@@ -181,16 +207,17 @@ disagreeing.
 
 ## Handback
 
-Stopped at: items 0 to 4, 7 and 8 landed. Item 5's code is done and it needs
-one root command from Josh, because `/etc/radar` is root-owned and guardian's
-NOPASSWD list does not cover writing there.
-Next action: item 6, the Dependabot batch — the last item with work left in
-it. Fourteen PRs; the two grouped minor/patch ones go together,
-`arrow`/`parquet` 56 to 59 needs `older_files_still_read.rs` on its own branch
-because it touches the store's format, and `ed25519-dalek` 3 is read by hand
-because it sits under the signer.
-Then Josh runs the three commands under "Where a failure goes" in
-`deploy/README.md` and item 5 closes.
+Stopped at: **every item landed.** The plan is done except for the half of item
+5 that is not code: `/etc/radar` is root-owned and guardian's NOPASSWD list
+does not cover writing there, so the alert file needs one root command from
+Josh. Three destinations are supported and Telegram is the recommendation —
+`deploy/README.md`, "Where a failure goes", has the commands.
+Next action: [plan 0004](0004-the-bot-to-dry-run-complete.md), the bot.
+Two things found here and deliberately not acted on, both recorded rather than
+carried in anyone's head: the coordination detector is drifting live at 3,500
+bps against 580 calibrated, which is a measurement question for the learning
+loop; and vite 8 comes back when `@tailwindcss/vite` migrates off
+`transformWithEsbuild`.
 Do not: open `Policy::CLOSED`, edit the custody lane, or retune `radar-graph`.
 All three are in Not in scope above, and each has a document saying why.
 Do not delete `Observed<T>` on the strength of Q4 without answering it — an

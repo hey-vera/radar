@@ -104,19 +104,53 @@ the operational skin that makes it safe to leave running.
       pipeline that currently lives in `radar-cli`, and moving that is item 5's
       binary — where it gains two real callers instead of one and a test.
 
-- [ ] 3. The spend meter
+- [x] 3. The spend meter
       Every X call and every model call reserves against
       `radar_provider::Meter` before it happens, with the ledger persisted the
       way `radar-serve/src/ledger.rs` already does it.
       No budget configured means the loop starts, says it is unfunded, and
       answers nothing. Rule 8.
-      done when: exhausting the budget is proved to stop replies, by test.
+      done: `crates/radar-analyst/src/spend.rs`. Two refusals, both rule 8.
+      **No budget** is `Budget::CLOSED` and refuses every call while the loop
+      still starts, because a bot that exits reads as a broken deploy and one
+      reporting `unfunded` is legible. **No prices** means the meter cannot be
+      built at all — a default price is a spending decision made by whoever
+      wrote the code, and that is what makes the two unsettled X billing figures
+      a configuration question rather than a blocker: the operator writes down
+      what they were charged and nothing here has an opinion.
+      Prices are all-or-nothing; a partial list would meter some calls and let
+      others through free, and the total would look like a budget being
+      respected. A price that is not a number is absent rather than zero.
+      The ledger is written by rename and restored on start, because a process
+      under `Restart=always` that forgets its spend can spend the day's budget
+      as many times as it can crash.
+      `cargo mutants -f spend.rs`: **0 missed**. Its one survivor was real —
+      every test settled for exactly what it reserved, so nothing pinned that
+      settling *corrects* a reservation, which is the meter's whole point.
 
-- [ ] 4. Reply-safe rendering
+- [x] 4. Reply-safe rendering
       `radar-cli` escapes creator-controlled bytes for a **terminal**. A public
       reply needs a different rule: strip direction overrides and zero-width
       characters, cap length, and never let a token name close a fence.
-      done when: the adversarial fixture gains the cases and they pass.
+      done: `crates/radar-roast/src/render.rs`, and the finding is the ordering
+      rather than the sanitiser.
+      **The forbidden and fidelity checks were exploitable.** Both read the
+      reply as characters, and a zero-width space renders as nothing — so
+      `s<ZWSP>cam` is two tokens to the checker and one word to the reader, and
+      a figure split the same way is not a number until it reaches the
+      timeline. Cleaning after the checks would assemble exactly the statement
+      they refused. `render::for_publication` therefore runs **before** both.
+      Bidi overrides, zero-width characters and controls go; every script,
+      emoji and ordinary character stays, because a reply that mangled a
+      Japanese token's name would be wrong in a way nobody asked for. Over-long
+      replies are truncated by character rather than lost, since X refuses them
+      with a 4xx and a 4xx is never retried.
+      Verified by re-applying the bug: moving the call below the checks fails
+      all three ordering tests. The fidelity one took two attempts — the first
+      used numbers the sheet refuses either way, so it passed with the bug in
+      place and proved nothing. It now uses `11<ZWSP>850`, where **both halves
+      are authorised and the joined figure is not**.
+      `cargo mutants -f render.rs`: 9 of 9 caught.
 
 - [ ] 5. The binary, the unit, and the brief check
       `radar-analyst` as a binary beside `radar-follow.service`, with

@@ -1253,6 +1253,7 @@ dependencies = [
 name = "radar-analyst"
 version = "0.0.1"
 dependencies = [
+ "radar-provider",
  "radar-types",
  "serde",
  "serde_json",

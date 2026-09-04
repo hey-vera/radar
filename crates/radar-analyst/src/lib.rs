@@ -49,6 +49,7 @@ pub mod log;
 pub mod mention;
 pub mod poll;
 pub mod publish;
+pub mod spend;
 pub mod x;
 
 pub use admission::{Admitted, Gate, Limits, Refused};
@@ -56,6 +57,7 @@ pub use log::{Entry, latest};
 pub use mention::{Asked, read};
 pub use poll::{interval, next_cursor, read_cursor, write_cursor};
 pub use publish::{DryRun, Publisher, Undeliverable};
+pub use spend::{Cost, Prices, Spend};
 pub use x::{Mention, Unreachable, X, backoff};
 
 /// What to say when a mention named a symbol rather than a mint.

@@ -27,4 +27,6 @@ thiserror.workspace = true
 
 [dev-dependencies]
 radar-risk.workspace = true
+# The index's type, so a test can read back what the builder wrote.
+radar-roast.workspace = true
 tempfile = "3"

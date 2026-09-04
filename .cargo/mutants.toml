@@ -226,6 +226,23 @@ exclude_re = [
     # reason, which is why that module exists at all.
     'replace main with \(\)',
 
+    # `creator_index::build` keeps the latest measurement of a mint:
+    #
+    #     if outcome.measured_at > held.measured_at { *held = outcome; }
+    #
+    # `>` to `>=` changes only what happens at a **tie**, and a tie means two
+    # rows measuring the same mint at the same slot -- the outcome pass having
+    # written twice. Those rows describe one measurement, so which of them is
+    # kept does not change any count this function produces.
+    #
+    # Written down rather than tested because a test would have to assert one of
+    # two equally correct answers, and pinning an arbitrary tiebreak is exactly
+    # the "test that asserted an implementation detail it had guessed" LEARNINGS
+    # 2 records. The other two mutations of this comparison -- `<` and `==` --
+    # are real and are caught by
+    # `the_latest_measurement_of_a_mint_is_the_one_that_counts`.
+    'replace > with >= in build',
+
     # --- category 2: unreachable in the mutation sandbox ---------------------
     #
     # `untracked_documents` shells out to `git ls-files --others`. It is covered

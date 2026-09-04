@@ -158,6 +158,35 @@ mod tests {
     }
 
     #[test]
+    fn the_size_of_the_index_is_the_number_of_creators_in_it() {
+        // It is printed by `radar creator-index` and it is how an operator
+        // knows the build worked: "117,680 creators at slot N" against "0
+        // creators" is the difference between a good index and a silently
+        // empty one, and a constant would report the same either way.
+        let mut creators = BTreeMap::new();
+        assert_eq!(
+            CreatorIndex {
+                watermark_slot: 1,
+                built_at: 0,
+                creators: creators.clone(),
+            }
+            .len(),
+            0
+        );
+
+        for n in 0..3 {
+            creators.insert(format!("creator-{n}"), Record::default());
+        }
+        let index = CreatorIndex {
+            watermark_slot: 1,
+            built_at: 0,
+            creators,
+        };
+        assert_eq!(index.len(), 3);
+        assert!(!index.is_empty(), "three is not none");
+    }
+
+    #[test]
     fn an_index_round_trips_through_a_file() {
         let dir = std::env::temp_dir().join(format!("radar-cidx-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("a temp dir");

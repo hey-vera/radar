@@ -59,10 +59,35 @@ disagreeing.
       mechanism for a dead recorder is a person happening to look. It went
       unnoticed for thirteen hours once (LEARNINGS 8).
 - [ ] 6. Dependabot triage (A6)
-      next: fourteen open since 2026-08-30. The two grouped minor/patch PRs
-      merge together; `arrow`/`parquet` 56 to 59 touches the store and needs
-      `older_files_still_read.rs` run against it on its own branch;
-      `ed25519-dalek` 3 touches the signer's dependency and is read by hand.
+      triaged 2026-09-04 by reading every one of the fourteen; **the batch is
+      not uniform and the grouping in the plan was wrong** — Dependabot opened
+      all fourteen individually because every one of them is a major.
+
+      **Eleven are green** on all thirteen checks: the four GitHub Actions
+      bumps plus `taiki-e/install-action`, and `vite` 8, `jsdom` 30, `sha2`
+      0.11, `vitest` 4, `typescript` 7, `ed25519-dalek` 3.
+
+      **Three are not, and each fails for its own reason:**
+      - `arrow` #68 and `parquet` #66, 56.2.1 to 59.2.0 — `build`, `lint`,
+        `msrv` and `tests` all fail, and it is a real API break rather than a
+        lockfile problem: `crates/radar-store/src/reader.rs:194-196` no longer
+        converts into `StoreError` and `RecordBatch` changed shape. These two
+        move together, need code, and need `older_files_still_read.rs` run
+        against a store written by the old version — the format is the point.
+      - `@vitejs/plugin-react` #67 — `web` fails on `ERESOLVE`: version 6
+        wants vite 8 and the tree has vite 7. **It is blocked on #69, not
+        broken.** Merge #69 first and this goes green on a rebase.
+
+      **Order to merge, and why it is not "all the green ones":** the four
+      Actions bumps touch `.github/workflows/release-linux.yml`, which this
+      plan's own item 1 rewrote, so they conflict until that has landed.
+      `ed25519-dalek` 3 is the crate under `radar-signer` and green CI is not
+      the whole answer there — read what changed in verification before
+      merging it, because the signer's guarantee is the one thing in this
+      repository whose failure is silent.
+      next: merge the stack (#117, #118, #119), then Actions, then the web
+      chain #69 into #67, then `ed25519-dalek` by hand, then the arrow work as
+      its own branch.
 - [x] 7. Delete `radar-provider`'s cache, breaker and planner (A8)
       done: `just tests` 1476 passed, `just lint`, `just fmt`,
       `just licence-headers` clean; `cargo test -p repo-conformance` 33 passed.

@@ -149,6 +149,14 @@ Added on 2026-09-03/04, and worth knowing before writing anything:
 
 ## 6. Where a fresh session should start
 
+**Run `just orient` first.** Added 2026-09-04, and it exists because this
+section was prose: it prints the branch, that branch's last CI result, the plan
+in flight and where it stopped, the claims `docs/STATE.md` names as decaying
+fastest, and the size of `target/`. Each is read from the file that owns it, so
+none of it can go stale the way row 6 of the table above did.
+
+Then, in order:
+
 1. `GOAL.md` — what Radar is for. The owner's document.
 2. This file, then [`docs/STATE.md`](../STATE.md) for what has been measured.
 3. `AGENTS.md` — how to work here. 396 lines, and every one is meant to be

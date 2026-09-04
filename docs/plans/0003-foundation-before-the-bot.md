@@ -59,10 +59,35 @@ disagreeing.
       mechanism for a dead recorder is a person happening to look. It went
       unnoticed for thirteen hours once (LEARNINGS 8).
 - [ ] 6. Dependabot triage (A6)
-      next: fourteen open since 2026-08-30. The two grouped minor/patch PRs
-      merge together; `arrow`/`parquet` 56 to 59 touches the store and needs
-      `older_files_still_read.rs` run against it on its own branch;
-      `ed25519-dalek` 3 touches the signer's dependency and is read by hand.
+      triaged 2026-09-04 by reading every one of the fourteen; **the batch is
+      not uniform and the grouping in the plan was wrong** — Dependabot opened
+      all fourteen individually because every one of them is a major.
+
+      **Eleven are green** on all thirteen checks: the four GitHub Actions
+      bumps plus `taiki-e/install-action`, and `vite` 8, `jsdom` 30, `sha2`
+      0.11, `vitest` 4, `typescript` 7, `ed25519-dalek` 3.
+
+      **Three are not, and each fails for its own reason:**
+      - `arrow` #68 and `parquet` #66, 56.2.1 to 59.2.0 — `build`, `lint`,
+        `msrv` and `tests` all fail, and it is a real API break rather than a
+        lockfile problem: `crates/radar-store/src/reader.rs:194-196` no longer
+        converts into `StoreError` and `RecordBatch` changed shape. These two
+        move together, need code, and need `older_files_still_read.rs` run
+        against a store written by the old version — the format is the point.
+      - `@vitejs/plugin-react` #67 — `web` fails on `ERESOLVE`: version 6
+        wants vite 8 and the tree has vite 7. **It is blocked on #69, not
+        broken.** Merge #69 first and this goes green on a rebase.
+
+      **Order to merge, and why it is not "all the green ones":** the four
+      Actions bumps touch `.github/workflows/release-linux.yml`, which this
+      plan's own item 1 rewrote, so they conflict until that has landed.
+      `ed25519-dalek` 3 is the crate under `radar-signer` and green CI is not
+      the whole answer there — read what changed in verification before
+      merging it, because the signer's guarantee is the one thing in this
+      repository whose failure is silent.
+      next: merge the stack (#117, #118, #119), then Actions, then the web
+      chain #69 into #67, then `ed25519-dalek` by hand, then the arrow work as
+      its own branch.
 - [x] 7. Delete `radar-provider`'s cache, breaker and planner (A8)
       done: `just tests` 1476 passed, `just lint`, `just fmt`,
       `just licence-headers` clean; `cargo test -p repo-conformance` 33 passed.
@@ -77,11 +102,16 @@ disagreeing.
       `radar-asof`'s own tests, so those two types now have none — see Q4.
       `MIN_TESTS` 1503 -> 1476: 27 tests went with the code they tested. The
       floor caught the drop, which is the floor working.
-- [ ] 8. `just orient` (A9)
-      next: one recipe printing branch, that branch's last CI result, this
-      file's Handback block, `target/` size, and the four claims
-      `docs/STATE.md` names as most likely to be stale. It makes design 0006
-      section 6 a command instead of a paragraph asking somebody to remember.
+- [x] 8. `just orient` (A9)
+      done: `just orient` run against this branch and against a branch with no
+      runs; `cargo test -p repo-conformance` 33 passed. It prints the branch,
+      that branch's last CI result, every plan whose status is not landed or
+      abandoned together with its Handback block, the sentence `docs/STATE.md`
+      uses to name its own decaying claims, and the size of `target/`.
+      Every line is read from the file that owns it at the moment it prints, so
+      there is no copy here to go stale — which is the failure design 0006's
+      own table demonstrated. Design 0006 section 6 now opens with the command
+      instead of asking a reader to remember four documents.
 
 ## Open questions for Josh
 
@@ -104,11 +134,13 @@ disagreeing.
 
 ## Handback
 
-Stopped at: items 0 to 3 and 7 landed. Items 4 and 5 are blocked on Q1 and Q2.
-Items 6 and 8 are unblocked.
-Next action: item 8, `just orient` — it is small, it has no dependency on
-anything blocked, and every session after this one pays for its absence.
-Then item 6, the Dependabot batch.
+Stopped at: items 0 to 3, 7 and 8 landed. Items 4 and 5 are blocked on Q1 and
+Q2. Item 6 is unblocked and is the only one left.
+Next action: item 6, the Dependabot batch — the last unblocked item. Fourteen
+PRs; the two grouped minor/patch ones go together, `arrow`/`parquet` 56 to 59
+needs `older_files_still_read.rs` on its own branch because it touches the
+store's format, and `ed25519-dalek` 3 is read by hand because it is under the
+signer.
 Do not: open `Policy::CLOSED`, edit the custody lane, or retune `radar-graph`.
 All three are in Not in scope above, and each has a document saying why.
 Do not delete `Observed<T>` on the strength of Q4 without answering it — an

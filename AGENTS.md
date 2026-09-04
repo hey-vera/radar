@@ -280,6 +280,10 @@ decisions about a trade-off that belongs to the owner. LEARNINGS 26.
 - **Production is not yours to restart.** `guardian` has full sudo but no
   NOPASSWD entry for radar, so installing `radar-serve` needs a human at an
   interactive terminal. That is deliberate.
+- **Read the branch's last CI result before pushing onto it.** `just hooks` also
+  installs a `pre-push` that prints it and never blocks. `mutants-shards` went
+  red and collected three more commits before anyone opened the page; nothing
+  was undetected, it was unread.
 
 ## 8. Tools, research, and delegation
 

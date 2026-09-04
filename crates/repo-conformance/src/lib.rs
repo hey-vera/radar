@@ -809,6 +809,65 @@ mod tests {
     }
 
     #[test]
+    fn the_context_file_stays_within_its_budget() {
+        // `AGENTS.md` is loaded on every turn of every task in this repository,
+        // and instructions in a file like it are followed at well above baseline
+        // rates -- so a line that is merely unnecessary is obeyed rather than
+        // ignored, and billed. Gloaguen et al. (MemAgents @ ICLR 2026) measured
+        // no task-success improvement from repository context files against a
+        // cost over 20% higher. See
+        // `docs/research/0025-what-the-evidence-says-about-how-this-repository-is-run.md`
+        // §1.
+        //
+        // That finding was prose until this test existed, which meant the file
+        // could drift back. It went 519 -> 361 on 2026-09-03 by moving status to
+        // `docs/STATE.md`; the ceiling exists so the next fifty lines of status
+        // have to be argued for rather than merely added.
+        //
+        // **This is a budget, not a target.** Being under it is not a reason to
+        // add anything, and the right way to come back under it is almost always
+        // to move something to STATE.md, LEARNINGS.md or a check -- not to
+        // compress a rule until it misleads. Rules 1 and 3 are long on purpose:
+        // both record that an earlier, terser version of themselves was read as
+        // claiming more than it did.
+        //
+        // If a genuine new rule needs the room, raise the number in the same
+        // commit and say why. The number moving is the signal; a file quietly
+        // growing is what this prevents.
+        const CEILING: usize = 400;
+
+        let text = std::fs::read_to_string(root().join("AGENTS.md")).expect("AGENTS.md");
+        let lines = text.lines().count();
+        assert!(
+            lines <= CEILING,
+            "AGENTS.md is {lines} lines against a ceiling of {CEILING}. Move status to docs/STATE.md, war stories to LEARNINGS.md, and anything a check already enforces to a pointer -- or raise the ceiling in this commit and say what rule needed the room"
+        );
+
+        // And the other direction, because a ceiling alone is satisfied by an
+        // empty file. This is not a quality measure -- it catches the file being
+        // truncated or emptied, which is how it was lost once already
+        // (2026-09-02, a careless `git add -A`).
+        assert!(
+            lines > 150,
+            "AGENTS.md is only {lines} lines, which is too few to still contain rules 1 through 9. It has been deleted by accident before"
+        );
+
+        // `CLAUDE.md` imports it rather than restating it. Two files with the
+        // same content is two files that drift, and this repository has the
+        // comment in `CLAUDE.md` saying exactly that.
+        let claude = std::fs::read_to_string(root().join("CLAUDE.md")).expect("CLAUDE.md");
+        assert!(
+            claude.contains("@AGENTS.md"),
+            "CLAUDE.md must import AGENTS.md rather than carry its own copy of the policy"
+        );
+        assert!(
+            claude.lines().count() < 20,
+            "CLAUDE.md is {} lines. It is an import, not a second policy file",
+            claude.lines().count()
+        );
+    }
+
+    #[test]
     fn every_learnings_entry_names_what_catches_a_recurrence_and_is_indexed() {
         // The file opens by promising that "each entry names the check that
         // would catch a recurrence, or says plainly that nothing does". Design

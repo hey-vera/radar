@@ -83,6 +83,30 @@ three commits.
       nothing and exited zero would look exactly like success, which is
       LEARNINGS 5 in the command a public bot runs.
       7 tests in the module, clippy clean.
+- [x] 6. Prevent the two classes that had no mechanism
+      done: **a line ceiling on `AGENTS.md`** (400, with a floor of 150 because
+      a ceiling alone is satisfied by an empty file, and that file has been
+      deleted by accident once). It makes `0025` §1's finding binding instead of
+      advisory — the number moving is the signal, and raising it has to be
+      argued for in the same commit. `CLAUDE.md` is pinned as an import.
+      And **`scripts/hooks/pre-push`**, which prints how the branch's last CI
+      run finished. This plan's whole subject is a check that caught a defect
+      immediately and reported it to a page nobody opened. It **never blocks** —
+      a red previous run is often exactly why you are pushing — and it is silent
+      when it cannot know: no `gh`, no network, no runs. An absent answer is not
+      a red answer. It also tells `cancelled` apart from `failed`, which
+      AGENTS.md §6 records a lost session to.
+      Verified in a throwaway worktree on `phase-1-radar-dossier`, whose last
+      run genuinely failed: it named all five failing jobs and exited 0; silent
+      on a branch CI has never seen; silent with `gh` off the PATH.
+      **A third check was designed and then refused.** Flagging any function
+      defined both in production code and in the same file's test module would
+      have caught item 1's duplicate directly. Run across the repository it hits
+      13 files, of which 1 is a real duplicate and 12 are ordinary test fixtures
+      and stub trait impls. That is a ~93% effective false-positive rate against
+      the 10% bar adopted in `AGENTS.md` §5 the same day, so the rule applies to
+      its own author: delete it rather than tune it. Mutation testing is the
+      right detector for that class and it worked.
 - [ ] 4. Push, and read the CI result rather than assuming it
 
       **Stopped verifying locally on purpose.** Three serial whole-file

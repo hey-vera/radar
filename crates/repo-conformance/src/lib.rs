@@ -1205,6 +1205,21 @@ mod tests {
       - uses: actions/checkout@v5")
             .is_empty()
         );
+        // A blank line inside a block does not end it. YAML block scalars
+        // allow them and a long `run:` uses them to group commands, so reading
+        // one as the end of the block would silently stop checking everything
+        // after it -- which is the worst way for this to be wrong, because the
+        // check would still pass. CI found this one: the guard that skips a
+        // blank line survived mutation to `false`, and with it false a blank
+        // line falls through to the arm that closes the block.
+        assert_eq!(
+            one("      - run: |
+          npm ci
+
+          npm run build
+"),
+            vec!["npm ci", "npm run build"]
+        );
         // The block ends when the indentation returns to the key's level.
         assert_eq!(
             one("      - run: |

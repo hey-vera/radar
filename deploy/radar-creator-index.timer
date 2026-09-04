@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-creator-index.timer, then:
+#   sudo systemctl enable --now radar-creator-index.timer
+#
+# Every six hours. The index answers "what did this creator's other tokens do",
+# and that answer moves slowly: a creator's history is thousands of launches
+# deep, so one more overnight changes no sentence a reply would print.
+#
+# Not hourly, because the rebuild reads both tables in full and this box has two
+# cores shared with other people's services. Not daily, because a creator who
+# started launching this morning should be answerable by this evening.
+#
+# Persistent=true so a rebuild missed while the box was down happens on boot
+# rather than waiting for the next six-hour boundary — an index that is a day
+# stale says "no record" about creators it has simply not seen yet, and that is
+# the one answer it must not get wrong.
+[Unit]
+Description=Rebuild the Radar creator index every six hours
+Documentation=https://github.com/hey-vera/radar
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=6h
+Persistent=true
+AccuracySec=5min
+Unit=radar-creator-index.service
+
+[Install]
+WantedBy=timers.target

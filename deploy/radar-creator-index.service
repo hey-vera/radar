@@ -1,0 +1,46 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-creator-index.service
+#
+# Rebuilds the creator index the public analyst reads. Started by the timer
+# beside it, never enabled directly.
+#
+# This is the expensive read the index exists to stop happening per mention: it
+# decodes the launches and outcomes tables in full, which took about a minute
+# over 506,821 launches on 2026-09-04. Doing it here, on a schedule, is the
+# whole point of the file it produces.
+[Unit]
+Description=Radar creator index — what each creator's previous tokens did
+Documentation=https://github.com/hey-vera/radar
+
+[Service]
+Type=oneshot
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+
+# The store is read; the index is written beside the other published
+# measurements, where `radar-analyst` and `radar roast` look for it.
+ExecStart=/home/guardian/bin/radar creator-index \
+    --store /home/guardian/radar/data/store \
+    --out /home/guardian/radar/docs/research/data/creator-index.json
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/docs/research/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+
+# Decoding both tables holds them in memory. 506,821 launches and 1.4M outcomes
+# fit comfortably below this today; the cap is here so that when they do not,
+# this job dies alone rather than taking the recorder and the server with it on
+# a box with 3.8 GiB.
+MemoryMax=1500M
+TasksMax=32

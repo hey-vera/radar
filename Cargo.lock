@@ -1558,8 +1558,6 @@ dependencies = [
 name = "radar-provider"
 version = "0.0.1"
 dependencies = [
- "blake3",
- "radar-asof",
  "radar-types",
  "serde",
  "serde_json",

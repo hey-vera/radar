@@ -38,7 +38,19 @@ cargo := env("RADAR_CARGO", "cargo")
 # safe: nothing in the workspace is `cfg(windows)` or `cfg(unix)` gated except
 # one function in `radar-exec`'s signer client, and it carries no tests. So a
 # Linux runner cannot count fewer than a Windows workstation.
-export MIN_TESTS := "1503"
+#
+# Lowered 1503 -> 1476 in the same session, and this is the one shape of change
+# that may do that: `radar-provider`'s cache, breaker and planner were deleted
+# for having no caller, and 27 tests went with the code they tested. The floor
+# caught it, which is the floor working -- it cannot tell a deletion from a
+# regression, and it is not supposed to.
+#
+# What separates this from the failure this guards against is that the drop is
+# argued in the commit that causes it and matches a counted deletion. Lowering
+# it to make a red run green is the thing that must never happen; if the number
+# has to come down, the commit says which tests went and why they went with
+# their subject.
+export MIN_TESTS := "1476"
 
 _default:
     @just --list --unsorted

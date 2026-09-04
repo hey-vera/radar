@@ -86,8 +86,10 @@ not spend effort re-doing any of it.**
    env files. Free to turn on. One accidental commit is unrecoverable.
 8. **Zero required reviews.** The ruleset requires 9 checks and 0 approvals.
    Every check is mechanical; nothing reads the diff. Design 0002 §7a named this.
-9. **~700 lines with no caller** in `radar-provider` (`cache.rs`, `health.rs`,
-   the planner). Flagged three times. Still there.
+9. **~700 lines with no caller** in `radar-provider` (the cache, the breaker,
+   the planner). Flagged three times. Still there. ~~Still there.~~ **Deleted
+   2026-09-04, and it was 1,300 lines once the planner and its doctest went
+   with them.**
 10. **`radar-serve` decodes ~80 MB of Parquet per request** on `/v1/tokens/{mint}`
     (3.2 s) and `/v1/scoreboard` (1.7 s) against a 500 ms budget, on a 2-core
     box shared with Cortex. Fine private; not fine behind a viral link.
@@ -236,7 +238,7 @@ exposure are not mine to decide.
 | A5 | `docs/design/0006` §4 row 6 → "merged as #105"; §2 per A2 | `docs/design/0006-…md` | conformance green |
 | A6 | Dependabot triage in one batch: merge the two minor/patch groups; open one branch per major with `older_files_still_read.rs` run for `arrow`/`parquet`; close what nobody will do with a one-line reason | the 14 PRs | 0 PRs older than a week |
 | A7 | Record the token reversal: **ADR 0013 — "A community token exists; Radar the product holds none of it"** with the §6 constraints, and edit `GOAL.md` "What Radar will not become" from "a token" to "a holder of any token it comments on, including its own". Record it as **Josh's decision**, consequence noted once | `docs/adr/0013-…md`, `GOAL.md` | conformance green; `**Status:**` present |
-| A8 | Delete `radar-provider/src/cache.rs`, `health.rs` and the planner (J9). Update the README crate row and `docs/STATE.md` "Where to start" in the same commit | `crates/radar-provider/`, `README.md`, `docs/STATE.md` | build green; `the_documented_dependency_claims_are_true` still passes |
+| A8 | Delete `radar-provider`'s cache, breaker and planner (J9). Update the README crate row and `docs/STATE.md` "Where to start" in the same commit. **Done 2026-09-04, and it was 1,300 lines rather than the 733 this row estimated** — the planner in `lib.rs` and its doctest composed the two deleted modules and went with them. It also took AGENTS.md rule 3's type-system example and `radar-asof`'s only caller, neither of which this row anticipated | `crates/radar-provider/`, `README.md`, `docs/STATE.md`, `AGENTS.md` | build green; `the_documented_dependency_claims_are_true` still passes |
 | A9 | `just orient` — one recipe that prints: branch, last CI result for it (reuse `scripts/hooks/pre-push` logic), the open `docs/plans/` file's Handback block, `target/` size, and the four decaying claims from `docs/STATE.md`'s header. It makes 0006 §6 a command instead of prose | `justfile`, `scripts/orient.sh` | run it; it prints the right plan file |
 
 **Not in scope for A:** anything in the trading lane; the custody lane;
@@ -401,7 +403,7 @@ the kernel's authorisation path at all.
 | D2 | **Build-only endpoint**: `/v1/tokens/{mint}/build?side=buy&lamports=` returns an unsigned legacy transaction from `radar-pumpfun::transaction` for the connected wallet. Customer audience. No key on the server side of this path, by construction | `api.rs`, `crates/radar-pumpfun/src/transaction.rs` |
 | D3 | **Sign in the wallet, submit from the browser.** Wallet-standard `signAndSendTransaction`. Radar records the signature the browser reports and later reads the fill from chain | `web/src/Trade.tsx` |
 | D4 | **The journal** — per-wallet: pre-trade sheet as shown, action, signature, fill, and the outcome checkpoints the recorder already measures. Append-only file per wallet under the store's rules (ADR 0006: record only what cannot be recovered). Rendered as the customer's own "decisions" page | `new:crates/radar-store/src/journal.rs`, `web/src/Journal.tsx` |
-| D5 | **Store read cost.** D1 and the journal must not decode 80 MB per request. Cache the decoded launch and outcome tables in `radar-serve` behind the watermark (rule 3: `Entry::bytes(as_of)` shape; the cache key includes the watermark). Measured target: `/v1/tokens/{mint}` under 500 ms on the VPS | `crates/radar-serve/src/cache.rs` |
+| D5 | **Store read cost.** D1 and the journal must not decode 80 MB per request. Cache the decoded launch and outcome tables in `radar-serve` behind the watermark, extending the live cache there rather than writing a second one -- its key type parameter is LEARNINGS 27 already paid for, and the watermark belongs in that key. Rule 3 is easiest to break here, and as of 2026-09-04 nothing in the type system stops it. Measured target: `/v1/tokens/{mint}` under 500 ms on the VPS | `crates/radar-serve/src/cache.rs` |
 | D6 | **Admission.** `RADAR_CUSTOMER_ACCESS=open` is the public switch and someone types it (rule 8). Wallet sign-in (`siws.rs`) is the identity; no Privy, no Turnkey | `deploy/README.md` |
 
 **Not in scope:** automated signing of any kind; AI mode; venues other than
@@ -474,7 +476,7 @@ tuning checks into noise).
 | the trading lane (`Policy::CLOSED`, `pipeline::execute`, the submitter) | **frozen** | the bar is 456 and the edge is 0; E3 is the only thing that changes this |
 | the custody lane (Privy, Turnkey, `radar-customer`, ADRs 0005/0007/0011) | **frozen, no edits** (J10) | ~2,400 lines for zero customers; manual mode (D) needs none of it |
 | billing (Stripe, ADR 0010) | **frozen** | nothing to bill for until D has users |
-| `radar-provider` cache / breaker / planner | **delete** (A8, J9) | third flag; the one named caller needs 30 lines, not 700 |
+| `radar-provider` cache / breaker / planner | **deleted 2026-09-04** (A8, J9) | third flag; the one named caller needs 30 lines, not 700 |
 | the x402 client | **not built** | a funded hot wallet spending at a stranger's request; nothing in B–D needs it. The x402 *server* stays off until someone asks to pay |
 | AI mode for trading | **deferred** | it is held to the same bar and the bar is not met |
 | `radar-graph` thresholds | **leave** | ADR 0012 decided: record the count, do not retune |

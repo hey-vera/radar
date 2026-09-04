@@ -121,7 +121,7 @@ tokens on Raydium and Whirlpool already route in a form the signer can read.
 | 2 | **The two clawapis billing figures** that gate the X client. | §3a above |
 | 3 | **`docs/research/0002`** — eleven feature requests to clawapis, written and never sent. Items 1 and 3 would let Radar buy all its data pay-per-call. | [`0002`](../research/0002-clawapis-feature-requests.md) |
 | 4 | **`radar-graph`'s thresholds** — the gate is tuned to numbers `0024` withdrew, and its decay detector is calibrated so it cannot fire. Two of five proposals change what Radar refuses. | [`0005`](0005-what-radar-graph-should-refuse-after-0024.md) |
-| 5 | **`radar-provider`'s `Cache`, `Breaker` and planner** — 733 of 1,897 lines with no caller. Wire or delete; it is the third instance of the shape LEARNINGS 1, 9 and 10 record. | [`docs/STATE.md`](../STATE.md) "Where to start" |
+| 5 | ~~`radar-provider`'s `Cache`, `Breaker` and planner — 733 of 1,897 lines with no caller. Wire or delete.~~ **Deleted 2026-09-04**, with the planner and the doctest that composed them: 1,300 lines, not 733. | [`docs/STATE.md`](../STATE.md) "Where to start" |
 | 6 | ~~`fix/interface-truth-repairs` — 19 commits pushed, unmerged, three blockers.~~ **Merged as [#105](https://github.com/hey-vera/radar/pull/105) on 2026-09-03, `e1b82d7`** — the day *before* this table was written. Corrected 2026-09-04. | — |
 | 7 | **x402 paid surface is OFF.** Implemented and verified; needs `RADAR_X402_PAY_TO` and `RADAR_X402_FACILITATOR`. | `crates/radar-serve/src/x402.rs` |
 

@@ -272,24 +272,25 @@ nothing has ever tested.
 - [`docs/research/`](../docs/research/) — what was investigated and what it found,
   including the data-sourcing landscape and the freshness/caching design.
 - [`docs/adr/`](../docs/adr/) — decisions, with what each one costs.
-- `crates/radar-provider` — the metered, cached, health-aware data plane. Pure
-  policy: no HTTP, no clock, no async.
+- `crates/radar-provider` — the spend meter, and as of 2026-09-04 nothing else.
 
-  **Read most of it as a design, not as the running system**, and be exact about
-  which half — this file said "nothing depends on this crate" until 2026-09-03,
-  and that has been stale since `radar-agent` was metered.
+  What runs, and did before: `radar-agent` reserves against `Budget`, `Ledger`,
+  `Meter` and `Commitment` for every model call, and
+  [`radar-serve`'s ledger](../crates/radar-serve/src/ledger.rs) persists that
+  across a restart. It is rule 8 enforced in the running system.
 
-  What runs: `radar-agent` depends on this crate and uses `Budget`, `Ledger`,
-  `Meter` and `Commitment` — all of [`cost.rs`](../crates/radar-provider/src/cost.rs),
-  484 lines — for every model call, and
-  [`radar-serve`'s ledger](../crates/radar-serve/src/ledger.rs) persists it across
-  a restart. That is rule 8 enforced in the running system.
+  What is gone: the cache, the breaker and the planner that composed them —
+  about 1,300 lines against the 484 that run, with no caller outside the crate
+  and none since it was written. This file called for them to be wired or
+  deleted, three documents flagged them, and deleting is what happened
+  (design 0007 J9). The crate's own module doc records why, and what to extend
+  instead: `radar-serve` has a live cache that already carries the lesson
+  LEARNINGS 27 paid for.
 
-  What does not: `Cache`, `Breaker` and the planner are exported and **called
-  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 733 of
-  its 1,897 lines. This is the third documented-as-central layer with no caller
-  ([LEARNINGS](../LEARNINGS.md) 1 and 9 are the same shape), and it should be
-  wired to a real caller or deleted rather than left a third time.
+  Two consequences worth knowing. `radar-asof`'s `Observed<T>` and `LookAhead`
+  now have **no caller** — the deleted cache was the only one — so `radar-asof`
+  is `AsOf` plus two types nothing uses. And AGENTS.md rule 3 no longer claims
+  a type-system half; it was describing that cache.
 
   The economics that actually run for *pricing* are a separate, static cost model in
   [`radar-instruments`](../crates/radar-instruments/src/spec.rs), where each

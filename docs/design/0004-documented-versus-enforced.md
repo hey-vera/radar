@@ -38,10 +38,12 @@ measured failure modes. That inverts the navigation recommendation — see §4.
 current workspace. Every crate has at least one non-dev dependent except the two
 binaries (`radar-cli`, `radar-serve`) and `repo-conformance`, which are supposed
 to. The half of that claim that *is* true is narrower and already documented
-correctly: `radar-provider`'s `cache.rs` (438) and `health.rs` (274) are 712 of
-its 1,876 lines and have no caller outside the crate — verified, only
-`Meter`, `Budget`, `Ledger` and `Commitment` from `cost.rs` are reached, by
-`radar-agent` and `radar-serve`'s ledger. `AGENTS.md` §5's "this project has
+correctly: `radar-provider`'s cache module (438 lines) and breaker (274) are 712
+of its 1,876 and have no caller outside the crate — verified, only
+`Meter`, `Budget`, `Ledger` and `Commitment` from its cost module are reached,
+by `radar-agent` and `radar-serve`'s ledger. **Both were deleted on 2026-09-04,
+along with the planner that composed them; the filenames are spelled out here
+rather than written as paths because they no longer resolve to anything.** `AGENTS.md` §5's "this project has
 produced three" is about three historical instances, not three live crates.
 
 **"The five largest sources are 1,938 / 1,784 / 1,517 / 1,445 / 1,279 lines."**

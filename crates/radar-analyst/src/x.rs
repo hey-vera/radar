@@ -203,7 +203,11 @@ impl X {
 
     /// A client pointed at a different root, for tests.
     #[must_use]
-    pub fn at(base: impl Into<String>, bearer: impl Into<String>, user_id: impl Into<String>) -> Self {
+    pub fn at(
+        base: impl Into<String>,
+        bearer: impl Into<String>,
+        user_id: impl Into<String>,
+    ) -> Self {
         Self {
             bearer: bearer.into(),
             user_id: user_id.into(),
@@ -504,7 +508,10 @@ mod tests {
     fn the_mentions_url_carries_the_fields_the_pipeline_needs() {
         let x = X::at("https://example.test", "tok", "u42");
         let url = x.mentions_url(None);
-        assert!(url.starts_with("https://example.test/2/users/u42/mentions?"), "{url}");
+        assert!(
+            url.starts_with("https://example.test/2/users/u42/mentions?"),
+            "{url}"
+        );
         assert!(url.contains("max_results=100"), "{url}");
         assert!(url.contains("author_id"), "{url}");
         assert!(url.contains("referenced_tweets"), "{url}");
@@ -518,7 +525,8 @@ mod tests {
         let x = X::at("https://example.test", "tok", "u42");
         assert!(x.mentions_url(Some("1789")).contains("&since_id=1789"));
         assert!(
-            x.mentions_url(Some("17&max_results=1")).contains("&since_id=171"),
+            x.mentions_url(Some("17&max_results=1"))
+                .contains("&since_id=171"),
             "the ampersand and letters must not survive"
         );
         assert!(
@@ -707,13 +715,18 @@ mod tests {
         assert_eq!(got[0].id, "1");
 
         let request = seen.recv().expect("the server saw a request");
-        assert!(request.starts_with("GET /2/users/u42/mentions"), "{request}");
+        assert!(
+            request.starts_with("GET /2/users/u42/mentions"),
+            "{request}"
+        );
         assert!(
             request.contains("since_id=1700"),
             "the cursor must reach the wire: {request}"
         );
         assert!(
-            request.to_lowercase().contains("authorization: bearer secret-token"),
+            request
+                .to_lowercase()
+                .contains("authorization: bearer secret-token"),
             "an unauthenticated poll returns nothing and looks like a quiet account: {request}"
         );
     }
@@ -723,13 +736,17 @@ mod tests {
         let (base, seen) = serve_once("201 Created", r#"{"data":{"id":"posted-7"}}"#);
         let x = X::at(base, "secret-token", "u42");
 
-        let id = x.reply("m1", "the round trip here is about 30%").expect("posted");
+        let id = x
+            .reply("m1", "the round trip here is about 30%")
+            .expect("posted");
         assert_eq!(id, "posted-7");
 
         let request = seen.recv().expect("the server saw a request");
         assert!(request.starts_with("POST /2/tweets"), "{request}");
         assert!(
-            request.to_lowercase().contains("authorization: bearer secret-token"),
+            request
+                .to_lowercase()
+                .contains("authorization: bearer secret-token"),
             "{request}"
         );
         assert!(

@@ -108,7 +108,10 @@ pub fn write_cursor(path: &str, since_id: &str) -> std::io::Result<()> {
 /// decimal numbers that outgrew `u64` long ago and a numeric parse would either
 /// truncate or fail. Longer is larger for a decimal with no leading zeros.
 #[must_use]
-pub fn next_cursor<'a>(ids: impl IntoIterator<Item = &'a str>, current: Option<&'a str>) -> Option<String> {
+pub fn next_cursor<'a>(
+    ids: impl IntoIterator<Item = &'a str>,
+    current: Option<&'a str>,
+) -> Option<String> {
     ids.into_iter()
         .chain(current)
         .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_digit()))
@@ -140,7 +143,10 @@ mod tests {
         // Doubling rather than jumping, because activity arrives in bursts and
         // the poll after a burst is the most likely to find its tail.
         assert_eq!(interval(0, BUSY), Duration::from_secs(120));
-        assert_eq!(interval(0, Duration::from_secs(120)), Duration::from_secs(240));
+        assert_eq!(
+            interval(0, Duration::from_secs(120)),
+            Duration::from_secs(240)
+        );
         assert_eq!(interval(0, Duration::from_secs(240)), IDLE);
     }
 
@@ -210,7 +216,11 @@ mod tests {
         // The platform returns newest first, so "the last in the page" is the
         // oldest of the batch. Using it would re-read the whole page forever,
         // answering nothing new and paying for the read every time.
-        let page = ["1789000000000000009", "1789000000000000005", "1789000000000000001"];
+        let page = [
+            "1789000000000000009",
+            "1789000000000000005",
+            "1789000000000000001",
+        ];
         assert_eq!(
             next_cursor(page, None).as_deref(),
             Some("1789000000000000009")

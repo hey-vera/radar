@@ -475,15 +475,26 @@ pub fn test_paths(text: &str) -> BTreeSet<String> {
         if !bytes[start..].starts_with(needle.as_slice()) {
             continue;
         }
-        let is_path = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '/');
-        let mut from = start;
-        while from > 0 && is_path(bytes[from - 1]) {
-            from -= 1;
-        }
-        let mut to = start;
-        while to < bytes.len() && is_path(bytes[to]) {
-            to += 1;
-        }
+        let is_path = |c: &char| c.is_ascii_alphanumeric() || matches!(*c, '_' | '-' | '.' | '/');
+
+        // The run of path characters containing this match, found by searching
+        // rather than by walking an index in a loop.
+        //
+        // The loops this replaces were `from -= 1` and `to += 1`, and CI
+        // reported both as timeouts: mutated to `/=` and `*=` the counters stop
+        // moving and the scan never ends, so each one cost five minutes and
+        // failed the job. A hang is a poor way to detect a bug, and a search
+        // cannot hang at all -- which is cheaper than a test that catches it
+        // after 300 seconds.
+        let from = bytes[..start]
+            .iter()
+            .rposition(|c| !is_path(c))
+            .map_or(0, |i| i + 1);
+        let to = start
+            + bytes[start..]
+                .iter()
+                .position(|c| !is_path(c))
+                .unwrap_or(bytes.len() - start);
         let path: String = bytes[from..to].iter().collect();
         if let Some(path) = path.strip_suffix(".rs") {
             let path = path.trim_start_matches("../");

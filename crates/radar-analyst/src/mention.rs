@@ -74,9 +74,23 @@ pub fn read(text: &str) -> Asked {
 fn first_address(text: &str) -> Option<String> {
     let chars: Vec<char> = text.chars().collect();
     let mut i = 0;
-    while i < chars.len() {
+    // Bounded by the input length rather than by trusting the cursor to
+    // advance. Every iteration moves `i` forward by at least one or stops, so
+    // `chars.len() + 1` rounds is always enough.
+    //
+    // The shape matters more here than anywhere: this is the parser that reads
+    // text a stranger wrote. A cursor that can be made to stand still is a hang
+    // reachable from a mention, and CI found the identical shape in
+    // `radar-roast` twice, where it cost a runner five minutes each time.
+    for _ in 0..=chars.len() {
+        if i >= chars.len() {
+            break;
+        }
         let start = i;
-        while i < chars.len() && B58.contains(chars[i]) {
+        for _ in 0..=chars.len() {
+            if i >= chars.len() || !B58.contains(chars[i]) {
+                break;
+            }
             i += 1;
         }
         let run = i - start;
@@ -107,7 +121,10 @@ fn first_ticker(text: &str) -> Option<String> {
             continue;
         }
         let mut j = i + 1;
-        while j < chars.len() && chars[j].is_ascii_alphanumeric() && j - i <= MAX_TICKER {
+        for _ in 0..=chars.len() {
+            if j >= chars.len() || !chars[j].is_ascii_alphanumeric() || j - i > MAX_TICKER {
+                break;
+            }
             j += 1;
         }
         if j > i + 1 {

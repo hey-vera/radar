@@ -89,11 +89,20 @@ pub fn relative_links(markdown: &str) -> Vec<String> {
     let bytes: Vec<char> = markdown.chars().collect();
     let mut i = 0;
 
-    while i < bytes.len() {
+    // Bounded by the input length rather than by trusting the cursor to
+    // advance -- see `test_paths` below, which had the same shape and was
+    // reported by CI as two five-minute timeouts before it was changed.
+    for _ in 0..=bytes.len() {
+        if i >= bytes.len() {
+            break;
+        }
         if bytes[i] == ']' && bytes.get(i + 1) == Some(&'(') {
             let mut j = i + 2;
             let mut target = String::new();
-            while j < bytes.len() && bytes[j] != ')' {
+            for _ in 0..=bytes.len() {
+                if j >= bytes.len() || bytes[j] == ')' {
+                    break;
+                }
                 target.push(bytes[j]);
                 j += 1;
             }

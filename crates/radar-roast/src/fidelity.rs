@@ -234,6 +234,39 @@ mod tests {
     }
 
     #[test]
+    fn the_exact_match_is_a_difference_and_not_a_sum_or_a_ratio() {
+        // Two values that agree far past any precision a model would write, but
+        // round to different grid points at the precision it *did* write. Only
+        // the `(a - value).abs()` branch can pass this, so it is the branch
+        // being tested rather than the rounding one underneath it.
+        //
+        // Every mutation of that expression breaks it: a sum is ~1.0, a ratio is
+        // ~1.0, and neither is under the epsilon -- and with the rounding branch
+        // disagreeing, the literal is reported as fabricated.
+        assert!(
+            check("0.5000000002", &[0.500_000_000_1]).is_empty(),
+            "a difference of 1e-10 is the same number to any reader"
+        );
+    }
+
+    #[test]
+    fn the_epsilon_is_exclusive_and_the_boundary_is_where_it_says() {
+        // A difference of exactly the epsilon is *not* a match. `<` and `<=` are
+        // one character apart and disagree only here, and a tolerance rule that
+        // silently widened by one representable step is the thing this whole
+        // module exists to prevent.
+        //
+        // 1e-9 minus zero is exactly 1e-9 in binary floating point, so this is a
+        // real boundary rather than an approximation of one.
+        assert!(
+            !check("0.000000001", &[0.0]).is_empty(),
+            "exactly the epsilon is outside it"
+        );
+        // And a step under it is inside.
+        assert!(check("0.000000001", &[0.000_000_000_1]).is_empty());
+    }
+
+    #[test]
     fn group_separators_do_not_split_a_number_into_two_inventions() {
         // Without this, every reply quoting the population would be sent to the
         // template -- and a check that fires on everything gets switched off.

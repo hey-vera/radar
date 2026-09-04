@@ -33,15 +33,9 @@ use crate::flag;
 /// A message when the mint is missing or unparseable, or when the token's
 /// history cannot be read at all.
 pub fn run(args: &[String]) -> Result<(), String> {
-    let mint_arg = args
-        .get(1)
-        .filter(|a| !a.starts_with("--"))
-        .cloned()
-        .or_else(|| flag(args, "--mint"))
-        .ok_or_else(|| {
-            "usage: radar roast <mint> [--rpc URL] [--rates PATH] [--sheet] [--seconds N]"
-                .to_owned()
-        })?;
+    let mint_arg = mint_arg_from(args).ok_or_else(|| {
+        "usage: radar roast <mint> [--rpc URL] [--rates PATH] [--sheet] [--seconds N]".to_owned()
+    })?;
 
     let mint: Address = mint_arg
         .parse()
@@ -96,7 +90,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
 
     let (sheet, reply) = radar_roast::roast(&dossier, rates.as_ref(), provider.as_deref());
 
-    if args.iter().any(|a| a == "--sheet") {
+    if wants_sheet(args) {
         println!("--- fact sheet ---");
         print!("{}", sheet.render());
         for (label, value) in &sheet.untrusted {
@@ -108,7 +102,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
     }
 
     print!("{}", reply.text);
-    if !reply.text.ends_with('\n') {
+    if needs_newline(&reply.text) {
         println!();
     }
 
@@ -141,18 +135,62 @@ pub fn run(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The mint a `radar roast` invocation names, if any.
+///
+/// Positional first, then `--mint`. The positional slot is guarded against
+/// swallowing a flag: without that guard `radar roast --rpc URL` takes `--rpc`
+/// as the mint and reports it as an invalid address, which is a confusing way
+/// of saying "you named no mint at all".
+fn mint_arg_from(args: &[String]) -> Option<String> {
+    args.get(1)
+        .filter(|a| !a.starts_with("--"))
+        .cloned()
+        .or_else(|| flag(args, "--mint"))
+}
+
+/// Whether the fact sheet was asked for.
+///
+/// Its own function so the comparison can be tested. Inline, `==` could become
+/// `!=` and every run would print the sheet except the ones that asked for it.
+fn wants_sheet(args: &[String]) -> bool {
+    args.iter().any(|a| a == "--sheet")
+}
+
+/// Whether a reply needs a newline before the shell prompt returns.
+///
+/// One line, and extracted anyway, for the reason above: a mutation of the `!`
+/// is invisible in a `print!` and visible here.
+fn needs_newline(text: &str) -> bool {
+    !text.ends_with('\n')
+}
+
 /// Today, as `YYYY-MM-DD`.
 ///
 /// Derived from the system clock, which is fine for "are these base rates a
 /// fortnight old" and is deliberately nowhere near the decision path -- the
 /// risk kernel is pure and has no clock, and nothing here feeds it.
+///
+/// The clock is the only thing this does. All the arithmetic is in
+/// [`from_days`], which is pure and therefore checkable at a fixed day.
 fn today() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    let days = secs / 86_400;
-    // Civil-from-days, Howard Hinnant's algorithm, for the 1970 epoch.
-    let z = i64::try_from(days).unwrap_or(0) + 719_468;
+    from_days(i64::try_from(secs / 86_400).unwrap_or(0))
+}
+
+/// A `YYYY-MM-DD` date from a count of days since the 1970 epoch.
+///
+/// Civil-from-days, Howard Hinnant's algorithm.
+///
+/// **This was inside `today()` and copied into the test module.** The tests
+/// then exercised the copy, so every mutation of the real arithmetic survived --
+/// twenty-four of them, reported by CI on 2026-09-03. It is LEARNINGS 18's shape
+/// applied to a test: two instruments compared as if they were one, except here
+/// only one of them was ever run. The function is now production code with one
+/// definition, and the tests call it.
+fn from_days(days: i64) -> String {
+    let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -188,25 +226,124 @@ mod tests {
     }
 
     #[test]
-    fn the_epoch_renders_correctly() {
-        // One known value, because an off-by-one in a civil-date conversion is
-        // invisible in the shape check above.
-        assert_eq!(from_days(0), "1970-01-01");
-        assert_eq!(from_days(19_000), "2022-01-08");
+    fn the_mint_argument_is_read_positionally_and_never_swallows_a_flag() {
+        let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+
+        // Positional.
+        assert_eq!(
+            mint_arg_from(&args(&["roast", "SoMeMiNt"])),
+            Some("SoMeMiNt".to_owned())
+        );
+        // Named.
+        assert_eq!(
+            mint_arg_from(&args(&["roast", "--mint", "SoMeMiNt"])),
+            Some("SoMeMiNt".to_owned())
+        );
+        // A flag in the positional slot is not a mint. Without the guard this
+        // returns Some("--rpc"), and the command then reports the flag as an
+        // invalid address rather than saying no mint was given.
+        assert_eq!(mint_arg_from(&args(&["roast", "--rpc", "http://x"])), None);
+        // ...and the named form still wins from behind a flag.
+        assert_eq!(
+            mint_arg_from(&args(&["roast", "--sheet", "--mint", "SoMeMiNt"])),
+            Some("SoMeMiNt".to_owned())
+        );
+        // Nothing at all.
+        assert_eq!(mint_arg_from(&args(&["roast"])), None);
     }
 
-    /// The date arithmetic, separated so it can be checked at a fixed day.
-    fn from_days(days: i64) -> String {
-        let z = days + 719_468;
-        let era = z.div_euclid(146_097);
-        let doe = z.rem_euclid(146_097);
-        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = doy - (153 * mp + 2) / 5 + 1;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 };
-        let y = if m <= 2 { y + 1 } else { y };
-        format!("{y:04}-{m:02}-{d:02}")
+    #[test]
+    fn the_sheet_is_printed_only_when_it_is_asked_for() {
+        let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+        assert!(wants_sheet(&args(&["roast", "M", "--sheet"])));
+        assert!(!wants_sheet(&args(&["roast", "M"])));
+        // A different flag is not this flag.
+        assert!(!wants_sheet(&args(&["roast", "M", "--sheets"])));
+    }
+
+    #[test]
+    fn a_reply_gets_a_newline_only_when_it_lacks_one() {
+        assert!(needs_newline("no trailing newline"));
+        assert!(!needs_newline("has one\n"));
+        // Empty output still wants the prompt on its own line.
+        assert!(needs_newline(""));
+    }
+
+    #[test]
+    fn run_refuses_before_it_reaches_the_network() {
+        // Both refusals happen during argument handling, so this needs no RPC
+        // and no fixture -- and it is what stops the whole body being
+        // replaceable with `Ok(())`. A `radar roast` that printed nothing and
+        // exited zero would look exactly like success, which is LEARNINGS 5.
+        let args = |v: &[&str]| v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+
+        let usage = run(&args(&["roast"])).expect_err("no mint is a usage error");
+        assert!(usage.starts_with("usage: radar roast"), "{usage}");
+
+        let bad = run(&args(&["roast", "not-an-address"])).expect_err("a bad mint is an error");
+        assert!(bad.starts_with("not a valid address:"), "{bad}");
+    }
+
+    #[test]
+    fn the_calendar_is_right_at_every_boundary_the_algorithm_has() {
+        // Two known values used to be the whole of this, against a copy of the
+        // algorithm that lived in this module -- so every arithmetic mutation of
+        // the real one survived. These are chosen so that each constant and each
+        // branch changes an answer if it moves.
+
+        // The epoch, and the era offset that centres the algorithm on March.
+        assert_eq!(from_days(0), "1970-01-01");
+        assert_eq!(from_days(1), "1970-01-02");
+        assert_eq!(from_days(31), "1970-02-01");
+
+        // The March pivot itself: `mp < 10` and the `y + 1` correction either
+        // side of it. 1970-02-28 and 1970-03-01 are consecutive days that take
+        // opposite branches.
+        assert_eq!(from_days(58), "1970-02-28");
+        assert_eq!(from_days(59), "1970-03-01");
+
+        // Leap day in an ordinary leap year, and the day either side of it.
+        assert_eq!(from_days(19_781), "2024-02-28");
+        assert_eq!(from_days(19_782), "2024-02-29");
+        assert_eq!(from_days(19_783), "2024-03-01");
+
+        // 2000 is a leap year because it is divisible by 400 -- the case the
+        // `doe / 36_524` and `doe / 146_096` terms exist for, and the one a
+        // naive rule gets wrong.
+        assert_eq!(from_days(11_015), "2000-02-28");
+        assert_eq!(from_days(11_016), "2000-02-29");
+        assert_eq!(from_days(11_017), "2000-03-01");
+
+        // 2100 is *not* a leap year, because it is divisible by 100 and not by
+        // 400. Without this the century rule is unchecked in the direction that
+        // matters.
+        assert_eq!(from_days(47_540), "2100-02-28");
+        assert_eq!(from_days(47_541), "2100-03-01");
+
+        // Year and month ends, where `doy`, `mp` and the `+ 1` on the day meet.
+        assert_eq!(from_days(19_721), "2023-12-30");
+        assert_eq!(from_days(19_722), "2023-12-31");
+        assert_eq!(from_days(19_723), "2024-01-01");
+
+        // A date from before the epoch, so `div_euclid` and `rem_euclid` are
+        // exercised on a negative `z` -- the reason they are there rather than
+        // `/` and `%`.
+        assert_eq!(from_days(-1), "1969-12-31");
+        assert_eq!(from_days(-365), "1969-01-01");
+
+        // The day this was written, cross-checked against a calendar.
+        assert_eq!(from_days(20_699), "2026-09-03");
+    }
+
+    #[test]
+    fn today_uses_the_same_arithmetic_the_tests_check() {
+        // The defect this file had was a second copy of the algorithm. This is
+        // the assertion that there is only one: whatever day the clock is on,
+        // `today()` must equal `from_days` of that day.
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        let days = i64::try_from(secs / 86_400).expect("days since the epoch");
+        assert_eq!(today(), from_days(days));
     }
 }

@@ -286,8 +286,8 @@ nothing has ever tested.
   a restart. That is rule 8 enforced in the running system.
 
   What does not: `Cache`, `Breaker` and the planner are exported and **called
-  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 712 of
-  its 1,876 lines. This is the third documented-as-central layer with no caller
+  from nowhere outside this crate** — `cache.rs` and `health.rs` alone are 733 of
+  its 1,897 lines. This is the third documented-as-central layer with no caller
   ([LEARNINGS](../LEARNINGS.md) 1 and 9 are the same shape), and it should be
   wired to a real caller or deleted rather than left a third time.
 

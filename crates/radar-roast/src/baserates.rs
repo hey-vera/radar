@@ -331,6 +331,59 @@ mod tests {
         assert!(rates.band_for(40).is_none());
     }
 
+    /// Two bands holding the same count, where the wide one is listed first.
+    ///
+    /// The published snapshot happens to list its narrow bands early, so
+    /// `min_by_key` returned the right answer even when the key was wrong --
+    /// which is why every mutation of `b.hi - b.lo` survived. Order is not the
+    /// rule; width is.
+    fn overlapping(lo_wide: u32, hi_wide: u32, lo_narrow: u32, hi_narrow: u32) -> BaseRates {
+        let band = |name: &str, lo, hi| Band {
+            name: name.to_owned(),
+            lo,
+            hi,
+            never_graduated: 0.0,
+            organic: 0.0,
+            instant: 0.0,
+            p_instant: 0.0,
+            x_base_instant: 0.0,
+        };
+        BaseRates {
+            measured_on: "2026-09-03".to_owned(),
+            launches: 1,
+            base_rate_graduates: 0.0,
+            base_rate_instant: 0.0,
+            bands: vec![
+                band("wide", lo_wide, hi_wide),
+                band("narrow", lo_narrow, hi_narrow),
+            ],
+            round_trip_kernel: 0.0,
+            round_trip_bar: 0.0,
+            cost_bands: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_narrowest_band_wins_even_when_the_wide_one_is_listed_first() {
+        // 4..=9 is width 5; 6..=6 is width 0. Listed wide-first, so returning
+        // the first match rather than the narrowest gives the wrong answer.
+        let rates = overlapping(4, 9, 6, 6);
+        assert_eq!(rates.band_for(6).expect("a band").name, "narrow");
+
+        // And the width has to be `hi - lo`, not `hi + lo`: here the wide band
+        // 1..=9 sums to 10 and the narrow 5..=5 sums to 10 as well, so a sum
+        // ties and yields the first. The difference does not tie.
+        let rates = overlapping(1, 9, 5, 5);
+        assert_eq!(rates.band_for(5).expect("a band").name, "narrow");
+
+        // Nor `hi / lo`: 2..=8 divides to 4 and 6..=6 divides to 1, which is
+        // the right order by accident. 1..=3 divides to 3 and 2..=2 to 1 --
+        // also right. This pair is the one that inverts: 3..=4 divides to 1,
+        // and 4..=4 divides to 1, a tie the wide band wins on order.
+        let rates = overlapping(3, 4, 4, 4);
+        assert_eq!(rates.band_for(4).expect("a band").name, "narrow");
+    }
+
     #[test]
     fn the_bands_carry_the_shares_0024_measured() {
         let rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
@@ -352,6 +405,62 @@ mod tests {
         rates.measured_on = "2026-09-03".to_owned();
         assert!(!rates.is_stale_at("2026-09-10"));
         assert!(rates.is_stale_at("2026-10-03"));
+    }
+
+    #[test]
+    fn the_staleness_boundary_is_where_the_constant_says_it_is() {
+        // `> STALE_AFTER_DAYS` rather than `>=`, and the day either side of it.
+        // Without both, the comparison can move by one and nothing notices --
+        // which is a fortnight rule that is quietly a fortnight and a day.
+        let mut rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
+        rates.measured_on = "2026-09-01".to_owned();
+        assert_eq!(STALE_AFTER_DAYS, 14, "the dates below are chosen for this");
+
+        // Exactly fourteen days on: still fresh.
+        assert!(!rates.is_stale_at("2026-09-15"));
+        // Fifteen: stale.
+        assert!(rates.is_stale_at("2026-09-16"));
+    }
+
+    #[test]
+    fn a_date_that_is_not_a_date_is_rejected_on_both_fields() {
+        // The guard is `month out of range OR day out of range`. With `AND`, a
+        // date has to be wrong in *both* to be refused -- so "2026-13-05" would
+        // parse, and a snapshot dated in a thirteenth month would read as fresh.
+        let mut rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
+        rates.measured_on = "2026-09-01".to_owned();
+
+        // Bad month, good day.
+        assert!(rates.is_stale_at("2026-13-05"));
+        assert!(rates.is_stale_at("2026-00-05"));
+        // Good month, bad day.
+        assert!(rates.is_stale_at("2026-09-32"));
+        assert!(rates.is_stale_at("2026-09-00"));
+        // And a real date is still readable, so the guard is not simply always
+        // refusing.
+        assert!(!rates.is_stale_at("2026-09-02"));
+    }
+
+    #[test]
+    fn the_day_count_orders_dates_across_years_months_and_days() {
+        // `y * 372 + m * 31 + d`. Every coefficient here has to be big enough
+        // that the field below it cannot overtake it: a year must outrank any
+        // month, and a month must outrank any day. The mutations that survived
+        // were `*` to `+` and `+` to `*` on exactly these, which is the same
+        // rule stated as arithmetic.
+        let mut rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
+        rates.measured_on = "2026-01-01".to_owned();
+
+        // A year later is stale, however early in the year it falls -- so the
+        // year term dominates twelve months plus thirty-one days.
+        assert!(rates.is_stale_at("2027-01-01"));
+        // A month later is stale, however early in the month -- so the month
+        // term dominates thirty-one days.
+        assert!(rates.is_stale_at("2026-02-01"));
+        // And the December-to-January step is one month, not a jump backwards.
+        rates.measured_on = "2026-12-20".to_owned();
+        assert!(!rates.is_stale_at("2026-12-30"));
+        assert!(rates.is_stale_at("2027-01-20"));
     }
 
     #[test]

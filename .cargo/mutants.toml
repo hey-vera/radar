@@ -143,4 +143,25 @@ exclude_re = [
     # passes identically, because the two expressions are equal rather than
     # because the tests are weak.
     'replace \| with \^ in decode_base64',
+    # `radar-roast`'s `round_to`: `(v * factor).round() / factor` mutated to
+    # `... * factor`. Its only caller compares two of its results for equality:
+    #
+    #     round_to(*a, decimals) == round_to(value, decimals)
+    #
+    # Both sides go through the same transform, and multiplying by a positive
+    # finite `factor` is strictly monotone, so
+    #
+    #     (a*f).round()/f == (v*f).round()/f   <=>   (a*f).round() == (v*f).round()
+    #     (a*f).round()*f == (v*f).round()*f   <=>   (a*f).round() == (v*f).round()
+    #
+    # The two forms decide the same question. They differ in the *value*
+    # returned, which nothing reads -- `round_to` is private and has exactly one
+    # call site, checked above. If a second caller ever wants the rounded number
+    # itself, this entry stops being true and must come out.
+    #
+    # Applied by hand and the crate's suite passes identically, including the two
+    # tests added on 2026-09-03 that pin the epsilon branch either side of its
+    # boundary. It passes because the expressions agree, not because the tests
+    # are weak.
+    'replace / with \* in round_to',
 ]

@@ -1587,6 +1587,174 @@ mod tests {
         assert_eq!(humanise(600), "10m");
         assert_eq!(humanise(47_143), "13h05m");
     }
+
+    /// A store holding launches, some of which failed on chain.
+    ///
+    /// `succeeded` is the field that matters: a failed transaction is not a
+    /// fault in Radar and is real information about the market, but it is also
+    /// how a spam burst inflates a raw event count -- so a brief reporting only
+    /// the total reads as a busy market during an attack.
+    fn store_with_launches(dir: &std::path::Path, ok: usize, failed: usize) {
+        use radar_store::{Envelope, Event, Launch, Origin, Writer};
+
+        let mut writer = Writer::open(dir, 1_000).expect("open");
+        for i in 0..(ok + failed) {
+            let slot = 1_000 + i as u64;
+            writer
+                .append(Event::Launch(Box::new(Launch {
+                    envelope: Envelope {
+                        slot: radar_types::Slot(slot),
+                        signature: radar_types::Signature::new([(slot % 251) as u8; 64]),
+                        tx_index: 0,
+                        instruction_index: 1,
+                        parent_index: None,
+                        succeeded: i < ok,
+                    },
+                    origin: Origin::known(
+                        "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+                            .parse()
+                            .expect("program id"),
+                        "create_v2",
+                    ),
+                    mint: radar_types::Address::new([1u8; 32]),
+                    creator: radar_types::Address::new([2u8; 32]),
+                    name: "a token".to_owned(),
+                    symbol: "TKN".to_owned(),
+                    uri: "https://example.test".to_owned(),
+                    dev_buy_lamports: None,
+                })))
+                .expect("append");
+        }
+        writer.flush().expect("flush");
+    }
+
+    #[test]
+    fn a_table_with_no_failures_does_not_mention_them() {
+        // The `failed == 0` branch. Mutation testing turned it into `!=` and
+        // nothing failed, because no test had a table with failures in it --
+        // so both branches rendered whichever string the test happened to see.
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_with_launches(dir.path(), 3, 0);
+
+        let checks = tables(&Reader::open(dir.path()));
+        let launches = checks
+            .iter()
+            .find(|c| c.name == "launches")
+            .expect("a launches row");
+        assert_eq!(launches.detail, "3 recorded");
+        assert!(
+            !launches.detail.contains("failed"),
+            "a clean table must not mention failures: {}",
+            launches.detail
+        );
+    }
+
+    #[test]
+    fn a_table_with_failures_says_how_many() {
+        // The other half, and the reason the distinction exists: this is how a
+        // spam burst is told apart from a busy market. On 2026-08-24 a
+        // two-minute burst of failed migrations took the recorder down for
+        // thirteen hours, and the count that made it legible is this one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_with_launches(dir.path(), 3, 2);
+
+        let checks = tables(&Reader::open(dir.path()));
+        let launches = checks
+            .iter()
+            .find(|c| c.name == "launches")
+            .expect("a launches row");
+        assert_eq!(launches.detail, "5 recorded, 2 of them failed on chain");
+    }
+
+    #[test]
+    fn a_cursor_in_the_future_is_unknown_rather_than_very_fresh() {
+        // A cursor ahead of the clock is a wrong clock or a corrupted file, and
+        // reporting it as healthy hides whichever it is. Sixty seconds of slack
+        // because clocks disagree by a little as a matter of course; past that
+        // it is a fault.
+        //
+        // Tested at the boundary, which is the only place the comparison can be
+        // wrong: mutation testing turned `<` into `<=` with nothing failing,
+        // because no test put a cursor anywhere near it.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let now = now_epoch();
+
+        radar_store::write_cursor(dir.path(), now + 30).expect("write");
+        assert_eq!(
+            ingestion(dir.path(), now).status,
+            Status::Ok,
+            "a little clock skew is ordinary"
+        );
+
+        radar_store::write_cursor(dir.path(), now + 3_600).expect("write");
+        let check = ingestion(dir.path(), now);
+        assert_eq!(check.status, Status::Unknown, "detail was {}", check.detail);
+        assert!(
+            check.detail.contains("future"),
+            "it must say which way it is wrong: {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_table_with_no_rows_gets_no_line_at_all() {
+        // An empty table is skipped rather than reported as zero. The brief is
+        // read by somebody deciding whether to worry, and a screen of "0
+        // recorded" for tables that have never been written is noise that
+        // hides the two lines that matter.
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_with_launches(dir.path(), 2, 0);
+
+        let checks = tables(&Reader::open(dir.path()));
+        assert!(
+            checks.iter().any(|c| c.name == "launches"),
+            "the table with rows is reported"
+        );
+        assert!(
+            checks.iter().all(|c| !c.detail.starts_with("0 recorded")),
+            "no table is reported as empty: {:?}",
+            checks.iter().map(|c| &c.detail).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn an_outcome_pass_that_has_never_run_warns_rather_than_reporting_zero() {
+        // `rows.is_empty()` decides between "none measured yet" and a count, and
+        // mutation testing forced the guard both ways with nothing failing.
+        // The distinction is the point: every signal in this repository is
+        // fitted against outcomes, so a store with none is a store where
+        // nothing has been validated -- which must read as a warning and not as
+        // a healthy zero.
+        let dir = tempfile::tempdir().expect("tempdir");
+        store_with_launches(dir.path(), 1, 0);
+
+        let check = outcomes(&Reader::open(dir.path()));
+        assert_eq!(check.status, Status::Warn);
+        assert!(
+            check.detail.contains("none measured yet"),
+            "detail was {}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn each_duration_unit_changes_exactly_where_it_says() {
+        // The boundaries, because that is the only place the comparisons can be
+        // wrong. Mutation testing turned both `<` into `<=` and nothing failed:
+        // every value the test above uses is far from an edge, so the assertions
+        // held for either operator.
+        //
+        // This is an operator-facing string on the check that says whether
+        // ingestion has stopped, so "90s" against "1m" is not cosmetic -- it is
+        // the difference between two readings of the same outage.
+        assert_eq!(humanise(89), "89s", "one second below the minute boundary");
+        assert_eq!(humanise(90), "1m", "the boundary itself is minutes");
+        assert_eq!(humanise(5_399), "89m", "one second below the hour boundary");
+        assert_eq!(humanise(5_400), "1h30m", "the boundary itself is hours");
+
+        // And zero, which an operator sees when the cursor is current.
+        assert_eq!(humanise(0), "0s");
+    }
     #[test]
     fn the_analyst_directory_falls_back_to_the_daemons_own_default() {
         // The same default and the same variable the daemon uses. A brief

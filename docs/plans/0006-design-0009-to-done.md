@@ -55,7 +55,11 @@ time.
       `population.json` beside the index, so the endpoint reads five totals
       rather than 116,000 records; and research 0011's figure travels in the
       base-rate snapshot with its own date. One date function now lives in
-      `radar-types` and the CLI calls it, instead of a second copy
+      `radar-types` and the CLI calls it, instead of a second copy. CI's
+      mutants named four survivors on the PR — the three handlers replaced
+      by an empty 200, and the record filename rule's `&&` — and the second
+      commit reads the three bodies at the router and pins both halves of
+      the name rule; each re-applied by hand, each failing its test
 - [ ] 3. **M6 — the fee after graduation, measured.** Capture a PumpSwap swap
       for a graduated pump.fun token; does it pass the fee program and its
       config; re-read the schedule today; write research 0028; correct the pool

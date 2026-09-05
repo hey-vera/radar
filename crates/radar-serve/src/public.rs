@@ -617,6 +617,39 @@ mod tests {
     }
 
     #[test]
+    fn only_a_numbered_json_file_is_a_week_record() {
+        // Both halves of the name rule, separately. `2958` with no extension
+        // holds a valid record and must not count: CI's mutants run on
+        // 2026-09-05 turned the `&&` into `||` and it did, so a stray file
+        // that happened to parse became the latest week. `notes.json` and a
+        // backup copy are the other half.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        std::fs::create_dir_all(&paths.contest_dir).expect("mkdir");
+        let write = |name: &str, week: Week| {
+            std::fs::write(
+                format!("{}/{name}", paths.contest_dir),
+                a_record(week).to_json().expect("json"),
+            )
+            .expect("write");
+        };
+        write("2957.json", Week(2957));
+        write("2958", Week(2958));
+        write("2959.json.bak", Week(2959));
+        std::fs::write(format!("{}/notes.json", paths.contest_dir), "{}").expect("write");
+
+        let weeks: Vec<u64> = records(&paths.contest_dir)
+            .into_iter()
+            .map(|r| r.week.0)
+            .collect();
+        assert_eq!(weeks, [2957]);
+        assert_eq!(
+            latest_record(&paths.contest_dir).map(|r| r.week),
+            Some(Week(2957))
+        );
+    }
+
+    #[test]
     fn the_cors_header_names_the_one_origin_and_is_absent_when_none_is_configured() {
         let mut paths = paths_in(std::path::Path::new("."));
         let closed = respond(&paths, StatusCode::OK, json!({}));

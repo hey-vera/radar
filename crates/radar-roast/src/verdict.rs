@@ -335,7 +335,9 @@ mod tests {
         // slot cap -- a denominator the reader never sees is one that was not
         // published.
         assert!(
-            out.lines().take(6).any(|l| l.contains("across every launch")),
+            out.lines()
+                .take(6)
+                .any(|l| l.contains("across every launch")),
             "it must survive the cap:
 {out}"
         );

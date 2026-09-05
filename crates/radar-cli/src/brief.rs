@@ -2256,17 +2256,21 @@ mod tests {
         std::fs::write(format!("{dir}/pool.json"), reading.to_json().expect("json"))
             .expect("write");
 
-        let fresh = vault(dir, true, measured + VAULT_READING_STALE_AFTER);
+        let fresh = vault(dir, true, measured + 172_800);
         assert_eq!(fresh.status, Status::Ok, "{}", fresh.detail);
         assert!(
             fresh.detail.contains("VAULT holds 2500000 lamports"),
             "{}",
             fresh.detail
         );
+        // Two days is 172,800 seconds, written as a number here so the constant's
+        // arithmetic is what the test pins: CI's mutants turned its `*` into `+`
+        // and `/` and a test written in terms of the constant passed either way.
+        assert_eq!(VAULT_READING_STALE_AFTER, 172_800);
         // One second past two days is stale. Re-applied by comparing with
         // `>=`: the reading at exactly two days reads stale and the first
         // assertion fails.
-        let stale = vault(dir, true, measured + VAULT_READING_STALE_AFTER + 1);
+        let stale = vault(dir, true, measured + 172_801);
         assert_eq!(stale.status, Status::Unknown, "{}", stale.detail);
         assert!(stale.detail.contains("stale"), "{}", stale.detail);
 

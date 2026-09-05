@@ -17,8 +17,13 @@
 //! ADR 0013's constraints are the product, not the small print: no dev buy, no
 //! allocation, the operator holds zero tokens, and the only cash flow is
 //! pump.fun's 30 bps creator fee, all of which becomes the prize. At $10k of
-//! weekly volume that is about $3. Saying so is the whole difference between
+//! weekly volume that is about $30. Saying so is the whole difference between
 //! this and the thing it is built to expose.
+//!
+//! 30 bps is 0.30%, and 0.30% of $10,000 is $30. This file said $3 until
+//! 2026-09-05 -- the rate read as 0.03% -- and so did three documents; design
+//! 0009 §1 records the correction. The direction was the one that understates
+//! the token's own economics, which is the safe direction and still wrong.
 
 import { useEffect, useState } from "react";
 
@@ -49,8 +54,8 @@ function Economics() {
       </ul>
       <p className="mt-4 text-sm text-[var(--color-faint)]">
         So the prize scales with volume and nothing else. At $10,000 of weekly
-        volume it is roughly <span className="tnum">$3</span>; at $100,000,
-        roughly <span className="tnum">$30</span>. That is small, and saying so
+        volume it is roughly <span className="tnum">$30</span>; at $100,000,
+        roughly <span className="tnum">$300</span>. That is small, and saying so
         is the point — a memecoin that lies about its economics is the thing this
         bot exists to expose.
       </p>

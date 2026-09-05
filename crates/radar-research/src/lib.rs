@@ -75,6 +75,7 @@ pub mod basis;
 pub mod control;
 pub mod creator_index;
 pub mod exits;
+pub mod features;
 pub mod selection;
 pub mod study;
 

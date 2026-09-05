@@ -440,9 +440,13 @@ against the chain and append-only against its own log.
   LEARNINGS 27 paid for.
 
   Two consequences worth knowing. `radar-asof`'s `Observed<T>` and `LookAhead`
-  now have **no caller** — the deleted cache was the only one — so `radar-asof`
-  is `AsOf` plus two types nothing uses. And AGENTS.md rule 3 no longer claims
-  a type-system half; it was describing that cache.
+  lost their only caller when that cache went, and **they have one again since
+  2026-09-05**: `radar-research`'s feature table takes every value as an
+  `Observed<f64>` and accepts it against `AsOf(T)`, so a feature computed from
+  something that had not happened yet is a build error rather than a plausible
+  column. That is design 0010 §8.1 row 3 settled in the direction of keeping
+  them. And AGENTS.md rule 3 no longer claims a type-system half; it was
+  describing that cache.
 
   The economics that actually run for *pricing* are a separate, static cost model in
   [`radar-instruments`](../crates/radar-instruments/src/spec.rs), where each

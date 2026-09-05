@@ -13,7 +13,12 @@ authors.workspace = true
 workspace = true
 
 [dependencies]
+# The feature table's file format, and the same versions the store pins:
+# a research artifact that E3 reads in full is columnar work, and a second
+# parquet version in the tree would be two decoders for one format.
+arrow = { version = "59", default-features = false }
 blake3.workspace = true
+parquet = { version = "59", default-features = false, features = ["arrow", "zstd"] }
 radar-asof.workspace = true
 radar-store.workspace = true
 radar-strategy.workspace = true

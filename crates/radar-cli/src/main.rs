@@ -20,6 +20,7 @@ mod control;
 mod cost;
 mod dossier;
 mod exits;
+mod features;
 mod graduations;
 mod replay;
 mod roast;
@@ -64,6 +65,13 @@ commands:
                                  record what the strategy decides now
   replay --store <dir> --check <file>
                                  re-derive those decisions and report what moved
+  features --store <dir> [--out <file>] [--from N] [--to N]
+                                 write the feature table the walk-forward
+                                 protocol runs over: one row per succeeded
+                                 launch, every value observed at or before
+                                 T = launch + 6,000 slots, refused by the type
+                                 system if not. Deterministic; --from/--to
+                                 build one fold at a time
   study --store <dir> [--pivot N]
                                  does a creator's record predict their next
                                  launch; splits the store and compares
@@ -648,6 +656,15 @@ fn brief_report(args: &[String]) -> Result<(), String> {
     }
 }
 
+/// Writes the feature table the walk-forward protocol runs over.
+///
+/// # Errors
+///
+/// A message when the store cannot be read or the file cannot be written.
+fn feature_table(args: &[String]) -> Result<(), String> {
+    features::run(&store_of(args)?, args)
+}
+
 /// Runs the event study over recorded data.
 fn event_study(args: &[String]) -> Result<(), String> {
     let reader = store_of(args)?;
@@ -710,6 +727,7 @@ fn main() -> ExitCode {
         "consider" => decision_lane(&args),
         "route" => route::run(&args),
         "replay" => replay_lane(&args),
+        "features" => feature_table(&args),
         "study" => event_study(&args),
         "creator-index" => creator_index(&args),
         "seven-days-later" => seven_days::run(&args),

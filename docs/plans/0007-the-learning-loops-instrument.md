@@ -3,9 +3,8 @@
 
 **Status:** in progress
 **Branch:** `docs/0010-close-the-remainder-then-raise-the-ceiling` for item 0,
-stacked on #154; `feat/the-learning-loops-instrument` from `main` for items
-1–4, once the stack has merged
-**Base:** `b0b8e05`, the tip of #147–#154
+merged as #155; `feat/the-learning-loops-instrument` from `main` for items 1–4
+**Base:** `464e742`, `main` with the whole stack merged
 **Planned by:** Fable 5.1, plan mode, 2026-09-05
 **Design:** [0010](../design/0010-close-the-remainder-then-raise-the-ceiling.md)
 §4 A-1 and §6; design 0007 E1 and E3
@@ -34,10 +33,10 @@ fact the bot later wants to state has the pass it must go through first.
 
 ## Items
 
-- [ ] 0. Design 0010 and this plan in the repository
-      gate: `cargo test -p repo-conformance` green; the PR open, stacked on
-      #154
-- [ ] 1. **E1 — `radar features`.** `new:crates/radar-research/src/features.rs`
+- [x] 0. Design 0010 and this plan in the repository
+      done: `cargo test -p repo-conformance` 33 passed at `85e7ad8`; merged as
+      #155, and #147-#154 and #146 with it, so `main` is `464e742`
+- [x] 1. **E1 — `radar features`.** `new:crates/radar-research/src/features.rs`
       and `new:crates/radar-cli/src/features.rs`. One row per succeeded launch
       with an outcome measured at both the one-hour and the twenty-four-hour
       checkpoint. T is launch plus 6,000 slots — `Thresholds::DEFAULT`'s
@@ -62,12 +61,24 @@ fact the bot later wants to state has the pass it must go through first.
       `by_notional`; absent where either price is absent. Output: Parquet in a
       research directory beside the store, named by the store's watermark,
       never appended to the store (ADR 0006: derived and recoverable).
-      gate: two runs → identical sha256; the planted leak — a feature
-      observed at T + 1 — refused as `LookAhead` in a test, and the test
-      fails with the `accept` removed; `cargo test -p radar-research`; clippy
-      clean; the launch-slot trader count compared against
-      `Decision.launch_recipients` on the mints that carry both — a bound,
-      not an equality, since traders and token accounts are different things
+      done: `crates/radar-research/src/features.rs` and
+      `crates/radar-cli/src/features.rs`; 24 tests green
+      (`cargo test -p radar-research`, `-p radar-cli`), clippy clean under the
+      workspace's pedantic lints. The planted leak is
+      `a_value_observed_after_t_is_refused_and_never_becomes_a_number`, and the
+      end-to-end half is
+      `a_creators_record_counts_only_what_had_been_measured_by_t` in
+      `crates/radar-research/tests/the_feature_table_cannot_see_the_future.rs`:
+      a sibling token's graduation measured after T is not counted, and
+      `the_same_record_measured_before_t_does_count` is the same store with one
+      number moved, so a function returning zero fails it. Determinism is
+      `the_same_table_writes_the_same_bytes`; the round trip is
+      `the_file_says_what_the_table_said`, which also holds that an absent value
+      survives as absent.
+      not done in this item, and why: the launch-slot trader count against
+      `Decision.launch_recipients` is a comparison of two instruments over the
+      **production** store, and no store exists on this workstation. It belongs
+      to research 0026 (item 3), which runs on the box, and it is listed there
 - [ ] 2. **E3 — `radar edge`.** `new:crates/radar-research/src/edge.rs` and
       `new:crates/radar-cli/src/edge.rs`. Folds: five contiguous windows by
       launch slot, equal in rows, never shuffled. Purge and embargo: a fit
@@ -112,13 +123,25 @@ fact the bot later wants to state has the pass it must go through first.
 
 - Q1 (2026-09-05): the bar for E3 is 456 bps with 850 reported beside it,
   per research 0022. Assumed unless changed.
+- Q2 (2026-09-05), **found while building item 1**: this plan says the label is
+  net of the band's round trip *and* that `Found` needs the median net return
+  at or above 456 bps. Read against research 0022 that is a double charge —
+  0022's `a ≈ 456` **is** the fee round trip, and its bar is on the gross edge
+  `r`, since profit is `s · (r − a − b·s)`. Charging the round trip in the
+  label and then requiring 456 on top charges it twice.
+  What item 2 does about it, unless Josh says otherwise: the row carries the
+  **gross** return, the harness computes the net beside it from the snapshot's
+  `by_notional` band, and `Found` requires **both** — median net at or above
+  zero *and* median gross at or above the bar. That is stricter than either
+  reading alone, so it cannot produce a `Found` that only one of them supports,
+  and every number is printed so a reader can apply whichever rule they hold.
 
 ## Handback
 
-Stopped at: item 0 — the two documents written; nothing else started. Plan
-mode; no code was run, built or changed.
-Next action: merge #147–#154 in order, then #146, then this PR; branch
-`feat/the-learning-loops-instrument` from `main`; item 1.
+Stopped at: item 1 done, on `feat/the-learning-loops-instrument` from `main`
+(`464e742`). `radar features` builds and writes the table; the guard is a type
+and two tests prove it fires and that it is not vacuous.
+Next action: item 2, `radar edge`, under Q2's answer above.
 Do not: touch `Policy::CLOSED`, the thresholds, the bot or the box; add a
 crate; add a Python dependency; delete `Observed<T>` before item 1 has tried
 to use it — an unused type and a deleted invariant look identical in a

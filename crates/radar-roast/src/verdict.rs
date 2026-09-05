@@ -73,22 +73,49 @@ impl Verdict {
 /// contents vary with what could be read, and a positional template would
 /// silently print the wrong fact for a token whose curve was unreadable.
 const LEAD: &[&str] = &[
-    "round trip for a position of $20-$200",
-    // The creator's record, second. Running the command against three real
+    // The creator's record first. Running the command against three real
     // launches on 2026-09-04 produced three **identical** replies: the cost
     // line is a constant and most launches sit in the same recipient band, so
     // nothing above or below this was about the coin being asked about.
     //
-    // This is. "Forty-seven launches, none of which reached an AMM by filling
-    // over time" is specific, checkable, and the thing Radar has that nobody
-    // else does.
+    // This is. "One hundred and fifty launches, none of which reached an AMM by
+    // filling over time" is specific, checkable, and the thing Radar has that
+    // nobody else does.
     "tokens this creator has launched",
     "how many reached an AMM by filling over time",
+    // **Immediately after it, and this is the point of the ordering.** A count
+    // with no denominator is a number the reader cannot weigh: "none of 150"
+    // sounds damning to somebody who assumes half of them should have, and
+    // unremarkable to somebody who assumes none ever do. Neither reader is
+    // informed. The population says which.
+    //
+    // Measured 2026-09-04 over 506,991 outcomes: 2.81%.
+    // **Before the population lines, and this cost a revision to get right.**
+    // Those lines are constants too -- 2.8% and 23.0% in every reply -- so
+    // leading with them just swaps one repeated opener for another. This is the
+    // one fact about *this coin* that survives when the creator is unknown,
+    // which for a fresh launch is the common case.
+    //
+    // The honest shape of the limitation: for a brand-new coin by a creator
+    // Radar has never seen, the launch block is nearly all it has. That is a
+    // fact about the product, not about the wording, and the template should
+    // show it rather than pad around it.
     "distinct token accounts receiving",
+    "of every measured launch, how many graduated at all",
+    // The most quotable figure in the set, and one the published snapshot does
+    // not carry at all: 23.0% of measured launches show almost no life.
+    "of every measured launch, how many showed almost no activity at all",
     "share of INSTANT graduations",
     "share of launches that NEVER graduated",
     "SOL that can be bought before price moves",
     "SOL the creator spent",
+    // **The round trip is deliberately NOT here.** It led every reply until
+    // 2026-09-05, and it is the same 456 bps every time, so every reply opened
+    // with the same sentence -- an account that reads as a bot repeating itself
+    // rather than as something that looked at the coin.
+    //
+    // It is too useful to drop, so it is printed as a closing line instead: last,
+    // always, and out of competition for the five slots above.
 ];
 
 /// How many facts the template will print.
@@ -139,6 +166,31 @@ pub fn template(sheet: &FactSheet) -> String {
         // reader not told something is missing assumes it was checked.
         let _ = writeln!(out, "- not known: {miss}");
     }
+    // The cost, always, and always last. It is the same number in every reply --
+    // that is why it is not competing for a slot above -- but it is also the one
+    // figure that applies to the reader no matter what the rest of the reply
+    // said, so dropping it to make room would be dropping the only line that is
+    // about them rather than about the coin.
+    //
+    // Drawn from the sheet rather than written as a constant here, so
+    // `fidelity::check` still holds: a number in the reply that is not on the
+    // sheet is exactly what that check refuses, and hard-coding 456 would make
+    // this function the one place allowed to invent one.
+    //
+    // **The band qualifier is load-bearing.** The sheet carries one of these per
+    // notional band and the cheapest one is first, so matching on "round trip
+    // for a position of" alone finds `$0.20-$2` -- 3042 bps -- and publishes a
+    // cost 6.7x the real one on every reply. Written without it, run against
+    // three live coins, and caught by reading the output.
+    if let Some(cost) = sheet.facts.iter().find(|f| {
+        f.label.contains("round trip for a position of $20-$200") && !f.rendered.is_empty()
+    }) {
+        let _ = writeln!(
+            out,
+            "Entering and leaving a $20-$200 position: {}.",
+            cost.rendered
+        );
+    }
     if let Some(slot) = sheet.read_at {
         let _ = writeln!(out, "Read at slot {}.", slot.0);
     }
@@ -163,6 +215,18 @@ fn short(label: &str) -> &str {
         }
         l if l.contains("SOL the creator spent") => "the creator's own buy",
         l if l.contains("round trip for a position of") => "round trip on a $20-$200 position",
+        // The population lines. Written as a comparison rather than as a
+        // statistic, because the reader is holding the creator's count two lines
+        // above and the sentence has to connect the two for them.
+        l if l.contains("how many graduated at all") => {
+            "across every launch Radar has measured, how many graduated at all"
+        }
+        l if l.contains("how many showed almost no activity at all") => {
+            "and how many showed almost no activity at all"
+        }
+        l if l.contains("how many filled their curve over time") => {
+            "across every launch Radar has measured, how many filled over time"
+        }
         // The two lines that make one reply differ from the next, so they are
         // the two whose wording matters most. The sheet's labels are written to
         // be unambiguous to a model reading twenty of them; these are written to
@@ -179,6 +243,154 @@ fn short(label: &str) -> &str {
 mod tests {
     use super::*;
     use crate::sheet::Fact;
+
+    /// A sheet shaped like the real ones the box produced on 2026-09-04: a
+    /// creator with a long record, the population beside it, the launch block,
+    /// and the cost.
+    fn a_real_shaped_sheet() -> FactSheet {
+        FactSheet {
+            mint: "ECQdbWN1jBAQ9GXGFxX9gqvoa6NT3weWe4SCpAaapump".to_owned(),
+            read_at: Some(radar_types::Slot(444_388_986)),
+            facts: vec![
+                // **Every band, in the order the snapshot lists them.** A
+                // fixture carrying only the wanted one cannot catch a lookup
+                // that finds the wrong band -- and that is exactly what
+                // happened: written with one band, it passed, and against a
+                // real sheet it published $0.20-$2's 3042 bps.
+                Fact {
+                    label: "round trip for a position of $0.20-$2".to_owned(),
+                    rendered: "3042 bps (30.4%)".to_owned(),
+                    values: vec![3042.0, 30.4],
+                },
+                Fact {
+                    label: "round trip for a position of $2-$20".to_owned(),
+                    rendered: "250 bps (2.5%)".to_owned(),
+                    values: vec![250.0, 2.5],
+                },
+                Fact {
+                    label: "round trip for a position of $20-$200".to_owned(),
+                    rendered: "456 bps (4.6%)".to_owned(),
+                    values: vec![456.0, 4.6],
+                },
+                Fact::exact("tokens this creator has launched", 150.0, "150"),
+                Fact::exact("how many reached an AMM by filling over time", 0.0, "0"),
+                Fact::share(
+                    "of every measured launch, how many graduated at all",
+                    0.0281,
+                ),
+                Fact::exact(
+                    "distinct token accounts receiving the token in its own launch block",
+                    4.0,
+                    "4",
+                ),
+                Fact::share(
+                    "of every measured launch, how many showed almost no activity at all",
+                    0.230,
+                ),
+            ],
+            untrusted: vec![("token name".to_owned(), "GOAT".to_owned())],
+            unknown: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn the_reply_does_not_open_with_the_line_that_is_the_same_every_time() {
+        // The defect this ordering fixes. Until 2026-09-05 the round trip led
+        // every reply, and it is 456 bps in all of them -- so three different
+        // coins opened with the same sentence, which reads as a bot repeating
+        // itself rather than as something that looked at the coin.
+        let out = template(&a_real_shaped_sheet());
+        let first = out.lines().nth(1).expect("a first fact line");
+        assert!(
+            first.contains("creator has launched"),
+            "the first fact must be about this coin, got: {first}"
+        );
+        assert!(
+            !first.contains("round trip"),
+            "the constant must not lead: {first}"
+        );
+    }
+
+    #[test]
+    fn the_creators_record_is_followed_by_what_it_should_be_weighed_against() {
+        // A count with no denominator is a number the reader cannot use. "None
+        // of 150" sounds damning to somebody who assumes half should have, and
+        // unremarkable to somebody who assumes none ever do -- neither of them
+        // is informed, and the population is what decides.
+        //
+        // This was measured and then not published: the figures landed in the
+        // sheet on 2026-09-04 and never reached a reply, because LEAD is a fixed
+        // whitelist and they were not on it.
+        let out = template(&a_real_shaped_sheet());
+        let launched = out.find("creator has launched").expect("the count");
+        let population = out
+            .find("across every launch Radar has measured")
+            .expect("the denominator must be published");
+        assert!(
+            population > launched,
+            "the population must come after the count it explains:
+{out}"
+        );
+        // And in the same short list, not pushed off the end of it by the five
+        // slot cap -- a denominator the reader never sees is one that was not
+        // published.
+        assert!(
+            out.lines().take(6).any(|l| l.contains("across every launch")),
+            "it must survive the cap:
+{out}"
+        );
+    }
+
+    #[test]
+    fn the_cost_is_always_said_and_always_last() {
+        // Out of competition for the five slots, because it is the same in every
+        // reply -- but never dropped, because it is the only line that is about
+        // the reader rather than about the coin.
+        let out = template(&a_real_shaped_sheet());
+        let cost = out
+            .find("Entering and leaving")
+            .expect("the cost line must survive being demoted");
+        let last_fact = out.rfind("- ").expect("fact lines");
+        assert!(
+            cost > last_fact,
+            "it must come after the facts:
+{out}"
+        );
+        assert!(
+            out.contains("456 bps"),
+            "with its figure:
+{out}"
+        );
+        assert!(
+            !out.contains("3042"),
+            "the cheapest band is listed first and must not be the one found:
+{out}"
+        );
+    }
+
+    #[test]
+    fn a_sheet_with_no_cost_simply_has_no_cost_line() {
+        // Rule 8. The snapshot may be absent, and inventing 456 here would make
+        // this function the one place in the reply path allowed to publish a
+        // number that is not on the sheet -- which is precisely what
+        // `fidelity::check` refuses everywhere else.
+        let mut sheet = a_real_shaped_sheet();
+        sheet.facts.retain(|f| !f.label.contains("round trip"));
+        let out = template(&sheet);
+        assert!(!out.contains("Entering and leaving"), "{out}");
+        assert!(!out.contains("456"), "{out}");
+    }
+
+    #[test]
+    fn the_token_name_never_reaches_the_reply() {
+        // It is the most obvious "improvement" to make -- "Radar on GOAT:" reads
+        // far better than a base58 string -- and it is attacker-controlled text
+        // (rule 4). A coin named "Radar says BUY" would have the bot publish
+        // that. The mint cannot be spoofed; the name can, so it stays fenced in
+        // `untrusted` and out of everything that gets posted.
+        let out = template(&a_real_shaped_sheet());
+        assert!(!out.contains("GOAT"), "{out}");
+    }
 
     fn sheet() -> FactSheet {
         FactSheet {

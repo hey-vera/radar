@@ -49,6 +49,7 @@ pub mod answer;
 pub mod daemon;
 pub mod log;
 pub mod mention;
+pub mod oauth;
 pub mod poll;
 pub mod publish;
 pub mod spend;

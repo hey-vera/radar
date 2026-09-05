@@ -134,6 +134,18 @@ pub struct X {
     user_id: String,
     /// The API root, so tests can point at something that is not the platform.
     base: String,
+    /// The four values that let this account **speak**, or `None`.
+    ///
+    /// Separate from the bearer because the platform treats them separately:
+    /// reading mentions is an app-only operation and the bearer is the cheapest
+    /// way to do it, while `POST /2/tweets` refuses an app-only token outright
+    /// and requires user context.
+    ///
+    /// `None` is a client that can read and cannot post, which is a state worth
+    /// having rather than an error: it is what an instance looks like before
+    /// somebody has finished the credential, and [`Publisher::reply`] says so in
+    /// those words instead of failing at the platform.
+    oauth: Option<crate::oauth::Credentials>,
 }
 
 // Written by hand so the token cannot reach a log through a derive. A struct
@@ -145,6 +157,17 @@ impl std::fmt::Debug for X {
             .field("user_id", &self.user_id)
             .field("base", &self.base)
             .field("bearer", &"<redacted>")
+            // Present or absent, never the values. Whether this client can post
+            // is the thing somebody reading a log line actually wants, and it is
+            // not a secret; the four strings behind it are.
+            .field(
+                "oauth",
+                &if self.oauth.is_some() {
+                    "<redacted, can post>"
+                } else {
+                    "none, cannot post"
+                },
+            )
             .finish()
     }
 }
@@ -208,10 +231,20 @@ impl X {
             // crate defaults to refusing, and for the same underlying reason —
             // the default must be the outcome that cannot surprise anybody.
             base: std::env::var("RADAR_X_API_BASE").unwrap_or_else(|_| API.to_owned()),
+            // Read separately, and absent is not an error. The bearer is what
+            // makes this instance able to read; these are what make it able to
+            // speak, and an operator who has set up only the first has an
+            // instance that answers into the log -- which is the state the
+            // launch gate is read in.
+            oauth: crate::oauth::Credentials::from_env(),
         })
     }
 
     /// A client pointed at a different root, for tests.
+    ///
+    /// Carries no OAuth credential, so a test using it can read and cannot post
+    /// — the same shape as a half-configured instance. Use [`Self::signing`] for
+    /// a client that can.
     #[must_use]
     pub fn at(
         base: impl Into<String>,
@@ -222,7 +255,30 @@ impl X {
             bearer: bearer.into(),
             user_id: user_id.into(),
             base: base.into(),
+            oauth: None,
         }
+    }
+
+    /// The same, with a credential that can sign a post.
+    #[must_use]
+    pub fn signing(
+        base: impl Into<String>,
+        bearer: impl Into<String>,
+        user_id: impl Into<String>,
+        oauth: crate::oauth::Credentials,
+    ) -> Self {
+        Self {
+            bearer: bearer.into(),
+            user_id: user_id.into(),
+            base: base.into(),
+            oauth: Some(oauth),
+        }
+    }
+
+    /// Whether this client can post, as opposed to only read.
+    #[must_use]
+    pub const fn can_post(&self) -> bool {
+        self.oauth.is_some()
     }
 
     /// The URL a mentions poll requests.
@@ -271,9 +327,36 @@ impl X {
     }
 
     /// POSTs a JSON body with the bearer token.
+    /// Posts a JSON body, signed with OAuth 1.0a.
+    ///
+    /// **Not the bearer.** `POST /2/tweets` refuses an app-only token and
+    /// requires user context — the client sent a bearer here until 2026-09-05,
+    /// which read correctly and would have been refused on the first real reply.
+    ///
+    /// The body is **not** part of the signature. OAuth 1.0a folds body
+    /// parameters into the base string only for `application/x-www-form-urlencoded`,
+    /// and this is JSON; signing it produces a signature the platform rejects.
+    /// The same goes for the query, which is empty on this endpoint and is
+    /// passed explicitly so the reason is visible rather than implied.
     fn post(&self, url: &str, body: &str) -> Result<String, Unreachable> {
+        let Some(credentials) = &self.oauth else {
+            return Err(Unreachable::Transport(
+                "no OAuth credential, so this instance can read but cannot post -- set \
+                 RADAR_X_API_KEY, RADAR_X_API_SECRET, RADAR_X_ACCESS_TOKEN and \
+                 RADAR_X_ACCESS_SECRET"
+                    .to_owned(),
+            ));
+        };
+        let authorization = crate::oauth::authorization(
+            credentials,
+            "POST",
+            url,
+            &[],
+            crate::daemon::now(),
+            &crate::oauth::nonce(),
+        );
         let response = ureq::post(url)
-            .header("Authorization", &format!("Bearer {}", self.bearer))
+            .header("Authorization", &authorization)
             .header("Content-Type", "application/json")
             .send(body);
         Self::body_of(response)
@@ -741,10 +824,35 @@ mod tests {
         );
     }
 
+    /// A credential that signs. The values are arbitrary; only their effect on
+    /// the signature matters, and `oauth.rs` is where that is checked.
+    fn credentials() -> crate::oauth::Credentials {
+        crate::oauth::Credentials {
+            consumer_key: "ck".to_owned(),
+            consumer_secret: "cs".to_owned(),
+            token: "tok".to_owned(),
+            token_secret: "ts".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_client_with_no_oauth_credential_refuses_to_post_rather_than_being_refused() {
+        // The half-configured instance: a bearer, so it reads, and no signing
+        // credential, so it cannot speak. Saying so locally is better than
+        // spending a call to be told -- and the message names the four
+        // variables, because "401" does not.
+        let x = X::at("https://example.test", "secret-token", "u42");
+        assert!(!x.can_post());
+        let err = x.reply("m1", "text").expect_err("must refuse");
+        let rendered = err.to_string();
+        assert!(rendered.contains("cannot post"), "{rendered}");
+        assert!(rendered.contains("RADAR_X_API_KEY"), "{rendered}");
+    }
+
     #[test]
     fn a_reply_posts_the_body_to_the_tweets_endpoint_and_returns_the_id() {
         let (base, seen) = serve_once("201 Created", r#"{"data":{"id":"posted-7"}}"#);
-        let x = X::at(base, "secret-token", "u42");
+        let x = X::signing(base, "secret-token", "u42", credentials());
 
         let id = x
             .reply("m1", "the round trip here is about 30%")
@@ -753,12 +861,30 @@ mod tests {
 
         let request = seen.recv().expect("the server saw a request");
         assert!(request.starts_with("POST /2/tweets"), "{request}");
+        // **OAuth, never the bearer.** The platform refuses an app-only token on
+        // this endpoint, so a request carrying one reads correctly here and is
+        // refused there -- which is exactly what shipped until 2026-09-05 and
+        // would have surfaced on the first real reply.
+        let lower = request.to_lowercase();
         assert!(
-            request
-                .to_lowercase()
-                .contains("authorization: bearer secret-token"),
-            "{request}"
+            lower.contains("authorization: oauth "),
+            "the post must be signed, not bearered: {request}"
         );
+        assert!(
+            !lower.contains("bearer secret-token"),
+            "the bearer must not reach this endpoint: {request}"
+        );
+        for field in [
+            "oauth_consumer_key",
+            "oauth_nonce",
+            "oauth_signature",
+            "oauth_signature_method",
+            "oauth_timestamp",
+            "oauth_token",
+            "oauth_version",
+        ] {
+            assert!(lower.contains(field), "missing {field}: {request}");
+        }
         assert!(
             request.contains(r#""in_reply_to_tweet_id":"m1""#),
             "a reply that names no parent is a top-level post, which is a              different product and a different price: {request}"

@@ -190,6 +190,28 @@ exclude_re = [
     # the dry run and posts nothing. It is caught by the first live run.
     'replace X::from_env -> Option<Self> with None',
 
+    # `Credentials::from_env` is the same shape and the same argument: it reads
+    # four environment variables and hands them to `from_vars`, which decides.
+    # The decision is tested at every combination -- all four present, each one
+    # missing in turn, and a blank value counting as absent.
+    #
+    # The reading is what is left, and it cannot be tested for the reason above:
+    # `std::env::set_var` is `unsafe` in edition 2024 against a workspace that
+    # forbids unsafe, and these tests run in parallel threads where process-wide
+    # state is a race with unrelated tests.
+    #
+    # The mutation's effect is the safe direction, and unlike `X::from_env` it is
+    # now **said out loud**: `None` means the instance can read and cannot post,
+    # which `daemon::posture` names on every start --
+    #
+    #   "RADAR_X_PUBLISH=on but there is no signing credential, so every reply
+    #    will be answered and none delivered."
+    #
+    # -- and `the_three_states_are_told_apart_in_words` pins that sentence. So a
+    # daemon in the mutated state announces it at startup rather than being
+    # discovered on the first real reply.
+    'replace Credentials::from_env -> Option<Self> with None',
+
     # The daemon's two thinnest wrappers, and neither is equivalent -- each is
     # **unreachable by a test in this workspace**, which is a different and more
     # honest claim.

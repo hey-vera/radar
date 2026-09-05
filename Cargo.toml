@@ -40,6 +40,32 @@ radar-store = { path = "crates/radar-store", version = "0.0.1" }
 # for adding one is "the alternative is writing it ourselves and getting it wrong".
 blake3 = "1.5"
 ed25519-dalek = "3.0"
+# OAuth 1.0a request signing, which is the only way to post as an account: X
+# refuses `POST /2/tweets` from an app-only bearer token and requires user
+# context (checked against docs.x.com, 2026-09-05).
+#
+# Two crates, and they were weighed against the bar above rather than added past
+# it. HMAC-SHA1 is a fixed, published algorithm with RFC 2202 test vectors, so
+# "write it ourselves" is genuinely available — and it is exactly the shape of
+# thing the second half of that sentence is about. These come from the same
+# RustCrypto family as `sha2`, whose `digest` and `crypto-common` are already in
+# the tree, so the addition is a branch of a trusted lineage rather than a new
+# one — and `digest` stays at a single version, which is the thing worth
+# checking.
+#
+# **Four crates, not two.** `hmac` and `sha1` pull `cmov` and `ctutils` behind
+# them. Counted after resolving rather than before, because the number that
+# matters is the one in `Cargo.lock`.
+#
+# SHA-1 is broken for collision resistance and must never be used here for
+# anything else. OAuth 1.0a specifies it, X requires it, and its use is confined
+# to `radar_analyst::oauth`.
+hmac = "0.13"
+sha1 = "0.11"
+# Already in the tree; named here so the version is one decision rather than
+# whatever a transitive dependency happens to pick.
+base64 = "0.23"
+rand = "0.9"
 bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }

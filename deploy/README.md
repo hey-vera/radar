@@ -765,10 +765,27 @@ is deny-by-default, and each absence is reported rather than assumed:
 A daemon that exits on a missing variable looks like a broken deploy. One that
 runs and says `unfunded` on every tick is legible, and `radar brief` can see it.
 
-**Setting `RADAR_X_BEARER` and `RADAR_X_USER_ID` is what makes the account
-public.** Until both are set, this writes replies to a log and shows them to
-nobody. That is the intended state for the first day: read a few hundred of them
-beside their fact sheets before anyone else does.
+**`RADAR_X_BEARER` and `RADAR_X_USER_ID` make the account read. `RADAR_X_PUBLISH=on`
+makes it speak.** They are two switches on purpose.
+
+With the credential alone, the daemon polls real mentions, answers them, and
+writes every answer to the log beside the fact sheet it was built from — saying
+nothing in public. That is the state to spend the first day in, and the state the
+launch gate is read in.
+
+Until 2026-09-05 it was one switch, and pasting a token went straight to a live
+account. There was no way to satisfy the gate — a hundred replies read with their
+evidence — without publishing the hundred. Two wrong figures were found in the
+reply path on 2026-09-04 alone, both by reading real output, so the first hundred
+are exactly where the next one turns up.
+
+The daemon prints which of its three states it is in on every start:
+
+```
+radar-analyst: no credential, so nothing is read and nothing is posted.
+radar-analyst: reading mentions and answering them to the log ONLY -- set RADAR_X_PUBLISH=on to speak in public.
+radar-analyst: LIVE -- replies are being posted publicly.
+```
 
 ```bash
 journalctl -u radar-analyst -f

@@ -222,6 +222,7 @@ mod tests {
             ],
             untrusted: vec![("token name".to_owned(), "Gay Pepe".to_owned())],
             unknown: Vec::new(),
+            signals: Vec::new(),
         }
     }
 

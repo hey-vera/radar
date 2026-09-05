@@ -177,6 +177,7 @@ mod tests {
             fact_sheet: "recipients: 6\n".to_owned(),
             reply: "Six token accounts.".to_owned(),
             fellback: None,
+            signals: None,
             reply_id: None,
         }
     }

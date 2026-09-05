@@ -126,6 +126,38 @@ impl Fact {
     }
 }
 
+/// One thing on the sheet that, by the published rule, is a reason to refuse.
+///
+/// Design 0009 §5, M3: the hunter rank counts, per summoned reply, the refusal
+/// signals the fact sheet carried at the time. These are those, as a type
+/// rather than a number, so the log says *which* fired and a later rule change
+/// can re-score old replies from the record.
+///
+/// **The model never sees these.** They are not rendered into the sheet and the
+/// word "signal" appears nowhere the model reads: the bot states measured
+/// facts, and "this is a reason to refuse" is a verdict the facts already
+/// carry. The count exists for the leaderboard, and it travels on the reply
+/// log entry beside the sheet it was counted from.
+///
+/// Each variant is read off a fact the sheet states, never inferred from one it
+/// could not read: a truncated recipient count, an unmeasured creator and an
+/// unseen dev buy are all *no signal*, not a signal of zero (rule 9).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Signal {
+    /// The launch block's recipient count lands in the snapshot's strongest
+    /// band -- the one most enriched for instant graduation -- or above it.
+    ///
+    /// Read from the snapshot, not named: research 0024 is the record of the
+    /// band moving off six, and a constant here would have fired on the wrong
+    /// launches from the day it moved.
+    LaunchBlockInStrongestBand,
+    /// The creator has measured launches and none of them filled over time.
+    CreatorNeverGraduatedOrganically,
+    /// The creator bought their own token in the launch block.
+    CreatorBoughtOwnLaunch,
+}
+
 /// Everything the analyst may assert about one token.
 #[derive(Clone, Debug)]
 pub struct FactSheet {
@@ -147,6 +179,8 @@ pub struct FactSheet {
     /// can only say it if the absence survives to here rather than becoming a
     /// default somewhere below.
     pub unknown: Vec<String>,
+    /// The refusal signals the facts carry, in a fixed order. See [`Signal`].
+    pub signals: Vec<Signal>,
 }
 
 impl FactSheet {
@@ -173,11 +207,26 @@ impl FactSheet {
         let mut facts = Vec::new();
         let mut untrusted = Vec::new();
         let mut unknown = Vec::new();
+        let mut signals = Vec::new();
 
         if let Some(launch) = &dossier.launch {
             push_launch(&mut facts, &mut untrusted, launch);
             if let Some(rates) = rates {
                 push_population(&mut facts, launch.recipients, rates);
+                // In the strongest band or above it. An exact count only: a
+                // truncated one was decided by Radar's call budget, and a
+                // signal read off it would be a signal about the budget.
+                if let (Some(exact), Some(strongest)) =
+                    (launch.recipients.exact(), rates.strongest_band())
+                    && exact >= strongest.lo
+                {
+                    signals.push(Signal::LaunchBlockInStrongestBand);
+                }
+            }
+            // A buy that was seen. `None` is "could not see", and the sheet
+            // already refuses to call that "did not buy".
+            if launch.dev_buy_lamports.is_some_and(|l| l > 0) {
+                signals.push(Signal::CreatorBoughtOwnLaunch);
             }
             // **The fact that makes one reply differ from another.** Everything
             // above is about the block; three coins launched in the same minute
@@ -186,7 +235,16 @@ impl FactSheet {
             // creator did before is the part that is about *this* coin, and it
             // is the thing Radar has that nobody else does.
             if let Some(index) = creators {
-                push_creator(&mut facts, &mut unknown, &launch.creator.to_string(), index);
+                let creator = launch.creator.to_string();
+                push_creator(&mut facts, &mut unknown, &creator, index);
+                // Measured and none organic. A creator whose launches have not
+                // been measured has no record to hold against them.
+                if let Some(record) = index.get(&creator)
+                    && record.measured > 0
+                    && record.organic == 0
+                {
+                    signals.push(Signal::CreatorNeverGraduatedOrganically);
+                }
             }
         } else {
             unknown.push("the launch block could not be read".to_owned());
@@ -269,6 +327,7 @@ impl FactSheet {
             facts,
             untrusted,
             unknown,
+            signals,
         }
     }
 
@@ -778,6 +837,7 @@ mod tests {
             facts: Vec::new(),
             untrusted: vec![("token name".to_owned(), "99999 percent safe".to_owned())],
             unknown: Vec::new(),
+            signals: Vec::new(),
         };
         assert!(sheet.authorised().is_empty());
         assert!(!sheet.render().contains("99999"));
@@ -810,6 +870,7 @@ mod tests {
             facts,
             untrusted: Vec::new(),
             unknown: Vec::new(),
+            signals: Vec::new(),
         };
 
         let authorised = sheet.authorised();
@@ -859,6 +920,200 @@ mod tests {
             calls: 0,
             elapsed_ms: 0,
         }
+    }
+
+    /// A launch block with the three things the signals read.
+    fn launch(
+        recipients: radar_onchain::budget::Count,
+        dev_buy_lamports: Option<u64>,
+    ) -> radar_onchain::launch::LaunchBlock {
+        radar_onchain::launch::LaunchBlock {
+            slot: Slot(444_007_820),
+            creator: radar_types::Address::new([9u8; 32]),
+            recipients,
+            transactions: radar_onchain::budget::Count::Exactly(4),
+            dev_buy_lamports,
+            metadata: radar_onchain::launch::Metadata {
+                name: "x".to_owned(),
+                symbol: "X".to_owned(),
+                uri: String::new(),
+            },
+        }
+    }
+
+    /// A snapshot whose strongest band is `lo..=hi`, beside a weaker one at
+    /// one to three so that "strongest" is a comparison and not the only row.
+    fn rates_strongest(lo: u32, hi: u32) -> BaseRates {
+        let band = |name: &str, lo, hi, x| crate::baserates::Band {
+            name: name.to_owned(),
+            lo,
+            hi,
+            fires_on: 0.0,
+            never_graduated: 0.0,
+            organic: 0.0,
+            instant: 0.0,
+            p_instant: 0.0,
+            x_base_instant: x,
+        };
+        BaseRates {
+            measured_on: "2026-09-03".to_owned(),
+            aftermath: None,
+            launches: 1,
+            base_rate_graduates: 0.0,
+            base_rate_instant: 0.0,
+            bands: vec![
+                band("one to three", 1, 3, 0.0),
+                band("strong", lo, hi, 10.1),
+            ],
+            round_trip_kernel: 0.0,
+            round_trip_bar: 0.0,
+            cost_bands: Vec::new(),
+        }
+    }
+
+    fn index_with(record: crate::creator::Record) -> crate::creator::CreatorIndex {
+        let mut creators = std::collections::BTreeMap::new();
+        creators.insert(radar_types::Address::new([9u8; 32]).to_string(), record);
+        crate::creator::CreatorIndex {
+            watermark_slot: 444_343_109,
+            built_at: 1_788_000_000,
+            population: None,
+            creators,
+        }
+    }
+
+    fn record(measured: u32, organic: u32) -> crate::creator::Record {
+        crate::creator::Record {
+            launches: measured + 1,
+            measured,
+            organic,
+            instant: measured.saturating_sub(organic),
+            stillborn: 0,
+        }
+    }
+
+    #[test]
+    fn the_three_signals_fire_together_in_a_fixed_order_and_the_model_sees_none_of_them() {
+        // Design 0009 M3. Twelve recipients in a snapshot whose strongest band
+        // is ten to thirteen; a dev buy that was seen; a creator with three
+        // measured launches and no organic graduation.
+        let mut dossier = dossier_for([3u8; 32]);
+        dossier.launch = Some(launch(
+            radar_onchain::budget::Count::Exactly(12),
+            Some(30_000_000),
+        ));
+        let rates = rates_strongest(10, 13);
+        let index = index_with(record(3, 0));
+        let sheet = FactSheet::build(&dossier, Some(&rates), Some(&index), None);
+        assert_eq!(
+            sheet.signals,
+            [
+                Signal::LaunchBlockInStrongestBand,
+                Signal::CreatorBoughtOwnLaunch,
+                Signal::CreatorNeverGraduatedOrganically,
+            ]
+        );
+        // Not rendered. The model is shown facts, and the word would be a
+        // verdict handed to it.
+        let rendered = sheet.render();
+        assert!(!rendered.to_lowercase().contains("signal"), "{rendered}");
+    }
+
+    #[test]
+    fn above_the_strongest_band_counts_and_below_it_does_not() {
+        // "Ten to thirteen or above": 14 is above and fires; 9 is below and
+        // does not; 13 and 10 are the edges. Re-applied `>=` as `>`: 10 stops
+        // firing and this fails.
+        let rates = rates_strongest(10, 13);
+        for (recipients, fires) in [(9, false), (10, true), (13, true), (14, true), (40, true)] {
+            let mut dossier = dossier_for([3u8; 32]);
+            dossier.launch = Some(launch(
+                radar_onchain::budget::Count::Exactly(recipients),
+                None,
+            ));
+            let sheet = FactSheet::build(&dossier, Some(&rates), None, None);
+            assert_eq!(
+                sheet.signals.contains(&Signal::LaunchBlockInStrongestBand),
+                fires,
+                "{recipients} recipients"
+            );
+        }
+    }
+
+    #[test]
+    fn the_strongest_band_is_read_from_the_snapshot_and_moves_with_it() {
+        // Research 0024's lesson as a test: the same twelve recipients fire
+        // when the snapshot's strongest band is ten to thirteen and do not
+        // when it is exactly six -- and six then does.
+        let mut twelve = dossier_for([3u8; 32]);
+        twelve.launch = Some(launch(radar_onchain::budget::Count::Exactly(12), None));
+        let mut six = dossier_for([4u8; 32]);
+        six.launch = Some(launch(radar_onchain::budget::Count::Exactly(6), None));
+
+        let at_six = rates_strongest(6, 6);
+        assert!(
+            FactSheet::build(&twelve, Some(&at_six), None, None)
+                .signals
+                .contains(&Signal::LaunchBlockInStrongestBand),
+            "twelve is above six and fires: 'or above' is the rule"
+        );
+        assert!(
+            FactSheet::build(&six, Some(&at_six), None, None)
+                .signals
+                .contains(&Signal::LaunchBlockInStrongestBand)
+        );
+        let at_ten = rates_strongest(10, 13);
+        assert!(
+            !FactSheet::build(&six, Some(&at_ten), None, None)
+                .signals
+                .contains(&Signal::LaunchBlockInStrongestBand),
+            "six is below ten and does not fire once the band has moved"
+        );
+    }
+
+    #[test]
+    fn what_could_not_be_read_is_no_signal_rather_than_a_signal_of_zero() {
+        // Rule 9, three ways. A truncated recipient count was decided by the
+        // call budget; a creator with nothing measured has no record to hold
+        // against them; a dev buy that was not seen is not a dev buy of zero.
+        // And no snapshot means no band to be strongest.
+        let mut dossier = dossier_for([3u8; 32]);
+        dossier.launch = Some(launch(radar_onchain::budget::Count::AtLeast(40), None));
+        let rates = rates_strongest(10, 13);
+        let unmeasured = index_with(record(0, 0));
+        let sheet = FactSheet::build(&dossier, Some(&rates), Some(&unmeasured), None);
+        assert_eq!(sheet.signals, []);
+
+        // A dev buy of exactly zero lamports, if a chain ever reported one, is
+        // a buy that was seen and was nothing -- also no signal.
+        let mut zero = dossier_for([3u8; 32]);
+        zero.launch = Some(launch(radar_onchain::budget::Count::Exactly(12), Some(0)));
+        assert_eq!(
+            FactSheet::build(&zero, None, None, None).signals,
+            [],
+            "no snapshot, no band; a zero buy is not a buy"
+        );
+
+        // A creator with a measured organic graduation is not "never".
+        let mut organic = dossier_for([3u8; 32]);
+        organic.launch = Some(launch(radar_onchain::budget::Count::Exactly(2), None));
+        let graduated = index_with(record(3, 1));
+        assert_eq!(
+            FactSheet::build(&organic, Some(&rates), Some(&graduated), None).signals,
+            []
+        );
+
+        // No launch block at all: nothing to count.
+        assert_eq!(
+            FactSheet::build(
+                &dossier_for([5u8; 32]),
+                Some(&rates),
+                Some(&graduated),
+                None
+            )
+            .signals,
+            []
+        );
     }
 
     #[test]

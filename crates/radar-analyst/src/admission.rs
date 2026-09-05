@@ -175,24 +175,38 @@ impl Gate {
                 cap: limits.global_daily,
             });
         }
-        let used = self.per_summoner.get(summoner).copied().unwrap_or(0);
-        if used >= limits.per_summoner_daily {
+        let used = self.per_summoner.entry(summoner.to_owned()).or_insert(0);
+        if *used >= limits.per_summoner_daily {
             return Admitted::No(Refused::SummonerDaily {
                 cap: limits.per_summoner_daily,
             });
         }
+        // **The summoner's allowance is spent here, on admission, and the
+        // account's is spent on sending.** They are two different costs. An
+        // admitted mention reads the chain before anything is posted -- sixty
+        // RPC calls under the dossier's own budget -- so until 2026-09-05 one
+        // account posting thirty mentions naming thirty unreadable mints, or
+        // thirty anything while the publisher was down, was thirty dossiers
+        // and no refusal: the cap counted replies, and none of those was one.
+        // The per-summoner cap is what stops one account making the bot
+        // expensive, so it has to count the expensive thing.
+        *used += 1;
         Admitted::Yes
     }
 
     /// Records that a reply was actually sent.
     ///
-    /// Separate from [`Gate::admit`] on purpose. A mention that was admitted and
-    /// then failed to post has cost nothing on X, and charging it against the
-    /// day's allowance would let a broken publisher silence the account by
-    /// spending a budget it never used.
+    /// Separate from [`Gate::admit`] on purpose, for the **account's** cap. A
+    /// mention that was admitted and then failed to post has cost nothing on
+    /// X, and charging the global allowance for it would let a broken publisher
+    /// silence the account by spending a budget it never used. The summoner's
+    /// own allowance was already charged on admission, and is not charged
+    /// again here.
     pub fn record(&mut self, summoner: &str, mint: &str, reply_id: &str, now: u64) {
         self.roll_to(now);
-        *self.per_summoner.entry(summoner.to_owned()).or_insert(0) += 1;
+        // Kept as a parameter so a caller cannot record a reply without saying
+        // who it was for; the count it used to move is spent in `admit`.
+        let _ = summoner;
         self.global += 1;
         self.answered
             .insert(mint.to_owned(), (now, reply_id.to_owned()));
@@ -395,13 +409,45 @@ mod tests {
     }
 
     #[test]
-    fn admitting_without_sending_spends_nothing() {
-        // A publisher that is failing must not be able to silence the account by
-        // burning an allowance it never used.
+    fn admitting_without_sending_spends_the_summoners_allowance_and_not_the_accounts() {
+        // Two caps, two costs. A publisher that is failing must not be able to
+        // silence the account by burning the global allowance it never used --
+        // so `sent_today` stays at zero however many are admitted. But each
+        // admission reads the chain, so the *summoner's* allowance is spent on
+        // admission: until 2026-09-05 this loop admitted ten and the cap of two
+        // never fired, which is the 30-mention burst from design 0007's gate
+        // costing thirty dossiers. Re-applied by moving the increment back to
+        // `record`: the third admission below comes back `Yes` and this fails.
         let mut gate = Gate::new(limits(), Vec::new());
-        for _ in 0..10 {
-            assert_eq!(gate.admit("alice", "MintOne", DAY), Admitted::Yes);
+        for i in 0..2 {
+            assert_eq!(gate.admit("alice", &format!("Mint{i}"), DAY), Admitted::Yes);
+        }
+        for i in 2..10 {
+            assert_eq!(
+                gate.admit("alice", &format!("Mint{i}"), DAY),
+                Admitted::No(Refused::SummonerDaily { cap: 2 }),
+                "admission {i}"
+            );
         }
         assert_eq!(gate.sent_today(), 0);
+        // And nobody else pays for alice's burst.
+        assert_eq!(gate.admit("bob", "MintX", DAY), Admitted::Yes);
+    }
+
+    #[test]
+    fn a_reply_recorded_after_admission_is_not_charged_to_the_summoner_twice() {
+        // The other half of the split. If `record` also moved the summoner's
+        // count, every published reply would cost two of the daily allowance
+        // and the cap on the page would be half the cap in force.
+        let mut gate = Gate::new(limits(), Vec::new());
+        assert_eq!(gate.admit("alice", "MintOne", DAY), Admitted::Yes);
+        gate.record("alice", "MintOne", "r1", DAY);
+        assert_eq!(gate.admit("alice", "MintTwo", DAY), Admitted::Yes);
+        gate.record("alice", "MintTwo", "r2", DAY);
+        assert_eq!(gate.sent_today(), 2);
+        assert_eq!(
+            gate.admit("alice", "MintThree", DAY),
+            Admitted::No(Refused::SummonerDaily { cap: 2 })
+        );
     }
 }

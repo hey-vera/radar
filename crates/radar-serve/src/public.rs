@@ -386,6 +386,7 @@ mod tests {
             fact_sheet: String::new(),
             reply: "measured".to_owned(),
             fellback: None,
+            signals: None,
             reply_id: reply_id.map(str::to_owned),
         }
     }

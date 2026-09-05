@@ -281,6 +281,24 @@ impl BaseRates {
             .min_by_key(|b| b.hi - b.lo)
     }
 
+    /// The band most enriched for instant graduation, or `None` when the
+    /// snapshot has no bands.
+    ///
+    /// This is what design 0009's hunter rule means by "the 10–13 band or
+    /// above", said without the number: research 0024 is the record of the
+    /// strongest band moving from six to ten-to-thirteen, and a rule that named
+    /// the band would have fired on the wrong launches from the day it moved.
+    /// Two bands tied on enrichment resolve to the one with the lower floor, so
+    /// a tie widens the signal rather than narrowing it.
+    #[must_use]
+    pub fn strongest_band(&self) -> Option<&Band> {
+        self.bands.iter().max_by(|a, b| {
+            a.x_base_instant
+                .total_cmp(&b.x_base_instant)
+                .then_with(|| b.lo.cmp(&a.lo))
+        })
+    }
+
     /// Whether the snapshot is too old to quote, given today's date.
     ///
     /// Dates are compared as `YYYY-MM-DD` text converted to a day count. A date
@@ -390,6 +408,47 @@ mod tests {
         assert_eq!(rates.band_for(11).expect("a band").name, "ten to thirteen");
         // A count in no band gets no claim rather than the nearest one.
         assert!(rates.band_for(40).is_none());
+    }
+
+    #[test]
+    fn the_strongest_band_is_the_most_enriched_and_a_tie_goes_to_the_lower_floor() {
+        // The published snapshot's strongest band is ten to thirteen at 10.1x,
+        // not six at 4.4x -- which is research 0024's finding, and the reason
+        // the hunter rule reads this rather than naming a band.
+        let rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
+        assert_eq!(
+            rates.strongest_band().expect("a band").name,
+            "ten to thirteen"
+        );
+
+        // Listed weakest-first so that "first" is the wrong answer; and a tie
+        // resolves to the lower floor, so it fires on more launches, not fewer.
+        // The tied pair is listed lower-floor FIRST because `max_by` keeps the
+        // last of equals: the first draft listed it last, dropped the tie-break
+        // by hand, and the test still passed -- order was doing the rule's job.
+        // Re-applied again with this order: the higher floor wins and the
+        // assertion fails.
+        let band = |name: &str, lo, hi, x| Band {
+            name: name.to_owned(),
+            lo,
+            hi,
+            fires_on: 0.0,
+            never_graduated: 0.0,
+            organic: 0.0,
+            instant: 0.0,
+            p_instant: 0.0,
+            x_base_instant: x,
+        };
+        let mut rates = overlapping(1, 3, 6, 6);
+        rates.bands = vec![
+            band("weak", 1, 3, 0.0),
+            band("strong-low", 5, 7, 7.0),
+            band("strong-high", 10, 13, 7.0),
+        ];
+        assert_eq!(rates.strongest_band().expect("a band").name, "strong-low");
+
+        rates.bands.clear();
+        assert!(rates.strongest_band().is_none(), "no bands, no strongest");
     }
 
     /// Two bands holding the same count, where the wide one is listed first.

@@ -1352,6 +1352,7 @@ mod tests {
                 fact_sheet: "evidence".to_owned(),
                 reply: "text".to_owned(),
                 fellback: None,
+                signals: None,
                 reply_id: None,
             };
             radar_analyst::log::append(&log, &entry).expect("intent");

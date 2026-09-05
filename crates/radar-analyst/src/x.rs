@@ -514,6 +514,7 @@ pub fn entry_for(mention: &Mention, at: u64) -> Entry {
         fact_sheet: String::new(),
         reply: String::new(),
         fellback: None,
+        signals: None,
         reply_id: None,
     }
 }

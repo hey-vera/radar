@@ -90,6 +90,42 @@ pub enum Refusal {
     },
 }
 
+/// The creator vault, as last read from the chain.
+///
+/// Written by the timer that reads the vault balance (design 0008 phase 3,
+/// which needs the token to exist) and read by the public pool page. Absent
+/// means **no token yet**, which the page renders as a sentence and never as
+/// a balance of zero.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Vault {
+    /// The vault's address, base58.
+    pub address: String,
+    /// Its balance when read.
+    pub lamports: u64,
+    /// When it was read, seconds since the epoch.
+    pub measured_at: u64,
+}
+
+impl Vault {
+    /// The JSON the site reads.
+    ///
+    /// # Errors
+    ///
+    /// Only if a value cannot be serialised, which no value here can fail to be.
+    pub fn to_json(&self) -> Result<String, serde_json::Error> {
+        serde_json::to_string_pretty(self)
+    }
+
+    /// A reading read back.
+    ///
+    /// # Errors
+    ///
+    /// When the text is not a vault reading.
+    pub fn from_json(text: &str) -> Result<Self, serde_json::Error> {
+        serde_json::from_str(text)
+    }
+}
+
 /// One week's record, as published.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Record {
@@ -343,6 +379,18 @@ mod tests {
             Payout::permitted(&paid, "MALLORY", 1, 1),
             Err(Refusal::AlreadyPaid { .. })
         ));
+    }
+
+    #[test]
+    fn the_vault_reading_round_trips_and_half_of_it_is_refused() {
+        let vault = Vault {
+            address: "VAULT".to_owned(),
+            lamports: 5_000,
+            measured_at: 1_788_000_000,
+        };
+        let json = vault.to_json().expect("serialises");
+        assert_eq!(Vault::from_json(&json).expect("round-trips"), vault);
+        assert!(Vault::from_json(&json[..json.len() / 2]).is_err());
     }
 
     #[test]

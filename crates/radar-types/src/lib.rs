@@ -28,6 +28,7 @@
 /// signer *crate*, and the only thing the web server ever wanted from it was
 /// this.
 pub mod b64;
+pub mod civil;
 
 mod address;
 mod money;

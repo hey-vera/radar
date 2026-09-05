@@ -698,6 +698,7 @@ the sense that matters: without them the bot still answers, and says less.
 |---|---|
 | `docs/research/data/0024-base-rates.json` | replies carry no population context — a recipient count with no distribution to quote it against |
 | `docs/research/data/creator-index.json` | **every reply about a fresh launch says the same thing**, and the venue's own graduation rates go stale with the snapshot |
+| `docs/research/data/population.json` | written beside the index by the same job; without it `/v1/public/stats` answers 404 and the site shows its dated fixture |
 
 Both are read relative to the working directory, which the unit sets to
 `/home/guardian/radar`, so they live at

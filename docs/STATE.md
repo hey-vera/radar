@@ -318,8 +318,16 @@ policy as one function with three refusals; and the hunter tally with the
 daily cap applied again so volume cannot win. No clock, no network, no key.
 **Its callers are not built yet** — the public leaderboard endpoint reads its
 record, the week-close job writes one, `radar-payout` asks its policy — and
-plan 0006 lands them in that order, the first as its next item. Until then it
-is a document that compiles, said plainly rather than discovered later.
+plan 0006 lands them in that order. **The first landed the same day**: the
+public site's three documents — `/v1/public/stats`, `/v1/public/leaderboard`,
+`/v1/public/pool` — are served by exact path to anyone, each from a published
+file and never the store, with the CORS header set only for the one origin in
+`RADAR_SITE_ORIGIN` and absent otherwise. The leaderboard reads the contest
+crate's week record when a week has closed, and the reply log with every
+score `null` before that; the pool says no token exists rather than `0.00`.
+The stats document needs `population.json`, which the creator-index job now
+writes beside the index; until the box runs that binary the endpoint answers
+404 and the site shows its dated fixture.
 
 Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
 against the chain and append-only against its own log.

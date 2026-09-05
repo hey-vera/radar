@@ -40,12 +40,26 @@ time.
       boundary moved a day — each failing exactly its test; the first commit
       on `feat/contest-crate`. Mutation coverage: CI's sharded run on the PR,
       per AGENTS.md §8; survivors, if any, are the next commit
-- [ ] 2. **The three public endpoints** (0008 phase 1): `/v1/public/stats`,
+- [x] 2. **The three public endpoints** (0008 phase 1): `/v1/public/stats`,
       `/v1/public/leaderboard`, `/v1/public/pool`, added to `Audience::Public`
       by exact path, CORS for the site's origin only. The leaderboard reads item
       1's ledger; the pool says no token exists rather than `0.00` (rule 9).
-      gate: the access table test mirrors the three paths; each handler read
-      with the file absent and present
+      done: `crates/radar-serve/src/public.rs`, nine tests over absent and
+      present files; the access table and the router-level guard test carry
+      the three paths and refuse a fourth; `cargo test` green on radar-types,
+      radar-roast, radar-contest, radar-cli, radar-serve; clippy clean;
+      conformance 33. Four bugs re-applied, each failing exactly its test: an
+      unscored entry rendered as `0`; a missing aftermath padded from memory;
+      one document dropped from the public list; the summary write dropped.
+      Two things it needed and got: the creator-index job now publishes
+      `population.json` beside the index, so the endpoint reads five totals
+      rather than 116,000 records; and research 0011's figure travels in the
+      base-rate snapshot with its own date. One date function now lives in
+      `radar-types` and the CLI calls it, instead of a second copy. CI's
+      mutants named four survivors on the PR — the three handlers replaced
+      by an empty 200, and the record filename rule's `&&` — and the second
+      commit reads the three bodies at the router and pins both halves of
+      the name rule; each re-applied by hand, each failing its test
 - [ ] 3. **M6 — the fee after graduation, measured.** Capture a PumpSwap swap
       for a graduated pump.fun token; does it pass the fee program and its
       config; re-read the schedule today; write research 0028; correct the pool
@@ -101,8 +115,12 @@ time.
 
 ## Handback
 
-Stopped at: items 1 and 9 done, on the PR from `feat/contest-crate`.
-Next action: item 2, the three public endpoints, on a branch stacked on this
-one until it merges — the leaderboard handler reads `radar_contest::Record`.
+Stopped at: items 1, 2 and 9 done. Item 1 is PR #147; item 2 is stacked on
+it as `feat/public-endpoints`.
+Next action: item 3, the post-graduation fee, measured — a research note, no
+deploy. Then item 4. Merge #147 first so item 3's branch comes off `main`.
+The box needs the new `radar` binary before `population.json` exists there;
+until then `/v1/public/stats` answers 404 and the site shows its dated
+fixture, which is the designed behaviour.
 Do not: reopen L1–L6; touch `Policy::CLOSED`; read the store per request in
 any endpoint; add a public path by prefix in `access.rs`.

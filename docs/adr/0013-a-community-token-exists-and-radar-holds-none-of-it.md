@@ -50,6 +50,11 @@ not make.
 2. **The operator holds zero tokens.** The only flow to the operator is
    pump.fun's **creator fee — 30 bps of volume, in SOL**, read off the on-chain
    `FeeConfig` ([`0023`](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md)).
+   That is the curve. After graduation the same fee program keeps a second
+   schedule for the AMM, by market cap — 30 bps below 420 SOL, 95 from there
+   to 1,470, stepping down to 5 above 98,240 — measured 2026-09-05 in
+   [`0028`](../research/0028-the-fee-after-graduation-is-a-ladder.md). The
+   flow is still to the prize, not the operator; only its rate moves.
 3. **100% of the creator fee is paid out as a public weekly prize**, to the
    person whose summoned roast travelled furthest that week. The operator keeps
    none of it. The vault, the rule, the scores and the payout signature are all

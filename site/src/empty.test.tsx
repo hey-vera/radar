@@ -95,6 +95,17 @@ describe("the prize pool before a token exists", () => {
     });
     expect(screen.getByText(/operator holds zero tokens/i)).toBeTruthy();
     expect(screen.getByText(/No dev buy/i)).toBeTruthy();
+    // Research 0028, 2026-09-05: 30 bps is the curve. After graduation the
+    // chain's own schedule runs 30 / 95 / ... / 5 by market cap, and a page
+    // that said "30 bps" without the qualifier would be understating a coin
+    // that graduated and kept going by three times.
+    const text =
+      screen.getByText(/30 basis points of volume/i).closest("p")
+        ?.textContent ?? "";
+    expect(text).toMatch(/on the bonding curve/);
+    expect(text).toMatch(/After graduation/);
+    expect(text).toMatch(/95 from there to 1,470 SOL/);
+    expect(text).toMatch(/5 above 98,240 SOL/);
   });
 
   it("does the arithmetic on the fee it states", async () => {

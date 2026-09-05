@@ -16,8 +16,10 @@
 //!
 //! ADR 0013's constraints are the product, not the small print: no dev buy, no
 //! allocation, the operator holds zero tokens, and the only cash flow is
-//! pump.fun's 30 bps creator fee, all of which becomes the prize. At $10k of
-//! weekly volume that is about $30. Saying so is the whole difference between
+//! pump.fun's creator fee, all of which becomes the prize: 30 bps on the
+//! bonding curve, and after graduation the chain's own ladder by market cap,
+//! 30 / 95 / ... / 5 (research 0028, 2026-09-05). At $10k of weekly volume on
+//! the curve that is about $30. Saying so is the whole difference between
 //! this and the thing it is built to expose.
 //!
 //! 30 bps is 0.30%, and 0.30% of $10,000 is $30. This file said $3 until
@@ -40,8 +42,11 @@ function Economics() {
       </h3>
       <p className="mt-3 text-sm text-[var(--color-dim)]">
         pump.fun pays a creator fee of <strong>30 basis points of volume</strong>{" "}
-        to whoever launched a coin. That fee is the only money in this contest,
-        and <strong>100% of it becomes the prize</strong>.
+        on the bonding curve to whoever launched a coin. After graduation the
+        fee follows a schedule the venue publishes on chain, by market cap: 30
+        basis points below 420 SOL, 95 from there to 1,470 SOL, then stepping
+        down to 5 above 98,240 SOL. That fee is the only money in this
+        contest, and <strong>100% of it becomes the prize</strong>.
       </p>
       <ul className="mt-4 space-y-2 text-sm text-[var(--color-dim)]">
         <li>· No dev buy. No allocation. No team or treasury tokens.</li>
@@ -54,8 +59,8 @@ function Economics() {
       </ul>
       <p className="mt-4 text-sm text-[var(--color-faint)]">
         So the prize scales with volume and nothing else. At $10,000 of weekly
-        volume it is roughly <span className="tnum">$30</span>; at $100,000,
-        roughly <span className="tnum">$300</span>. That is small, and saying so
+        volume on the curve it is roughly <span className="tnum">$30</span>; at
+        $100,000, roughly <span className="tnum">$300</span>. That is small, and saying so
         is the point — a memecoin that lies about its economics is the thing this
         bot exists to expose.
       </p>

@@ -23,3 +23,9 @@ web/tsconfig.tsbuildinfo
 # the runbook -- and a 12 MB binary swept in by `git add -A` is the same accident
 # that put an untracked research document into two pull requests.
 /dist
+
+# The creator index is a measurement built where the data is, not a source
+# file. 13MB, and it changes every six hours on the box -- committing one would
+# be committing a snapshot of production that is stale the moment it lands.
+# `deploy/README.md` says where it comes from.
+docs/research/data/creator-index.json

@@ -49,17 +49,19 @@ cannot know yet.
       card will render without an image until it exists. Item 11.
 - [x] 9. `just site`, a CI job, and the `required-checks.txt` line
       done: `just site` and `just web` both green after the shared recipe was
-      parameterised. The **ruleset** edit is Josh's and is not done — the line
-      is a check that looks like a gate and is not one, said in that file.
+      parameterised; `site` added to the `main` ruleset 2026-09-05, ten required
+      checks, verified by reading the ruleset back rather than the write.
 - [ ] 11. The 1200×630 OG image
       next: it is the first thing anybody sees of this product on X
 - [ ] 10. Phase 1 — the three public endpoints, by exact path, with CORS
 
 ## Open questions for Josh
 
-- Q1 (2026-09-05): the `site` status check has to be added to the `main` ruleset
-  as well as to the workflow and `required-checks.txt`. That third place needs
-  admin. — unanswered, does not block items 1–8.
+- Q1 (2026-09-05): the `site` status check needed adding to the `main` ruleset,
+  which needs admin. — **answered, and it needed nothing from Josh**: the
+  session's `gh` token already carries admin on this repository. Done the same
+  day. Worth remembering the next time something is handed back as "needs
+  admin": check `gh api repos/OWNER/REPO --jq '.permissions'` first.
 
 ## Handback
 

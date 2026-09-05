@@ -38,12 +38,23 @@
 # which is the quieter version of the failure entry 13 records: not a claim that
 # was false, but a check that looked like a gate and was not one.
 #
-# `site` was added here on 2026-09-05 and is NOT in the ruleset yet -- that edit
-# needs admin and is Josh's. Until he makes it, the line below is exactly what
-# the paragraph above describes: a check that runs on every pull request, looks
-# like a gate, and blocks nothing. Said here rather than discovered later.
+# `site` was added to the ruleset on 2026-09-05, making it ten. It spent exactly
+# one commit in the state the paragraph above describes -- running on every pull
+# request and blocking nothing -- which is the right order round: a check earns
+# its place by passing before it is allowed to fail anybody.
 #
-#   gh api -X PUT repos/hey-vera/radar/rules/... # or the ruleset UI
+# Verified by reading the ruleset back rather than by trusting the write:
+#
+#   gh api repos/hey-vera/radar/rulesets/21503887 --jq '[.rules[]
+#     | select(.type=="required_status_checks")
+#     | .parameters.required_status_checks[].context] | join(", ")'
+#
+# Ten on 2026-09-05, and all four rule types still present -- a ruleset PUT
+# replaces the whole `rules` array, so sending only the one being changed would
+# silently drop deletion, non-fast-forward and the pull-request requirement.
+#
+# `strict_required_status_checks_policy` is **false**: a branch behind `main` is
+# not forced to rebase before merging.
 #
 # There are no bypass actors, admins included. An override means editing the
 # ruleset, which is a deliberate act and leaves a trace -- the point, given how

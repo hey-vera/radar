@@ -35,6 +35,13 @@ pub struct Paths {
     pub cursor: String,
     /// The spend ledger.
     pub ledger: String,
+    /// The Telegram lane's own log. **Never read for the contest**: the
+    /// leaderboard, the week-close job and the hunter tally read `log`, and a
+    /// Telegram answer stays out of the record by being in a different file
+    /// rather than by carrying a flag (design 0009 L5).
+    pub telegram_log: String,
+    /// The Telegram lane's `getUpdates` offset.
+    pub telegram_cursor: String,
 }
 
 impl Paths {
@@ -45,6 +52,8 @@ impl Paths {
             log: format!("{dir}/replies.jsonl"),
             cursor: format!("{dir}/cursor"),
             ledger: format!("{dir}/ledger.json"),
+            telegram_log: format!("{dir}/telegram.jsonl"),
+            telegram_cursor: format!("{dir}/telegram.cursor"),
         }
     }
 }
@@ -299,6 +308,17 @@ pub fn run() -> ! {
         posture(x.is_some(), x.as_ref().is_some_and(X::can_post), publishing)
     );
 
+    // The free lane, on its own token, its own switch, its own caps and its
+    // own log (design 0009 L5). Same rule 8 shape as X: no token, nothing read.
+    let telegram = crate::telegram::Telegram::from_env();
+    let telegram_publishing = crate::telegram::may_publish(&env);
+    let telegram_publisher = crate::telegram::publisher_for(telegram.clone(), telegram_publishing);
+    eprintln!(
+        "{}",
+        crate::telegram::posture(telegram.is_some(), telegram_publishing)
+    );
+    let mut telegram_gate = Gate::new(crate::telegram::limits_from(&env), Vec::new());
+
     let Some(prices) = Prices::from_vars(&env) else {
         // Not an exit. A price list is a spending decision and its absence is a
         // configuration state, not a crash -- but nothing may be answered
@@ -350,9 +370,14 @@ pub fn run() -> ! {
     eprintln!("{}", self_mint_notice(self_mint.as_ref()));
 
     eprintln!(
-        "radar-analyst: publisher={} source={} dir={dir}",
+        "radar-analyst: publisher={} source={} telegram={} dir={dir}",
         publisher.name(),
-        if x.is_some() { "x" } else { "none" }
+        if x.is_some() { "x" } else { "none" },
+        if telegram.is_some() {
+            telegram_publisher.name()
+        } else {
+            "off"
+        }
     );
 
     let mut wait = poll::BUSY;
@@ -369,7 +394,18 @@ pub fn run() -> ! {
             self_mint.as_ref(),
             &paths,
         );
-        wait = poll::interval(found, wait);
+        let found_telegram = crate::telegram::tick(
+            telegram.as_ref(),
+            telegram_publisher.as_ref(),
+            &mut telegram_gate,
+            &client,
+            rates.as_ref(),
+            creators.as_ref(),
+            provider.as_deref(),
+            self_mint.as_ref(),
+            &paths,
+        );
+        wait = poll::interval(found + found_telegram, wait);
         std::thread::sleep(wait);
     }
 }

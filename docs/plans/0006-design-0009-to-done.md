@@ -91,11 +91,21 @@ time.
       three cases are in `crates/radar-analyst/tests/one_poll_end_to_end.rs`
       with a chain that counts its requests; each re-applied bug fails its
       test (see the commit)
-- [ ] 5. **M5 — the Telegram publisher and source**, testable in dry run: an
+- [x] 5. **M5 — the Telegram publisher and source**, testable in dry run: an
       unset token means nothing is read and nothing is sent; the same parser,
       gate and fact path; not a contest entry and not in the record.
       gate: the daemon's posture line names the state; a fake platform drives
       one poll end to end
+      done: 2026-09-05, `feat/telegram-lane`. `crates/radar-analyst/src/telegram.rs`
+      — `getUpdates` parsed into the same `Mention` (ids `chat:message`, summoners
+      `tg:<id>`), a `Publisher` that replies into the chat, its own caps
+      (`RADAR_TELEGRAM_*`, unset = refuse), its own switch, its own log file
+      `telegram.jsonl`, which is what keeps it out of the record; a `tick`
+      the daemon runs after the X one. Posture line names off / log-only /
+      live. End to end: a fake Telegram drives one poll; a message with an
+      address is answered into `telegram.jsonl` and never `replies.jsonl`, a
+      sticker is skipped and still acknowledged, the offset advances, and
+      with no token nothing is read. Re-applied bugs in the commit
 - [ ] 6. **The weekly post (0007 B6, 0009 M2) and the daily "seven days later"
       post (M4)**, as code that runs in dry run and says "nothing yet" when the
       log is younger than seven days. The week-close job writes item 1's ledger.
@@ -135,11 +145,12 @@ time.
 
 ## Handback
 
-Stopped at: items 1, 2, 3, 4 and 9 done, stacked in that order: PR #147
+Stopped at: items 1–5 and 9 done, stacked in that order: PR #147
 (`feat/contest-crate`), #148 (`feat/public-endpoints`), #149
-(`research/0028-the-fee-after-graduation`), then `feat/refusal-signals`. All
-wait on merge permission.
-Next action: item 5, the Telegram publisher and source, in dry run. Then 6.
+(`research/0028-the-fee-after-graduation`), #150 (`feat/refusal-signals`),
+then `feat/telegram-lane`. All wait on merge permission.
+Next action: item 6, the weekly post and the daily "seven days later" post,
+with the week-close job that writes item 1's ledger from the X log. Then 7.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

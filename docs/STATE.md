@@ -320,6 +320,19 @@ research 0024's lesson made mechanical. The reply log entry carries them as
 and not zero. The tally in `radar-contest` sums them; the job that feeds it the
 log is plan 0006 item 6.
 
+**The Telegram lane exists, as of 2026-09-05** (design 0009 L5, M5; plan 0006
+item 5). `crates/radar-analyst/src/telegram.rs`: `getUpdates` polled in the same
+loop as X, each text message through the same parser, an admission gate of the
+same shape with its own caps, the same fact path and the same two checks; the
+reply goes back to the chat the question was in. Rule 8 twice: no
+`RADAR_TELEGRAM_BOT_TOKEN` reads nothing, and a token alone answers into
+`telegram.jsonl` only until `RADAR_TELEGRAM_PUBLISH=on`. **A Telegram answer is
+not in the record and cannot enter the contest**, because it is in a different
+file and nothing that scores the contest reads that file. The daemon names the
+lane's state on start; `radar brief` counts it once the file exists. **Nothing
+has been sent through it**: there is no bot token on the box, and the box does
+not run the analyst.
+
 **The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
 design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet
 builder drops every `About::Price` fact for the mint in `RADAR_SELF_MINT` before

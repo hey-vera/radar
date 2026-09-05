@@ -79,7 +79,7 @@ fact the bot later wants to state has the pass it must go through first.
       `Decision.launch_recipients` is a comparison of two instruments over the
       **production** store, and no store exists on this workstation. It belongs
       to research 0026 (item 3), which runs on the box, and it is listed there
-- [ ] 2. **E3 — `radar edge`.** `new:crates/radar-research/src/edge.rs` and
+- [x] 2. **E3 — `radar edge`.** `new:crates/radar-research/src/edge.rs` and
       `new:crates/radar-cli/src/edge.rs`. Folds: five contiguous windows by
       launch slot, equal in rows, never shuffled. Purge and embargo: a fit
       fold's rows must have their twenty-four-hour checkpoint before the
@@ -98,12 +98,22 @@ fact the bot later wants to state has the pass it must go through first.
       organic graduation — so the refusal edge is measured too. The number of
       strata tried is printed beside every verdict. Seeded; no clock; no
       network.
-      gate: a seeded uniform-noise feature added to the grammar is never
-      `Found` across ten seeds, and when it wins a fit fold it fails both test
-      folds; the deterministic rule's fit-free result lands inside 0017's
-      interval on the overlapping window (two instruments); `cargo test`;
-      clippy clean; mutants on the fold boundary and the two acceptance
-      conditions, in CI
+      done: `crates/radar-research/src/edge.rs` and
+      `crates/radar-cli/src/edge.rs`; the whole workspace green and clippy clean
+      at this commit. `noise_is_never_found_across_ten_seeds` is the planted
+      test and it passes on all ten;
+      `an_engineered_edge_is_found` is its opposite number and matters more,
+      because a harness that never says `Found` passes the first test and is
+      worthless — it failed twice and forced the two changes in Q3 below.
+      `the_bar_and_the_round_trip_come_from_the_snapshot` holds design 0010
+      §6.1's rule that neither is a constant here, and
+      `a_band_the_snapshot_does_not_name_is_refused_rather_than_substituted`
+      holds that an absent band is a refusal. `the_table_a_store_produces_feeds_the_protocol`
+      is the join: a store on disk, through the builder, out to a file, back in,
+      and into the protocol.
+      not done in this item: the deterministic rule's fit-free result against
+      0017's interval is a **measurement**, not a unit test — it needs the
+      production store and belongs to item 3
 - [ ] 3. **Research 0026** —
       `new:docs/research/0026-the-walk-forward-protocol-and-what-it-found.md`:
       the protocol, the two planted tests and the commands that ran them, the
@@ -135,14 +145,57 @@ fact the bot later wants to state has the pass it must go through first.
   zero *and* median gross at or above the bar. That is stricter than either
   reading alone, so it cannot produce a `Found` that only one of them supports,
   and every number is printed so a reader can apply whichever rule they hold.
+- Q3 (2026-09-05), **two protocol changes item 2's tests forced**, both
+  deviations from design 0010 §6.2 and both recorded here rather than made
+  quietly:
+  1. **The fitting-period row floor is scaled from the smallest test fold**, not
+     flat at a hundred. A stratum holding a hundred fitting rows out of sixteen
+     hundred holds about twenty-five in a four-hundred-row test fold and can
+     never be accepted; fitting on it displaces one that could have been. The
+     floor is now the share that would leave 120 rows — the acceptance floor
+     plus two standard deviations of a count that size — in the smallest test
+     fold.
+  2. **The fit-fold winner is not simply the highest median.** Taken literally
+     that preferred a three-term refinement whose rows' noise ran high, which
+     then failed the test folds and took a planted 3,000 bps edge with it,
+     because only the winner is tested. A candidate now has to beat the held one
+     by more than the larger of their two median standard errors; inside that
+     band the second acceptance condition decides — the Wilson lower bound on
+     the share of rows that actually paid, which already prefers more rows at an
+     equal share — and a dead-level tie goes to fewer terms.
+
+  Neither weakens the acceptance test, which is unchanged. Both change **what
+  gets tested**, and without them the harness could not see an edge it was
+  looking straight at.
 
 ## Handback
 
-Stopped at: item 1 done, on `feat/the-learning-loops-instrument` from `main`
-(`464e742`). `radar features` builds and writes the table; the guard is a type
-and two tests prove it fires and that it is not vacuous.
-Next action: item 2, `radar edge`, under Q2's answer above.
-Do not: touch `Policy::CLOSED`, the thresholds, the bot or the box; add a
-crate; add a Python dependency; delete `Observed<T>` before item 1 has tried
-to use it — an unused type and a deleted invariant look identical in a
-diffstat (plan 0003's handback).
+Stopped at: items 1 and 2 done and green on
+`feat/the-learning-loops-instrument`. The instrument exists end to end —
+`radar features` writes the table, `radar edge` runs the protocol over it — and
+**it has never been run against the production store**, so there is still no
+measured result and STATE.md says so.
+
+Next action, and it is the whole of items 3 and 4: run the pass on the box.
+That needs a Linux `radar` binary there, which this workstation cannot build.
+The route, in order:
+
+1. Merge this PR. `release-linux` builds on pushes to `main`.
+2. `gh run download <run> -n <artifact>` and `scp` the binary to
+   `guardian-vps-tail:~/bin/radar-next`, installing by rename — never over a
+   running binary.
+3. Run it **windowed and niced**, not over all of history at once:
+   `nice -n 19 ~/bin/radar-next features --store ~/radar/data/store --from <slot> --to <slot> --out ~/radar/data/research/<name>.parquet`.
+   The trades table is the large read and `radar-follow` is on the same box;
+   design 0010 §11 item 5 is the warning, and the recorder dying quietly is a
+   failure this repository has already had.
+4. `radar-next edge --features <that file>`, then write research 0026 from what
+   it says — including the deterministic rule's fit-free result against 0017's
+   interval, which is the two-instruments comparison item 2 could not make here.
+5. Item 4's STATE.md sentence then gains the measured result and its date. The
+   instrument half of that sentence is already written.
+
+Do not: touch `Policy::CLOSED`, the thresholds, the bot or the box's units; add
+a crate; add a Python dependency; run the pass unwindowed on the box; or write
+research 0026 without a run behind it — a note with no measurement is the thing
+this repository refuses.

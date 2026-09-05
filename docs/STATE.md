@@ -115,6 +115,34 @@ The numbers a consumer should read are in
 [`data/0024-base-rates.json`](../docs/research/data/0024-base-rates.json), each
 carrying the date it was measured.
 
+## The learning loop has an instrument, and it has not been run yet
+
+**Built 2026-09-05, plan 0007 items 1 and 2.** `radar features` writes one row
+per succeeded launch with twenty-three features, every value observed at or
+before T = launch + 6,000 slots and accepted through `AsOf::accept`, so a
+feature computed from something that had not happened yet is a build error
+rather than a column. `radar edge` runs the walk-forward protocol over that
+file: five contiguous windows by launch slot, the first three fitted as one,
+purged and embargoed by twenty-four hours, and a stratum is `Found` only if it
+clears the bar on **both** remaining folds with at least a hundred rows each and
+a Wilson lower bound above a half.
+
+**No result exists.** Neither command has been run against the production
+store — that needs a Linux binary on the box, and this workstation has no store
+to run them against. So the honest state of the number is unchanged: research
+0017 measures the selection edge at **0 bps** against a bar of about **456**,
+and nothing here has moved it. What exists is the instrument that could.
+
+Two things the protocol does that design 0010 §6.2 did not say, both found by a
+test rather than argued (plan 0007 Q3): the fitting-period row floor is scaled
+up from the smallest test fold, because a stratum too narrow to hold a hundred
+rows in a test fold can never be accepted and fitting on it displaces one that
+could have been; and the fit-fold winner is chosen under a one-standard-error
+rule with the Wilson bound breaking ties, because taking the highest median
+alone preferred a refinement fitted to noise and dropped a planted 3,000 bps
+edge on the floor. `an_engineered_edge_is_found` is the test that failed twice
+and made both changes.
+
 ## The round trip is three numbers, and they are not in conflict
 
 Three figures circulate in this repository and **no document reconciled them

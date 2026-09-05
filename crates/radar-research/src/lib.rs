@@ -71,9 +71,49 @@ pub fn percentile(sorted: &[i64], p: f64) -> Option<i64> {
     Some(sorted[idx])
 }
 
+/// z for a 95% two-sided interval.
+pub const Z_95: f64 = 1.96;
+
+/// A 95% Wilson score interval on `hits` out of `n`, as proportions.
+///
+/// Wilson rather than the textbook normal interval, because these are rare
+/// events over modest samples — twenty-two graduations in 1,279 launches — and
+/// the normal approximation misbehaves badly there, happily producing bounds
+/// below zero. Wilson stays inside `[0, 1]` and is well behaved at small counts.
+///
+/// `None` for an empty sample: an interval over nothing is not a wide interval,
+/// it is no interval, and returning `(0, 1)` would let a caller read "no
+/// evidence" as "the whole range is plausible" without noticing which it had.
+///
+/// One implementation, because there were nearly two: [`study`] scales it to
+/// basis points for a table and [`edge`] compares its lower bound against a
+/// half. A second copy is a second thing to test, and the mutation run has
+/// already found one duplicate here untested while the original was covered.
+#[must_use]
+pub fn wilson_bounds(hits: u64, n: u64) -> Option<(f64, f64)> {
+    if n == 0 {
+        return None;
+    }
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "counts here are far below f64's exact-integer range"
+    )]
+    let (hits, n) = (hits as f64, n as f64);
+    let p = hits / n;
+    let z2 = Z_95 * Z_95;
+    let denom = 1.0 + z2 / n;
+    let centre = (p + z2 / (2.0 * n)) / denom;
+    let half = (Z_95 / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
+    Some((
+        (centre - half).clamp(0.0, 1.0),
+        (centre + half).clamp(0.0, 1.0),
+    ))
+}
+
 pub mod basis;
 pub mod control;
 pub mod creator_index;
+pub mod edge;
 pub mod exits;
 pub mod features;
 pub mod selection;

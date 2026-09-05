@@ -256,34 +256,7 @@ pub fn build(
         .map(|l| l.mint)
         .collect();
 
-    let mut trades: BTreeMap<Address, Vec<Trade>> = BTreeMap::new();
-    for event in reader.read(Table::Trades, as_of)? {
-        let Event::Trade(trade) = event else {
-            continue;
-        };
-        if !considered.contains(&trade.mint) {
-            continue;
-        }
-        let Some(launch) = by_mint.get(&trade.mint) else {
-            continue;
-        };
-        // Only the window up to T is ever read, so only that window is held.
-        // A trade before the launch slot is a recording artefact, not history.
-        let t = launch.envelope.slot + SlotDelta(ENTRY_OFFSET_SLOTS);
-        if trade.envelope.slot < launch.envelope.slot || trade.envelope.slot > t {
-            continue;
-        }
-        trades.entry(trade.mint).or_default().push(*trade);
-    }
-    for series in trades.values_mut() {
-        series.sort_by_key(|t| {
-            (
-                t.envelope.slot,
-                t.envelope.tx_index,
-                t.envelope.instruction_index,
-            )
-        });
-    }
+    let trades = trades_to_t(reader, as_of, &by_mint, &considered)?;
 
     // Outcomes per mint, ascending by measurement. The row builder walks this
     // twice — once bounded by T for the creator's record, once unbounded for
@@ -362,6 +335,47 @@ pub fn build(
         entry_offset: ENTRY_OFFSET_SLOTS,
         rows,
     })
+}
+
+/// The trades of every considered mint, from its launch to its T, in order.
+///
+/// The window is the memory bound: the trades table is the large read, and
+/// holding a mint's whole history when only the first 6,000 slots are ever
+/// looked at is the difference between a pass that fits and one that does not.
+/// A trade before the launch slot is a recording artefact, not history.
+fn trades_to_t(
+    reader: &Reader,
+    as_of: AsOf,
+    by_mint: &BTreeMap<Address, radar_store::Launch>,
+    considered: &BTreeSet<Address>,
+) -> Result<BTreeMap<Address, Vec<Trade>>, StoreError> {
+    let mut trades: BTreeMap<Address, Vec<Trade>> = BTreeMap::new();
+    for event in reader.read(Table::Trades, as_of)? {
+        let Event::Trade(trade) = event else {
+            continue;
+        };
+        if !considered.contains(&trade.mint) {
+            continue;
+        }
+        let Some(launch) = by_mint.get(&trade.mint) else {
+            continue;
+        };
+        let t = launch.envelope.slot + SlotDelta(ENTRY_OFFSET_SLOTS);
+        if trade.envelope.slot < launch.envelope.slot || trade.envelope.slot > t {
+            continue;
+        }
+        trades.entry(trade.mint).or_default().push(*trade);
+    }
+    for series in trades.values_mut() {
+        series.sort_by_key(|t| {
+            (
+                t.envelope.slot,
+                t.envelope.tx_index,
+                t.envelope.instruction_index,
+            )
+        });
+    }
+    Ok(trades)
 }
 
 /// Ascending launch slots per distinct string, for the "how many before this

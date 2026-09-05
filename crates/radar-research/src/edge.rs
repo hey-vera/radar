@@ -1,0 +1,1454 @@
+// SPDX-License-Identifier: Apache-2.0
+//! E3 — the walk-forward protocol, so that a null result is a result.
+//!
+//! Research 0017 measures Radar's selection edge at **0 bps** and research 0022
+//! puts the bar at roughly **456**. This is the instrument that can move that
+//! number, and the only one: nothing else in the repository asks whether any
+//! stratum of recorded launches clears the bar on rows it was not fitted on.
+//!
+//! Design 0010 §6.2 sets the protocol and this implements it exactly, with the
+//! two readings it left open written down in [`FOLDS`] and [`Reading::clears`].
+//!
+//! # The shape
+//!
+//! Five contiguous windows by launch slot, equal in rows, never shuffled — time
+//! order is the whole point. The first three are the fitting period; the last
+//! two are the test folds, which is what "measured on two non-overlapping test
+//! folds" means with five windows.
+//!
+//! **Purged, with an embargo.** A label takes time to mature: a row's
+//! twenty-four-hour return is not known until twenty-four hours after its
+//! launch. So a fitting row whose label matures after the fitting period's
+//! boundary is dropped (the purge), and each later fold begins
+//! [`EMBARGO_SLOTS`] after the boundary before it (the embargo). Without both,
+//! a row in the fitting period and a row in the test fold can share overlapping
+//! label windows, and the test fold is then not independent of the fit. López
+//! de Prado, *Advances in Financial Machine Learning* (2018), chapter 7.
+//!
+//! # Why the count of strata tried is printed
+//!
+//! A winner chosen from ten thousand candidates is expected to regress. The two
+//! test folds are the control, and the count is what lets a reader discount the
+//! result rather than take it at face value. It is on every verdict, including
+//! the null ones.
+//!
+//! # What this cannot do
+//!
+//! Catch a leak. A leaked feature does not fail on the second fold, it wins
+//! every fold, so the fold design is the wrong instrument for it entirely —
+//! which is why the guard lives in [`features`](crate::features), at the point
+//! a number enters a row. Overfitting *does* die on fold two, and
+//! [`Options::noise_seed`] plants exactly that: a feature that is uniform noise
+//! by construction, which the protocol must never report as `Found`.
+
+use radar_roast::BaseRates;
+use radar_types::Slot;
+
+use crate::features::{FEATURES, FeatureTable, Row};
+use crate::wilson_bounds;
+
+/// Windows the rows are split into.
+///
+/// Five, and three of them fit: design 0010 §6.2 asks for five contiguous
+/// windows and two non-overlapping test folds, which leaves the first three as
+/// the fitting period. Said here rather than left to a reader to infer, because
+/// "the fit fold" in the singular could as easily have meant one window and
+/// three wasted.
+pub const FOLDS: usize = 5;
+
+/// How many of those windows are fitted on.
+pub const FIT_FOLDS: usize = 3;
+
+/// Rows a stratum must hold in a fold before any figure is reported for it.
+///
+/// A median over eleven rows is a story about eleven tokens.
+pub const MIN_ROWS: usize = 100;
+
+/// Rows a stratum should be expected to hold in a test fold before it is worth
+/// fitting on.
+///
+/// [`MIN_ROWS`] plus two standard deviations of a count that size — a hundred
+/// plus twenty. The acceptance floor is a hundred; this is the fitting-side
+/// margin that keeps a stratum whose expectation sits exactly on the floor from
+/// being chosen and then failing it by one row.
+pub const TESTABLE_ROWS: usize = 120;
+
+/// Slots between one fold's boundary and the next fold's first admissible row.
+///
+/// Twenty-four hours. The widest label this harness measures, so no row in a
+/// later fold has a label window overlapping a row in an earlier one.
+pub const EMBARGO_SLOTS: u64 = 216_000;
+
+/// Terms a stratum may conjoin.
+pub const MAX_TERMS: usize = 3;
+
+/// The notional band whose round trip the net return is charged at.
+///
+/// A fifth of the ~$60 capacity research 0022 measures at the 1% impact budget
+/// — about twelve dollars — which is the row of 0022's table the current sizing
+/// actually sits in. Named as the snapshot spells it, and looked up rather than
+/// hard-coded as a number: design 0010 §6.1 says the round trip comes from the
+/// snapshot's `by_notional`, never from a constant in the harness.
+pub const DEFAULT_COST_BAND: &str = "$2-$20";
+
+/// Strata to try before stopping and saying so.
+///
+/// Not a correctness bound. A `Found` from a partial enumeration is still a
+/// `Found` — the test folds are the control either way — but a `NotFound` from
+/// one means "nothing in the part searched", and [`Report::enumeration`]
+/// carries which happened so the note can say the weaker thing.
+pub const DEFAULT_BUDGET: usize = 4_000_000;
+
+/// Which return the protocol is run against.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Horizon {
+    /// Entry to the six-hour checkpoint.
+    SixHours,
+    /// Entry to the twenty-four-hour checkpoint.
+    TwentyFourHours,
+}
+
+impl Horizon {
+    /// How the horizon is written in a report.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SixHours => "6h",
+            Self::TwentyFourHours => "24h",
+        }
+    }
+
+    /// Slots after a launch before this label is known.
+    ///
+    /// What the purge is measured in: a fitting row whose label matures after
+    /// the fitting boundary knows something the boundary does not.
+    #[must_use]
+    pub const fn maturity_slots(self) -> u64 {
+        match self {
+            Self::SixHours => 54_000,
+            Self::TwentyFourHours => 216_000,
+        }
+    }
+
+    /// This row's gross return, if it has one.
+    #[must_use]
+    pub const fn gross_of(self, row: &Row) -> Option<f64> {
+        match self {
+            Self::SixHours => row.gross_6h_bps,
+            Self::TwentyFourHours => row.gross_24h_bps,
+        }
+    }
+}
+
+/// What stopped the protocol running.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum EdgeError {
+    /// The snapshot has no band by that name.
+    ///
+    /// A refusal rather than a fallback. Picking a neighbouring band because
+    /// the named one was absent would charge a different cost than the report
+    /// says it charged.
+    #[error("the snapshot has no cost band named {band}; it has {available}")]
+    NoCostBand {
+        /// The band asked for.
+        band: String,
+        /// What the snapshot does carry.
+        available: String,
+    },
+    /// Fewer labelled rows than the folds and the row floor need.
+    #[error(
+        "{rows} labelled rows is too few for {FOLDS} folds of at least {MIN_ROWS}; the protocol would be arithmetic on noise"
+    )]
+    TooFewRows {
+        /// Labelled rows found.
+        rows: usize,
+    },
+}
+
+/// One term of a stratum: a feature against a threshold, in one direction.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Term {
+    /// Index into [`FEATURES`], or [`FEATURES`]`.len()` for the planted noise.
+    pub feature: usize,
+    /// Whether the term is `>= threshold` rather than `< threshold`.
+    pub at_least: bool,
+    /// The threshold, taken from a fitting-period decile.
+    pub threshold: f64,
+}
+
+impl Term {
+    /// The feature's name, including the planted one.
+    #[must_use]
+    pub fn feature_name(&self) -> &'static str {
+        FEATURES.get(self.feature).copied().unwrap_or(NOISE_FEATURE)
+    }
+
+    /// Whether a value satisfies this term. An absent value satisfies nothing:
+    /// a stratum naming a feature nobody measured for this row must drop the
+    /// row, not read the absence as a small number.
+    #[must_use]
+    pub fn admits(&self, value: Option<f64>) -> bool {
+        value.is_some_and(|v| {
+            if self.at_least {
+                v >= self.threshold
+            } else {
+                v < self.threshold
+            }
+        })
+    }
+}
+
+/// The name of the planted noise feature.
+pub const NOISE_FEATURE: &str = "planted_noise";
+
+/// A conjunction of at most [`MAX_TERMS`] terms.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Stratum {
+    /// How the report names it. Fitted strata are named from their terms.
+    pub name: String,
+    /// The terms, all of which must hold.
+    pub terms: Vec<Term>,
+}
+
+impl Stratum {
+    /// A named stratum, for the fixed ones that are not fitted.
+    #[must_use]
+    pub fn named(name: impl Into<String>, terms: Vec<Term>) -> Self {
+        Self {
+            name: name.into(),
+            terms,
+        }
+    }
+
+    /// Whether a row is in this stratum.
+    #[must_use]
+    pub fn admits(&self, row: &Row, noise: Option<f64>) -> bool {
+        self.terms.iter().all(|term| {
+            let value = if term.feature < FEATURES.len() {
+                row.value(term.feature)
+            } else {
+                noise
+            };
+            term.admits(value)
+        })
+    }
+
+    /// The terms, written the way the report prints them.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        if self.terms.is_empty() {
+            return "every row".to_owned();
+        }
+        self.terms
+            .iter()
+            .map(|t| {
+                format!(
+                    "{} {} {:.4}",
+                    t.feature_name(),
+                    if t.at_least { ">=" } else { "<" },
+                    t.threshold
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" and ")
+    }
+}
+
+/// What a stratum did over one fold.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Reading {
+    /// Rows in the stratum, in this fold.
+    pub n: usize,
+    /// Median gross return, in basis points.
+    pub median_gross: f64,
+    /// Median return net of the band's round trip, in basis points.
+    pub median_net: f64,
+    /// Rows whose net return was above zero.
+    pub positive: usize,
+    /// Wilson 95% lower bound on the share above zero.
+    pub wilson_lower: f64,
+    /// Standard error of the median, from the interquartile range.
+    ///
+    /// What "this stratum is not measurably better than that one" is measured
+    /// in. See [`search`]: a refinement whose apparent gain is inside this is a
+    /// refinement fitted to noise.
+    pub se_median: f64,
+}
+
+impl Reading {
+    /// Whether this reading clears the acceptance conditions.
+    ///
+    /// Both charges, deliberately. Plan 0007 Q2: the plan said the label is net
+    /// of the round trip *and* that the median net must clear 456 bps, which
+    /// double-charges the cost — research 0022's `a ≈ 456` **is** the fee round
+    /// trip and its bar is on the gross edge `r`, since profit is
+    /// `s · (r − a − b·s)`. Rather than pick a reading and hide the choice, this
+    /// requires both halves: the net must pay for itself and the gross must
+    /// clear the bar. That is stricter than either reading alone, so no `Found`
+    /// can rest on only one of them, and every figure is printed so a reader can
+    /// apply whichever rule they hold.
+    #[must_use]
+    pub fn clears(&self, bar_bps: f64) -> bool {
+        self.n >= MIN_ROWS
+            && self.median_net >= 0.0
+            && self.median_gross >= bar_bps
+            && self.wilson_lower > 0.5
+    }
+}
+
+/// A stratum with what it did in the fitting period and on each test fold.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Candidate {
+    /// The stratum.
+    pub stratum: Stratum,
+    /// What it did over the fitting period. `None` for a fixed stratum, which
+    /// is never fitted.
+    pub fit: Option<Reading>,
+    /// What it did on each test fold, in order. `None` where the fold held
+    /// fewer than [`MIN_ROWS`] of it.
+    pub tests: Vec<Option<Reading>>,
+    /// Whether it cleared the bar on **every** test fold.
+    pub found: bool,
+}
+
+/// One window of rows.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Fold {
+    /// The first launch slot in the window.
+    pub from: Slot,
+    /// The last launch slot in the window.
+    pub to: Slot,
+    /// Rows in it after the purge and the embargo.
+    pub rows: usize,
+}
+
+/// Whether the search covered the whole grammar.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Enumeration {
+    /// Every stratum in the grammar was tried.
+    Exhaustive,
+    /// The budget ran out first, so a null means "nothing in the part searched".
+    StoppedAtBudget,
+}
+
+/// What the protocol found, or did not.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Report {
+    /// The store watermark the table was built at.
+    pub watermark: Slot,
+    /// Which return this was run against.
+    pub horizon: Horizon,
+    /// The cost band charged, as the snapshot names it.
+    pub cost_band: String,
+    /// Its round trip, in basis points.
+    pub round_trip_bps: f64,
+    /// The bar the gross median is held to.
+    pub bar_bps: f64,
+    /// The figure research 0022 reports beside it for a position above ~$59.
+    pub bar_beside_bps: f64,
+    /// When the snapshot the two came from was measured.
+    pub rates_measured_on: String,
+    /// Labelled rows the protocol ran over.
+    pub labelled_rows: usize,
+    /// The windows.
+    pub folds: Vec<Fold>,
+    /// How many strata were tried.
+    pub strata_tried: usize,
+    /// Whether that was the whole grammar.
+    pub enumeration: Enumeration,
+    /// The best fitted stratum, tested. `None` when nothing in the grammar held
+    /// [`MIN_ROWS`] over the fitting period.
+    pub fitted: Option<Candidate>,
+    /// The strata that are not fitted at all, tested on the same folds.
+    pub fixed: Vec<Candidate>,
+    /// Whether anything at all was found.
+    pub found: bool,
+}
+
+/// How the protocol is run.
+#[derive(Clone, Debug)]
+pub struct Options {
+    /// Which return to measure.
+    pub horizon: Horizon,
+    /// The band whose round trip is charged.
+    pub cost_band: String,
+    /// Strata to try before stopping.
+    pub budget: usize,
+    /// When set, a uniform-noise feature is added to the grammar with this
+    /// seed. The planted test: across seeds it must never be `Found`.
+    pub noise_seed: Option<u64>,
+}
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            horizon: Horizon::TwentyFourHours,
+            cost_band: DEFAULT_COST_BAND.to_owned(),
+            budget: DEFAULT_BUDGET,
+            noise_seed: None,
+        }
+    }
+}
+
+/// One labelled row, reduced to what the protocol needs.
+struct Point {
+    launch_slot: Slot,
+    gross: f64,
+    net: f64,
+    values: Vec<Option<f64>>,
+}
+
+/// Uniform noise in `[0, 1)`, from a seed and a mint.
+///
+/// Deterministic and seeded: the protocol reads no clock and no entropy, so a
+/// planted-noise run reproduces exactly. `blake3` rather than a hand-rolled
+/// mixer because the crate is already here and a weak mixer would correlate
+/// with the mint bytes, which would make the planted test easier to pass than
+/// it should be.
+fn noise_for(seed: u64, row: &Row) -> f64 {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(&seed.to_le_bytes());
+    hasher.update(row.mint.as_bytes());
+    let mut bytes = [0u8; 8];
+    bytes.copy_from_slice(&hasher.finalize().as_bytes()[..8]);
+    // 2^53 keeps every value exactly representable, so two runs cannot disagree
+    // by a rounding step.
+    #[expect(clippy::cast_precision_loss, reason = "masked below 2^53")]
+    let out =
+        (u64::from_le_bytes(bytes) & ((1 << 53) - 1)) as f64 / f64::from(1u32 << 31) / 4.194_304e6;
+    out
+}
+
+/// Runs the protocol.
+///
+/// # Errors
+///
+/// [`EdgeError::NoCostBand`] when the snapshot does not name the band asked
+/// for, [`EdgeError::TooFewRows`] when there are not enough labelled rows for
+/// the folds to mean anything.
+pub fn run(
+    table: &FeatureTable,
+    rates: &BaseRates,
+    options: &Options,
+) -> Result<Report, EdgeError> {
+    let band = rates
+        .cost_bands
+        .iter()
+        .find(|b| b.band == options.cost_band)
+        .ok_or_else(|| EdgeError::NoCostBand {
+            band: options.cost_band.clone(),
+            available: rates
+                .cost_bands
+                .iter()
+                .map(|b| b.band.clone())
+                .collect::<Vec<_>>()
+                .join(", "),
+        })?;
+    let round_trip = band.round_trip;
+
+    let points = points_of(table, options, round_trip);
+    if points.len() < FOLDS * MIN_ROWS {
+        return Err(EdgeError::TooFewRows { rows: points.len() });
+    }
+
+    let windows = split(&points);
+    let (fit_rows, test_rows) = admissible(&points, &windows, options.horizon);
+
+    // Each window reports its own admissible rows. The fitting period is three
+    // of them and is fitted as one, but a table that piled all three counts
+    // onto the third would make the purge look like it had emptied two windows.
+    let folds = windows
+        .iter()
+        .enumerate()
+        .map(|(index, (from, to))| Fold {
+            from: *from,
+            to: *to,
+            rows: if index < FIT_FOLDS {
+                fit_rows
+                    .iter()
+                    .filter(|i| points[**i].launch_slot >= *from && points[**i].launch_slot <= *to)
+                    .count()
+            } else {
+                test_rows[index - FIT_FOLDS].len()
+            },
+        })
+        .collect();
+
+    let width = options
+        .noise_seed
+        .map_or(FEATURES.len(), |_| FEATURES.len() + 1);
+    let terms = grammar(&points, &fit_rows, width);
+    let floor = fitting_floor(fit_rows.len(), &test_rows);
+    let (best, tried, enumeration) = search(
+        &points,
+        &fit_rows,
+        &terms,
+        round_trip,
+        floor,
+        options.budget,
+    );
+
+    let bar = rates.round_trip_bar;
+    let test = |stratum: &Stratum| -> Vec<Option<Reading>> {
+        test_rows
+            .iter()
+            .map(|rows| read(&points, rows, stratum, round_trip))
+            .collect()
+    };
+    let cleared = |readings: &[Option<Reading>]| -> bool {
+        !readings.is_empty() && readings.iter().all(|r| r.is_some_and(|r| r.clears(bar)))
+    };
+
+    let fitted = best.map(|(stratum, fit)| {
+        let tests = test(&stratum);
+        Candidate {
+            stratum,
+            fit: Some(fit),
+            found: cleared(&tests),
+            tests,
+        }
+    });
+
+    let fixed: Vec<Candidate> = fixed_strata(rates)
+        .into_iter()
+        .map(|stratum| {
+            let tests = test(&stratum);
+            Candidate {
+                stratum,
+                fit: None,
+                found: cleared(&tests),
+                tests,
+            }
+        })
+        .collect();
+
+    let found = fitted.as_ref().is_some_and(|c| c.found) || fixed.iter().any(|c| c.found);
+
+    Ok(Report {
+        watermark: table.watermark,
+        horizon: options.horizon,
+        cost_band: band.band.clone(),
+        round_trip_bps: round_trip,
+        bar_bps: bar,
+        bar_beside_bps: rates.round_trip_kernel,
+        rates_measured_on: rates.measured_on.clone(),
+        labelled_rows: points.len(),
+        folds,
+        strata_tried: tried,
+        enumeration,
+        fitted,
+        fixed,
+        found,
+    })
+}
+
+/// The labelled rows, in launch order, with the planted noise if one is asked
+/// for.
+///
+/// A row with no label cannot be scored and is not evidence of anything, so it
+/// is not carried at all rather than carried and skipped.
+fn points_of(table: &FeatureTable, options: &Options, round_trip: f64) -> Vec<Point> {
+    let mut points: Vec<Point> = table
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let gross = options.horizon.gross_of(row)?;
+            let mut values = row.values.clone();
+            if let Some(seed) = options.noise_seed {
+                values.push(Some(noise_for(seed, row)));
+            }
+            Some(Point {
+                launch_slot: row.launch_slot,
+                gross,
+                net: gross - round_trip,
+                values,
+            })
+        })
+        .collect();
+    points.sort_by_key(|p| p.launch_slot);
+    points
+}
+
+/// Splits the points into [`FOLDS`] contiguous windows, equal in rows.
+///
+/// By position rather than by slot range: a window of equal slot width holds
+/// wildly unequal numbers of launches, and a fold of forty rows cannot be
+/// compared with one of forty thousand.
+fn split(points: &[Point]) -> Vec<(Slot, Slot)> {
+    let per = points.len() / FOLDS;
+    (0..FOLDS)
+        .map(|index| {
+            let start = index * per;
+            let end = if index == FOLDS - 1 {
+                points.len() - 1
+            } else {
+                (start + per).saturating_sub(1)
+            };
+            (points[start].launch_slot, points[end].launch_slot)
+        })
+        .collect()
+}
+
+/// Applies the purge and the embargo.
+///
+/// Returns the fitting period's row indices and one set per test fold.
+///
+/// - **Purge**: a fitting row whose label matures after the fitting period's
+///   boundary is dropped. It knows something the boundary does not.
+/// - **Embargo**: a test fold's rows must launch at least [`EMBARGO_SLOTS`]
+///   after the boundary before them, so no two rows either side of a boundary
+///   share an overlapping label window.
+fn admissible(
+    points: &[Point],
+    windows: &[(Slot, Slot)],
+    horizon: Horizon,
+) -> (Vec<usize>, Vec<Vec<usize>>) {
+    let fit_boundary = windows[FIT_FOLDS - 1].1;
+    let maturity = horizon.maturity_slots();
+
+    let fit = points
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            p.launch_slot <= fit_boundary
+                && p.launch_slot.get().saturating_add(maturity) <= fit_boundary.get()
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    let mut tests = Vec::new();
+    for index in FIT_FOLDS..FOLDS {
+        let (from, to) = windows[index];
+        let previous_boundary = windows[index - 1].1;
+        let earliest = previous_boundary.get().saturating_add(EMBARGO_SLOTS);
+        tests.push(
+            points
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| {
+                    p.launch_slot >= from && p.launch_slot <= to && p.launch_slot.get() >= earliest
+                })
+                .map(|(i, _)| i)
+                .collect(),
+        );
+    }
+    (fit, tests)
+}
+
+/// Every term the grammar admits, from the fitting period's deciles.
+///
+/// Thresholds from the **fitting** rows only. Deciles taken over the whole
+/// table would be a threshold fitted to the test folds, which is the leak the
+/// fold design exists to prevent.
+fn grammar(points: &[Point], fit: &[usize], width: usize) -> Vec<Term> {
+    let mut terms = Vec::new();
+    for feature in 0..width {
+        let mut values: Vec<f64> = fit
+            .iter()
+            .filter_map(|i| points[*i].values.get(feature).copied().flatten())
+            .collect();
+        if values.len() < MIN_ROWS {
+            // A feature measured for fewer rows than the floor cannot produce a
+            // stratum that clears the floor, so it produces no terms at all.
+            continue;
+        }
+        values.sort_by(f64::total_cmp);
+        let mut seen: Vec<f64> = Vec::new();
+        for decile in 1..10usize {
+            let index = values.len() * decile / 10;
+            let Some(threshold) = values.get(index).copied() else {
+                continue;
+            };
+            // A constant feature has nine identical deciles, and nine copies of
+            // one term is nine times the work for one answer.
+            if seen.iter().any(|s| (s - threshold).abs() < f64::EPSILON) {
+                continue;
+            }
+            seen.push(threshold);
+            terms.push(Term {
+                feature,
+                at_least: true,
+                threshold,
+            });
+            terms.push(Term {
+                feature,
+                at_least: false,
+                threshold,
+            });
+        }
+    }
+    terms
+}
+
+/// A bitmap of the rows a term admits, indexed against `rows`.
+struct Mask {
+    term: Term,
+    bits: Vec<u64>,
+    count: usize,
+}
+
+fn mask_of(points: &[Point], rows: &[usize], term: Term) -> Mask {
+    let mut bits = vec![0u64; rows.len().div_ceil(64)];
+    let mut count = 0;
+    for (position, row) in rows.iter().enumerate() {
+        let value = points[*row].values.get(term.feature).copied().flatten();
+        if term.admits(value) {
+            bits[position / 64] |= 1 << (position % 64);
+            count += 1;
+        }
+    }
+    Mask { term, bits, count }
+}
+
+/// The intersection of two masks, and how many rows it holds.
+fn intersect(left: &[u64], right: &[u64]) -> (Vec<u64>, usize) {
+    let bits: Vec<u64> = left.iter().zip(right).map(|(a, b)| a & b).collect();
+    let count = bits.iter().map(|w| w.count_ones() as usize).sum();
+    (bits, count)
+}
+
+/// Enumerates the grammar over the fitting period and returns the winner.
+///
+/// Bitmaps rather than a filter per stratum: a conjunction is then a word-wise
+/// AND, which is what makes an exhaustive search over three-term conjunctions
+/// finish at all. The row floor prunes: a conjunction below it cannot be
+/// rescued by a third term, since intersecting can only remove rows.
+fn search(
+    points: &[Point],
+    fit: &[usize],
+    terms: &[Term],
+    round_trip: f64,
+    floor: usize,
+    budget: usize,
+) -> (Option<(Stratum, Reading)>, usize, Enumeration) {
+    let masks: Vec<Mask> = terms
+        .iter()
+        .map(|t| mask_of(points, fit, *t))
+        .filter(|m| m.count >= floor)
+        .collect();
+
+    let mut tried = 0usize;
+    let mut best: Option<(Stratum, Reading)> = None;
+    let mut enumeration = Enumeration::Exhaustive;
+
+    let consider = |terms: Vec<Term>,
+                    bits: &[u64],
+                    tried: &mut usize,
+                    best: &mut Option<(Stratum, Reading)>| {
+        *tried += 1;
+        let Some(reading) = read_bits(points, fit, bits, round_trip) else {
+            return;
+        };
+        if reading.n < floor {
+            return;
+        }
+        if prefer(&reading, terms.len(), best.as_ref()) {
+            *best = Some((
+                Stratum {
+                    name: "fitted".to_owned(),
+                    terms,
+                },
+                reading,
+            ));
+        }
+    };
+
+    'outer: for (i, first) in masks.iter().enumerate() {
+        if tried >= budget {
+            enumeration = Enumeration::StoppedAtBudget;
+            break;
+        }
+        consider(vec![first.term], &first.bits, &mut tried, &mut best);
+
+        for second in masks.iter().skip(i + 1) {
+            // Two terms on one feature is a range, which the grammar reaches by
+            // a different pair; two thresholds on the same feature in the same
+            // direction is one of them restated.
+            if second.term.feature == first.term.feature {
+                continue;
+            }
+            let (pair_bits, pair_count) = intersect(&first.bits, &second.bits);
+            if pair_count < floor {
+                continue;
+            }
+            if tried >= budget {
+                enumeration = Enumeration::StoppedAtBudget;
+                break 'outer;
+            }
+            consider(
+                vec![first.term, second.term],
+                &pair_bits,
+                &mut tried,
+                &mut best,
+            );
+
+            for third in masks.iter().skip(i + 1) {
+                if third.term.feature == first.term.feature
+                    || third.term.feature == second.term.feature
+                {
+                    continue;
+                }
+                let (triple_bits, triple_count) = intersect(&pair_bits, &third.bits);
+                if triple_count < floor {
+                    continue;
+                }
+                if tried >= budget {
+                    enumeration = Enumeration::StoppedAtBudget;
+                    break 'outer;
+                }
+                consider(
+                    vec![first.term, second.term, third.term],
+                    &triple_bits,
+                    &mut tried,
+                    &mut best,
+                );
+            }
+        }
+    }
+
+    if let Some((stratum, _)) = best.as_mut() {
+        stratum.name = stratum.describe();
+    }
+    (best, tried, enumeration)
+}
+
+/// The row floor a stratum must clear over the **fitting period**.
+///
+/// Not [`MIN_ROWS`]. The floor that matters is on a test fold, and the fitting
+/// period is larger — three windows against one — so a stratum holding exactly
+/// a hundred fitting rows holds roughly a third of that in each test fold and
+/// can never be accepted. Fitting on strata that cannot be tested is how a
+/// real edge gets displaced: `an_engineered_edge_is_found` failed against a
+/// flat floor because the winner was the top decile of the feature carrying
+/// the edge, perfect on the fitting period and twenty-one rows on a test fold.
+///
+/// So the floor is scaled: a stratum must hold at least the share of the
+/// fitting period that would leave [`TESTABLE_ROWS`] in the **smallest** test
+/// fold.
+///
+/// [`TESTABLE_ROWS`] rather than [`MIN_ROWS`] because a share whose *expected*
+/// test-fold count is exactly the floor falls below it about half the time.
+/// The engineered edge failed a second time on precisely that: ninety-nine rows
+/// where a hundred were needed, one short, on a stratum that was right.
+fn fitting_floor(fit_rows: usize, test_rows: &[Vec<usize>]) -> usize {
+    let smallest = test_rows.iter().map(Vec::len).min().unwrap_or(0);
+    if smallest == 0 {
+        return MIN_ROWS;
+    }
+    (TESTABLE_ROWS * fit_rows).div_ceil(smallest).max(MIN_ROWS)
+}
+
+/// Whether a candidate should replace the one held, under the one-standard-error
+/// rule.
+///
+/// # Why this is not simply "the highest median"
+///
+/// Design 0010 §6.2 says the fit-fold winner is the stratum with the highest
+/// median net return. Taken literally that is what this did, and the test
+/// `an_engineered_edge_is_found` failed against it: with a real 3,000 bps edge
+/// planted in one feature, the maximiser preferred a three-term refinement that
+/// had sliced the fitting period into rows whose noise happened to run high.
+/// The refinement then failed the test folds, as it should — and took the real
+/// edge with it, because only the winner is tested.
+///
+/// So a candidate has to be better by **more than one standard error of the
+/// held median** to replace it. Inside that band the two have not been shown to
+/// differ, and the tie is broken toward the simpler stratum — fewer terms, then
+/// more rows. This is the one-standard-error rule, and it is the difference
+/// between a harness that can see an edge and one that cannot.
+///
+/// It is a deviation from the design's sentence, found by a test rather than
+/// argued from first principles, and plan 0007 Q3 records it as one.
+fn prefer(candidate: &Reading, terms: usize, held: Option<&(Stratum, Reading)>) -> bool {
+    let Some((held_stratum, held_reading)) = held else {
+        return true;
+    };
+    // The larger of the two standard errors, not the incumbent's. A wide
+    // stratum's median has a small one, so comparing against it alone lets any
+    // narrow, noisy candidate displace it -- which is the failure this rule
+    // exists to prevent, arriving from the other direction.
+    let noise = held_reading.se_median.max(candidate.se_median);
+    if candidate.median_net > held_reading.median_net + noise {
+        return true;
+    }
+    if held_reading.median_net > candidate.median_net + noise {
+        return false;
+    }
+    // Within one standard error the two medians have not been shown to differ,
+    // and the second acceptance condition decides instead: the Wilson lower
+    // bound on the share of rows that actually paid. That is a confidence
+    // bound, so it already prefers more rows at an equal share and a higher
+    // share at comparable rows -- which is exactly the trade a tie-break here
+    // has to make. Fewer terms breaks a tie on that.
+    if candidate.wilson_lower > held_reading.wilson_lower {
+        return true;
+    }
+    if candidate.wilson_lower < held_reading.wilson_lower {
+        return false;
+    }
+    terms < held_stratum.terms.len()
+}
+
+/// Reads a stratum over a set of rows.
+fn read(points: &[Point], rows: &[usize], stratum: &Stratum, round_trip: f64) -> Option<Reading> {
+    let matched: Vec<usize> = rows
+        .iter()
+        .copied()
+        .filter(|i| {
+            stratum
+                .terms
+                .iter()
+                .all(|term| term.admits(points[*i].values.get(term.feature).copied().flatten()))
+        })
+        .collect();
+    summarise(points, &matched, round_trip)
+}
+
+/// The same, from a bitmap.
+fn read_bits(points: &[Point], rows: &[usize], bits: &[u64], round_trip: f64) -> Option<Reading> {
+    let matched: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(position, _)| bits[position / 64] & (1 << (position % 64)) != 0)
+        .map(|(_, row)| *row)
+        .collect();
+    summarise(points, &matched, round_trip)
+}
+
+/// The figures a reading reports.
+fn summarise(points: &[Point], matched: &[usize], round_trip: f64) -> Option<Reading> {
+    if matched.is_empty() {
+        return None;
+    }
+    let mut gross: Vec<f64> = matched.iter().map(|i| points[*i].gross).collect();
+    let median_gross = quantile(&mut gross, 0.5);
+    let lower_quartile = quantile(&mut gross, 0.25);
+    let upper_quartile = quantile(&mut gross, 0.75);
+    let positive = matched.iter().filter(|i| points[**i].net > 0.0).count();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "row counts, far below f64's exact-integer range"
+    )]
+    let n = matched.len() as f64;
+    // The textbook large-sample standard error of a median, with the spread
+    // estimated from the interquartile range rather than from a variance: these
+    // return distributions have a heavy tail and a point mass, and a variance
+    // over them is dominated by a handful of rows.
+    let se_median = 1.253_3 * ((upper_quartile - lower_quartile) / 1.349) / n.sqrt();
+    let (wilson_lower, _) = wilson_bounds(positive as u64, matched.len() as u64)?;
+
+    Some(Reading {
+        n: matched.len(),
+        median_gross,
+        median_net: median_gross - round_trip,
+        positive,
+        wilson_lower,
+        se_median,
+    })
+}
+
+/// The value at `p` of a slice, by selection rather than by sorting.
+///
+/// A value a row actually held, never an interpolation between two: an average
+/// of two returns is not a return either token had. Selection rather than a
+/// sort because the enumeration calls this once per stratum, and the difference
+/// between `O(n)` and `O(n log n)` there is the difference between a pass that
+/// finishes and one that is abandoned.
+///
+/// # Panics
+///
+/// Never on a non-empty slice; callers hold that.
+fn quantile(values: &mut [f64], p: f64) -> f64 {
+    #[expect(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "an index into a cohort far below f64's exact-integer range"
+    )]
+    let index = ((values.len() as f64 * p) as usize).min(values.len() - 1);
+    let (_, at, _) = values.select_nth_unstable_by(index, f64::total_cmp);
+    *at
+}
+
+/// The strata that are not fitted, and are measured for that reason.
+///
+/// Design 0010 §6.2: `creator_edge`'s own thresholds as one stratum, and the
+/// refusal signals' complements, so the **refusal edge** — how much worse the
+/// refused set does than the rest — gets a number of its own. That is the
+/// product Radar sells today and it has never had one.
+///
+/// The creator rule here is an approximation of [`radar_strategy::CreatorEdge`]
+/// and says so in its name: the table counts a creator's *prior launches* where
+/// the strategy counts *measured* ones, and expresses "at least
+/// `min_graduation_bps` of them graduated" as "at least one did". Both
+/// differences make this stratum wider than the rule, so a null here is not
+/// quite a null for the rule — which is why the name carries `approx`.
+fn fixed_strata(rates: &BaseRates) -> Vec<Stratum> {
+    let thresholds = radar_strategy::creator_edge::Thresholds::DEFAULT;
+    let index = |name: &str| crate::features::feature_index(name).expect("a name from FEATURES");
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "thresholds are small integers, exact in f64"
+    )]
+    let launches = thresholds.min_measured_launches as f64;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "thresholds are small integers, exact in f64"
+    )]
+    let per_day = thresholds.max_launches_per_day as f64;
+
+    let mut strata = vec![
+        Stratum::named(
+            "creator-edge-approx",
+            vec![
+                Term {
+                    feature: index("creator_prior_launches"),
+                    at_least: true,
+                    threshold: launches,
+                },
+                Term {
+                    feature: index("creator_prior_organic"),
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: index("creator_launches_per_day"),
+                    at_least: false,
+                    threshold: per_day,
+                },
+            ],
+        ),
+        Stratum::named(
+            "refused: a record and no organic graduation",
+            vec![
+                Term {
+                    feature: index("creator_prior_launches"),
+                    at_least: true,
+                    threshold: launches,
+                },
+                Term {
+                    feature: index("creator_prior_organic"),
+                    at_least: false,
+                    threshold: 1.0,
+                },
+            ],
+        ),
+        Stratum::named(
+            "refused: launching too fast",
+            vec![Term {
+                feature: index("creator_launches_per_day"),
+                at_least: true,
+                threshold: per_day,
+            }],
+        ),
+    ];
+
+    // The strongest band's lower edge, read from the snapshot rather than
+    // written here. Research 0024 moved that band from six to ten-to-thirteen,
+    // and a rule naming the number would have fired on the wrong launches from
+    // the day it moved.
+    if let Some(band) = rates.strongest_band() {
+        strata.push(Stratum::named(
+            format!("refused: launch block at {} recipients or above", band.lo),
+            vec![Term {
+                feature: index("decision_launch_recipients"),
+                at_least: true,
+                threshold: f64::from(band.lo),
+            }],
+        ));
+    }
+    strata
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radar_types::Address;
+
+    fn row(mint: u8, slot: u64, feature: usize, value: f64, gross: f64) -> Row {
+        let mut values = vec![None; FEATURES.len()];
+        values[feature] = Some(value);
+        Row {
+            mint: Address::new([mint; 32]),
+            creator: Address::new([1; 32]),
+            launch_slot: Slot(slot),
+            t: Slot(slot + 6_000),
+            values,
+            gross_6h_bps: Some(gross),
+            gross_24h_bps: Some(gross),
+            mode: None,
+        }
+    }
+
+    #[test]
+    fn a_term_admits_nothing_when_the_value_is_absent() {
+        // Absent is not small. A stratum naming a feature nobody measured for
+        // this row must drop the row, and reading `None` as zero would sweep
+        // every unmeasured token into the "below the threshold" side.
+        let below = Term {
+            feature: 0,
+            at_least: false,
+            threshold: 10.0,
+        };
+        assert!(below.admits(Some(9.0)));
+        assert!(!below.admits(Some(10.0)), "the boundary belongs to >=");
+        assert!(!below.admits(None));
+
+        let at_least = Term {
+            feature: 0,
+            at_least: true,
+            threshold: 10.0,
+        };
+        assert!(at_least.admits(Some(10.0)));
+        assert!(!at_least.admits(Some(9.999)));
+        assert!(!at_least.admits(None));
+    }
+
+    #[test]
+    fn a_reading_needs_every_condition_and_not_merely_a_good_median() {
+        let clearing = Reading {
+            n: MIN_ROWS,
+            median_gross: 500.0,
+            median_net: 10.0,
+            positive: MIN_ROWS,
+            wilson_lower: 0.96,
+            se_median: 5.0,
+        };
+        assert!(clearing.clears(456.0));
+
+        // Each condition, removed alone.
+        assert!(
+            !Reading {
+                n: MIN_ROWS - 1,
+                ..clearing
+            }
+            .clears(456.0),
+            "too few rows"
+        );
+        assert!(
+            !Reading {
+                median_net: -1.0,
+                ..clearing
+            }
+            .clears(456.0),
+            "the net must pay for itself"
+        );
+        assert!(
+            !Reading {
+                median_gross: 455.0,
+                ..clearing
+            }
+            .clears(456.0),
+            "the gross must clear the bar"
+        );
+        assert!(
+            !Reading {
+                wilson_lower: 0.5,
+                ..clearing
+            }
+            .clears(456.0),
+            "a half is not above a half: a median over a point mass at zero is a report about the point mass"
+        );
+    }
+
+    #[test]
+    fn a_quantile_is_a_value_a_row_actually_held_and_does_not_need_sorting() {
+        let mut unsorted = [3.0, 1.0, 4.0, 2.0, 5.0];
+        assert!((quantile(&mut unsorted, 0.5) - 3.0).abs() < f64::EPSILON);
+        let mut again = [3.0, 1.0, 4.0, 2.0, 5.0];
+        assert!(
+            (quantile(&mut again, 0.25) - 2.0).abs() < f64::EPSILON,
+            "an order statistic, never an interpolation between two rows"
+        );
+        let mut one = [7.0];
+        assert!((quantile(&mut one, 0.5) - 7.0).abs() < f64::EPSILON);
+        let mut top = [1.0, 2.0, 3.0];
+        assert!(
+            (quantile(&mut top, 1.0) - 3.0).abs() < f64::EPSILON,
+            "the top must clamp rather than index one past the end"
+        );
+    }
+
+    #[test]
+    fn the_fitting_floor_is_scaled_from_the_smallest_test_fold() {
+        // A stratum holding a hundred fitting rows out of sixteen hundred holds
+        // about twenty-five in a four-hundred-row test fold, and can never be
+        // accepted. Fitting on it displaces strata that could have been.
+        assert_eq!(
+            fitting_floor(1_600, &[vec![0; 400], vec![0; 400]]),
+            480,
+            "a stratum must hold the share that leaves TESTABLE_ROWS in a test fold"
+        );
+        assert_eq!(
+            fitting_floor(1_600, &[vec![0; 400], vec![0; 200]]),
+            960,
+            "the smallest test fold sets it, not the average"
+        );
+        assert_eq!(
+            fitting_floor(100, &[vec![0; 1_000]]),
+            MIN_ROWS,
+            "the acceptance floor is the lower bound; a scaled floor below it is not a floor"
+        );
+        assert_eq!(
+            fitting_floor(1_600, &[Vec::new()]),
+            MIN_ROWS,
+            "an empty test fold cannot scale anything, and dividing by it must not panic"
+        );
+    }
+
+    #[test]
+    fn a_refinement_inside_one_standard_error_does_not_displace_a_simpler_stratum() {
+        // The rule that made `an_engineered_edge_is_found` pass. A three-term
+        // stratum that looks 5 bps better than a one-term stratum whose median
+        // carries a standard error of 40 has not been shown to be better, and
+        // preferring it is how a real edge gets replaced by noise fitted around
+        // it -- and then dies on the test folds, taking the edge with it.
+        let simple = Stratum::named(
+            "simple",
+            vec![Term {
+                feature: 0,
+                at_least: true,
+                threshold: 1.0,
+            }],
+        );
+        let held = Reading {
+            n: 400,
+            median_gross: 1_000.0,
+            median_net: 750.0,
+            positive: 300,
+            wilson_lower: 0.7,
+            se_median: 40.0,
+        };
+
+        let inside = Reading {
+            median_net: 755.0,
+            n: 120,
+            ..held
+        };
+        assert!(
+            !prefer(&inside, 3, Some(&(simple.clone(), held))),
+            "five basis points inside a forty-point standard error is not better"
+        );
+
+        let outside = Reading {
+            median_net: 900.0,
+            n: 120,
+            ..held
+        };
+        assert!(
+            prefer(&outside, 3, Some(&(simple.clone(), held))),
+            "a gain larger than the standard error is a real one"
+        );
+
+        // Inside the band the second acceptance condition decides: the stratum
+        // whose rows more reliably paid wins, however wide or narrow it is.
+        let surer = Reading {
+            wilson_lower: 0.95,
+            ..held
+        };
+        assert!(prefer(&surer, 3, Some(&(simple.clone(), held))));
+        let less_sure = Reading {
+            wilson_lower: 0.55,
+            ..held
+        };
+        assert!(!prefer(&less_sure, 1, Some(&(simple.clone(), held))));
+
+        // Only a dead-level tie falls through to simplicity.
+        let level = Reading { n: 500, ..held };
+        assert!(
+            prefer(
+                &level,
+                1,
+                Some(&(
+                    Stratum::named(
+                        "three",
+                        vec![
+                            Term {
+                                feature: 0,
+                                at_least: true,
+                                threshold: 1.0
+                            },
+                            Term {
+                                feature: 1,
+                                at_least: true,
+                                threshold: 1.0
+                            },
+                            Term {
+                                feature: 2,
+                                at_least: true,
+                                threshold: 1.0
+                            },
+                        ]
+                    ),
+                    held
+                ))
+            ),
+            "on a dead-level tie, fewer terms wins"
+        );
+        assert!(prefer(&held, 1, None), "anything beats nothing held");
+    }
+
+    #[test]
+    fn the_windows_are_equal_in_rows_and_in_launch_order() {
+        let points: Vec<Point> = (0..500u64)
+            .map(|i| Point {
+                launch_slot: Slot(i * 10),
+                gross: 0.0,
+                net: 0.0,
+                values: Vec::new(),
+            })
+            .collect();
+        let windows = split(&points);
+
+        assert_eq!(windows.len(), FOLDS);
+        assert_eq!(windows[0].0, Slot(0));
+        assert_eq!(windows[FOLDS - 1].1, Slot(4_990));
+        for pair in windows.windows(2) {
+            assert!(pair[0].1 < pair[1].0, "windows must not overlap: {pair:?}");
+        }
+    }
+
+    #[test]
+    fn the_purge_drops_a_fitting_row_whose_label_matures_after_the_boundary() {
+        // The row launched inside the fitting period, but its twenty-four-hour
+        // return was not known until after it. Keeping it fits on something the
+        // boundary could not have known.
+        let maturity = Horizon::TwentyFourHours.maturity_slots();
+        let points: Vec<Point> = (0..500u64)
+            .map(|i| Point {
+                launch_slot: Slot(i * maturity / 100),
+                gross: 0.0,
+                net: 0.0,
+                values: Vec::new(),
+            })
+            .collect();
+        let windows = split(&points);
+        let (fit, tests) = admissible(&points, &windows, Horizon::TwentyFourHours);
+
+        let boundary = windows[FIT_FOLDS - 1].1;
+        assert!(
+            fit.iter()
+                .all(|i| points[*i].launch_slot.get() + maturity <= boundary.get()),
+            "every fitting row's label matured before the boundary"
+        );
+        assert!(
+            fit.len() < 300,
+            "the purge must remove rows near the boundary, and it removed {}",
+            300 - fit.len()
+        );
+        assert_eq!(tests.len(), FOLDS - FIT_FOLDS);
+    }
+
+    #[test]
+    fn the_embargo_holds_a_test_fold_off_the_boundary_before_it() {
+        let points: Vec<Point> = (0..500u64)
+            .map(|i| Point {
+                launch_slot: Slot(i * EMBARGO_SLOTS / 10),
+                gross: 0.0,
+                net: 0.0,
+                values: Vec::new(),
+            })
+            .collect();
+        let windows = split(&points);
+        let (_, tests) = admissible(&points, &windows, Horizon::SixHours);
+
+        for (offset, rows) in tests.iter().enumerate() {
+            let previous = windows[FIT_FOLDS + offset - 1].1;
+            assert!(
+                rows.iter()
+                    .all(|i| points[*i].launch_slot.get() >= previous.get() + EMBARGO_SLOTS),
+                "fold {offset} holds a row inside the embargo"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grammar_ignores_a_feature_measured_for_too_few_rows() {
+        // A feature with eleven values cannot produce a stratum holding a
+        // hundred, so it produces no terms rather than terms that always fail.
+        let mut points: Vec<Point> = (0..200u64)
+            .map(|i| Point {
+                launch_slot: Slot(i),
+                gross: 0.0,
+                net: 0.0,
+                values: vec![None; FEATURES.len()],
+            })
+            .collect();
+        for point in points.iter_mut().take(11) {
+            point.values[0] = Some(1.0);
+        }
+        for (i, point) in points.iter_mut().enumerate() {
+            #[expect(clippy::cast_precision_loss, reason = "small counts")]
+            let value = i as f64;
+            point.values[1] = Some(value);
+        }
+        let rows: Vec<usize> = (0..points.len()).collect();
+        let terms = grammar(&points, &rows, FEATURES.len());
+
+        assert!(
+            terms.iter().all(|t| t.feature != 0),
+            "a feature below the row floor produces no terms"
+        );
+        assert!(
+            terms.iter().any(|t| t.feature == 1),
+            "a feature with enough values produces some"
+        );
+    }
+
+    #[test]
+    fn a_constant_feature_produces_one_threshold_not_nine() {
+        // Nine identical deciles are nine copies of one term: nine times the
+        // search for one answer, and nine entries in the count a reader uses to
+        // discount the result.
+        let points: Vec<Point> = (0..200u64)
+            .map(|i| Point {
+                launch_slot: Slot(i),
+                gross: 0.0,
+                net: 0.0,
+                values: vec![Some(4.0)],
+            })
+            .collect();
+        let rows: Vec<usize> = (0..points.len()).collect();
+        let terms = grammar(&points, &rows, 1);
+
+        assert_eq!(
+            terms.len(),
+            2,
+            "one threshold, in two directions: {terms:?}"
+        );
+    }
+
+    #[test]
+    fn noise_is_uniform_seeded_and_reproducible() {
+        let a = row(1, 10, 0, 1.0, 0.0);
+        let b = row(2, 20, 0, 1.0, 0.0);
+
+        assert!((noise_for(7, &a) - noise_for(7, &a)).abs() < f64::EPSILON);
+        assert!(
+            (noise_for(7, &a) - noise_for(8, &a)).abs() > f64::EPSILON,
+            "the seed must change the value, or ten seeds are one run"
+        );
+        assert!(
+            (noise_for(7, &a) - noise_for(7, &b)).abs() > f64::EPSILON,
+            "two rows must differ, or the feature is a constant"
+        );
+        for seed in 0..50u64 {
+            let value = noise_for(seed, &a);
+            assert!((0.0..1.0).contains(&value), "{value} is outside [0, 1)");
+        }
+    }
+
+    #[test]
+    fn a_stratum_describes_itself_in_the_grammars_own_words() {
+        let stratum = Stratum::named(
+            "x",
+            vec![Term {
+                feature: 0,
+                at_least: true,
+                threshold: 3.0,
+            }],
+        );
+        assert_eq!(stratum.describe(), "launch_traders >= 3.0000");
+        assert_eq!(Stratum::named("y", Vec::new()).describe(), "every row");
+    }
+}

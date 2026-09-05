@@ -19,6 +19,7 @@ mod contest;
 mod control;
 mod cost;
 mod dossier;
+mod edge;
 mod exits;
 mod features;
 mod graduations;
@@ -72,6 +73,14 @@ commands:
                                  T = launch + 6,000 slots, refused by the type
                                  system if not. Deterministic; --from/--to
                                  build one fold at a time
+  edge --features <file> [--rates <file>] [--horizon 6h|24h]
+       [--cost-band <name>] [--budget N] [--noise-seed N]
+                                 the walk-forward protocol: does any stratum
+                                 clear the bar out of sample, on two folds it
+                                 was not fitted on. Purged and embargoed;
+                                 prints how many strata were tried beside every
+                                 verdict, because a winner chosen from many is
+                                 expected to regress
   study --store <dir> [--pivot N]
                                  does a creator's record predict their next
                                  launch; splits the store and compares
@@ -728,6 +737,7 @@ fn main() -> ExitCode {
         "route" => route::run(&args),
         "replay" => replay_lane(&args),
         "features" => feature_table(&args),
+        "edge" => edge::run(&args),
         "study" => event_study(&args),
         "creator-index" => creator_index(&args),
         "seven-days-later" => seven_days::run(&args),

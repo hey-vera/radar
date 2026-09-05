@@ -445,3 +445,66 @@ fn a_file_that_is_not_a_feature_table_is_refused() {
 
     assert!(features::read(&path).is_err());
 }
+
+#[test]
+fn the_table_a_store_produces_feeds_the_protocol() {
+    // The composition, end to end and once: a store on disk, through
+    // `features::build`, out to a file, back in, and into the walk-forward
+    // protocol. Each half is tested elsewhere; this is the join, which is
+    // exactly where two correct halves usually disagree about a type.
+    let launches = 2_600usize;
+    let spacing = 1_000u64;
+
+    let mut events = Vec::with_capacity(launches);
+    let mut outcomes = Vec::with_capacity(launches * 2);
+    for index in 0..launches {
+        let at = 1_000 + index as u64 * spacing;
+        events.push(launch(
+            u8::try_from(index % 200).expect("under 200"),
+            100,
+            at,
+        ));
+        // The mint byte repeats every 200 launches, so only the distinct mints
+        // survive into the table; that is the store's own rule (one launch per
+        // mint) and it keeps the fixture small enough to write quickly.
+        outcomes.push(outcome(
+            u8::try_from(index % 200).expect("under 200"),
+            at + T,
+            at,
+            None,
+            Some(100),
+        ));
+        outcomes.push(outcome(
+            u8::try_from(index % 200).expect("under 200"),
+            at + 24 * 9_000,
+            at,
+            None,
+            Some(120),
+        ));
+    }
+
+    let table = table_over(events, outcomes);
+    assert!(!table.rows.is_empty(), "the store produced no rows");
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join(features::file_name(table.watermark));
+    features::write(&table, &path).expect("written");
+    let read_back = features::read(&path).expect("read");
+
+    let rates = radar_roast::BaseRates::load("../../docs/research/data/0024-base-rates.json")
+        .expect("the repository's own snapshot");
+    // A fixture this small is refused for being too small, which is the right
+    // answer and is still a join: the table crossed a file and reached the
+    // protocol as the protocol's own type.
+    match radar_research::edge::run(
+        &read_back,
+        &rates,
+        &radar_research::edge::Options::default(),
+    ) {
+        Ok(report) => assert_eq!(report.labelled_rows, read_back.rows.len()),
+        Err(radar_research::edge::EdgeError::TooFewRows { rows }) => {
+            assert_eq!(rows, read_back.rows.len());
+        }
+        Err(other) => panic!("the protocol refused for the wrong reason: {other}"),
+    }
+}

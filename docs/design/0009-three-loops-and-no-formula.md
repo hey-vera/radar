@@ -48,14 +48,17 @@ myself; the same limit design 0007 §12 records.
 | The fee | 30 bps of curve volume to the creator, read off the on-chain schedule ([research 0023](../research/0023-the-fee-is-a-schedule-and-the-published-interface-is-incomplete.md)). **Post-graduation is unmeasured** — see the box below |
 | Telegram | in the deploy path as the recommended **alert** channel only ([`deploy/README.md`](../../deploy/README.md)). The analyst has no Telegram publisher |
 
-**One thing that will bite.** [ADR 0013](../adr/0013-a-community-token-exists-and-radar-holds-none-of-it.md)
+**One thing that bit, and is fixed.** [ADR 0013](../adr/0013-a-community-token-exists-and-radar-holds-none-of-it.md)
 constraint 5 says the token's price is kept out of the fact sheet "enforced
-rather than instructed", via `RADAR_SELF_MINT`. **No crate contains that
-name.** Design 0007 C8 lists it as something to build, and the ADR reads as if
-it were built. That is LEARNINGS 9's shape — an invariant documented as
-stronger than its enforcement — and it gates the token launch. Either build C8
-before the token exists or reword the ADR's constraint 5 to future tense. This
-document assumes it gets built.
+rather than instructed", via `RADAR_SELF_MINT`. When this was written, **no
+crate contained that name**: design 0007 C8 listed it as something to build,
+and the ADR read as if it were built — LEARNINGS 9's shape, an invariant
+documented as stronger than its enforcement, gating the token launch. **Built
+the same day**, in the PR that merged just after this one: every fact on the
+sheet carries a tag, and the sheet drops price facts for the configured mint
+before the model sees them. [STATE.md](../STATE.md) carries what it does and
+what it does not yet have to do; where this paragraph and STATE.md disagree,
+STATE.md is right.
 
 **A second thing, and it is arithmetic.** Four places say the prize at $10k
 of weekly volume is about $3: ADR 0013's "What this costs", design 0007 §6.1,

@@ -1,0 +1,108 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+# Plan 0006 — Design 0009 to done
+
+**Status:** in progress
+**Branch:** `feat/contest-crate` for item 1; one branch per item after it, each
+carrying this file so it is always a true statement about `main`
+**Base:** `a621453`
+**Planned by:** Fable 5.1, 2026-09-05
+**Design:** [0009](../design/0009-three-loops-and-no-formula.md)
+
+## Objective
+
+Every mechanism in design 0009 that can be built and proved **without** the X
+credential, the token, or a root command on the box is built, proved and on
+`main`. What remains afterwards is one list of things only Josh can do, each
+with what it unblocks. Then, and not before, the vision prompt — the slash
+command on PR #146, held open until this plan is done — runs. One plan at a
+time.
+
+## Not in scope
+
+- Anything blocked on the credential (C2's scoring reads, the 24-hour live dry
+  run), on the token (C7's launch, a real vault balance), or on root on the
+  box (installing the analyst unit, the alert file under `/etc/radar`).
+- Design 0007's D, E and F beyond what 0009 needs. They are Part A of the
+  vision prompt.
+- Reopening ADR 0013 or 0009's L1–L6.
+- `Policy::CLOSED`, the signer, the trading lane. Nothing here reaches them.
+
+## Items
+
+- [x] 1. **`radar-contest`, pure** (0007 C1, 0009 M3's rule): the week, the
+      entry, the exclusions, the score, the winner with a cooldown, the claim,
+      the ledger, and the hunter sum with a per-day cap. No clock, no network.
+      Caller: item 2's leaderboard endpoint reads its ledger type; item 6's
+      week-close job writes it.
+      done: `cargo test -p radar-contest` 24 passed; clippy clean; five rules
+      re-applied as bugs — lowest score winning, the cooldown a week short, an
+      exact payout refused, the cap letting one extra through, the week
+      boundary moved a day — each failing exactly its test; the first commit
+      on `feat/contest-crate`. Mutation coverage: CI's sharded run on the PR,
+      per AGENTS.md §8; survivors, if any, are the next commit
+- [ ] 2. **The three public endpoints** (0008 phase 1): `/v1/public/stats`,
+      `/v1/public/leaderboard`, `/v1/public/pool`, added to `Audience::Public`
+      by exact path, CORS for the site's origin only. The leaderboard reads item
+      1's ledger; the pool says no token exists rather than `0.00` (rule 9).
+      gate: the access table test mirrors the three paths; each handler read
+      with the file absent and present
+- [ ] 3. **M6 — the fee after graduation, measured.** Capture a PumpSwap swap
+      for a graduated pump.fun token; does it pass the fee program and its
+      config; re-read the schedule today; write research 0028; correct the pool
+      page copy only if the chain disagrees with 30 bps.
+      gate: the note carries the query and the transaction; conformance green
+- [ ] 4. **Refusal signals counted at answer time** (M3's other half, and
+      0007 B's live gate): a signal count on the fact sheet, carried on the
+      reply log entry; the three X-shaped adversarial cases — an instruction in
+      a mention, a parent holding an LP mint, a 30-mention burst from one
+      account — each producing a sheet or a refusal.
+      gate: the cases in the fixture; re-applied bugs fail
+- [ ] 5. **M5 — the Telegram publisher and source**, testable in dry run: an
+      unset token means nothing is read and nothing is sent; the same parser,
+      gate and fact path; not a contest entry and not in the record.
+      gate: the daemon's posture line names the state; a fake platform drives
+      one poll end to end
+- [ ] 6. **The weekly post (0007 B6, 0009 M2) and the daily "seven days later"
+      post (M4)**, as code that runs in dry run and says "nothing yet" when the
+      log is younger than seven days. The week-close job writes item 1's ledger.
+      gate: both posts pass the fidelity and forbidden checks on real log lines
+- [ ] 7. **C4 `radar-payout` and C5 the manual fallback**: the three policy
+      refusals — wrong recipient, second payout for a week, amount above
+      collected — each proven by re-applying the bug; its own unit and user; no
+      network but RPC.
+      gate: the refusals; the fallback prints the exact transaction
+- [ ] 8. **C7 — the launch checklist** in `deploy/README.md`, and `radar brief`
+      gains `contest` and `vault` checks that report Unknown when unreachable.
+      gate: `radar brief` prints the two lines
+- [x] 9. **Design 0009 §1's sentence** "no crate contains that name" corrected
+      to point at STATE.md, and every prose reference in this plan turned into
+      a link once #143 has merged.
+      done: folded into item 1's commit the day #143 and #145 merged;
+      `cargo test -p repo-conformance` 33 passed
+
+## Only Josh can do these, and what each unblocks
+
+| what | unblocks |
+|---|---|
+| ~~merge #143, #144, #145~~ — done by the agent on 2026-09-05 once Josh granted it in chat. **#146 is held open on purpose** until this plan is done, so its remainder table is true when it runs | — |
+| the analyst env file and the alert file under `/etc/radar`, and the unit install (root) | the 24-hour dry run; the alarm that says when the bot dies |
+| the X developer account, its credit, the one live test post | C2's scoring reads; the live gate; everything in 0009's M1–M4 with real data |
+| a Telegram bot token (BotFather, five minutes) | item 5's live test |
+| a fresh wallet for the token, its key to the box | item 7's devnet week; C7 |
+| the legal read (0007 J4; 0009 §8 has the documents) | the first public post |
+| `cabalhunter.org` and its Cloudflare Pages project | the site going live |
+
+## Open questions for Josh
+
+- Q1 (2026-09-05): merging PRs was refused to the agent by the auto-mode
+  permission classifier. — **answered the same day**: Josh granted it in chat
+  and #143–#145 merged. A settings rule for `gh pr merge` would spare the
+  question next time.
+
+## Handback
+
+Stopped at: items 1 and 9 done, on the PR from `feat/contest-crate`.
+Next action: item 2, the three public endpoints, on a branch stacked on this
+one until it merges — the leaderboard handler reads `radar_contest::Record`.
+Do not: reopen L1–L6; touch `Policy::CLOSED`; read the store per request in
+any endpoint; add a public path by prefix in `access.rs`.

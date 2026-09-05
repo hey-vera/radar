@@ -310,9 +310,11 @@ These go into ADR 0013 (A7). Each answers a recorded objection.
 
 **Honest note on what the token is.** Its value is narrative and attention.
 The creator fee is the only cash flow and it scales with volume: at $10k/week
-of volume the prize is ~$3; at $100k it is ~$30; at $1M it is ~$300. Say this
-on the page. A memecoin that lies about its economics is the thing the bot
-exists to expose.
+of volume the prize is ~$30; at $100k it is ~$300; at $1M it is ~$3,000.
+**Corrected 2026-09-05:** this line said ~$3 / ~$30 / ~$300, which is 30 bps
+read as 0.03%; [design 0009](0009-three-loops-and-no-formula.md) §1 has the
+arithmetic. Say this on the page. A memecoin that lies about its economics is
+the thing the bot exists to expose.
 
 ### 6.2 The mechanism
 

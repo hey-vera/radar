@@ -61,6 +61,12 @@ pub struct Band {
     pub lo: u32,
     /// Highest recipient count in the band.
     pub hi: u32,
+    /// Share of **all** launches whose block falls in this band.
+    ///
+    /// The number the public site prints as "70.5% of launches". It was
+    /// deserialised and dropped until 2026-09-05, when the stats endpoint
+    /// needed it and would otherwise have carried a copy of it.
+    pub fires_on: f64,
     /// Share of never-graduated launches in this band.
     pub never_graduated: f64,
     /// Share of organic graduations in this band.
@@ -82,11 +88,28 @@ pub struct CostBand {
     pub round_trip: f64,
 }
 
+/// What happens after graduation, from research 0011.
+///
+/// Carried in the snapshot with its own date rather than remembered in code,
+/// so the public site states it from a file. `Option` on the snapshot because
+/// an older snapshot without it is still a valid snapshot; a consumer that
+/// needs the figure refuses when it is absent rather than filling it in.
+#[derive(Clone, Debug)]
+pub struct Aftermath {
+    /// When it was measured, as `YYYY-MM-DD`.
+    pub measured_on: String,
+    /// Where an organic graduation ends, held from first fill to last price,
+    /// in basis points. Negative.
+    pub organic_median_bps: f64,
+}
+
 /// The published snapshot.
 #[derive(Clone, Debug)]
 pub struct BaseRates {
     /// When it was measured, as `YYYY-MM-DD`.
     pub measured_on: String,
+    /// Research 0011's aftermath figure, when the snapshot carries it.
+    pub aftermath: Option<Aftermath>,
     /// Launches the distribution was measured over.
     pub launches: u64,
     /// Share of all launches that graduate at all.
@@ -108,6 +131,16 @@ struct Raw {
     measured_on: String,
     launch_block: RawLaunchBlock,
     round_trip_bps: RawCost,
+    /// Optional, because a snapshot written before 2026-09-05 has none, and
+    /// that snapshot is still valid for everything else.
+    #[serde(default)]
+    aftermath: Option<RawAftermath>,
+}
+
+#[derive(Deserialize)]
+struct RawAftermath {
+    measured_on: String,
+    organic_median_bps: f64,
 }
 
 #[derive(Deserialize)]
@@ -134,19 +167,14 @@ struct RawPopulation {
 
 /// One band as the snapshot spells it.
 ///
-/// `fires_on` and `p_graduates` are deserialised but not published. They are
-/// kept because their presence is what distinguishes this schema from an older
-/// one: a snapshot missing them fails to parse rather than loading with two
-/// fields quietly absent.
+/// `p_graduates` is deserialised but not published. It is kept because its
+/// presence is what distinguishes this schema from an older one: a snapshot
+/// missing it fails to parse rather than loading with a field quietly absent.
 #[derive(Deserialize)]
 struct RawBand {
     name: String,
     lo: u32,
     hi: u32,
-    #[expect(
-        dead_code,
-        reason = "deserialised to validate the schema, not published"
-    )]
     fires_on: f64,
     #[expect(
         dead_code,
@@ -201,6 +229,7 @@ impl BaseRates {
                 name: b.name.clone(),
                 lo: b.lo,
                 hi: b.hi,
+                fires_on: b.fires_on,
                 never_graduated: share_in(
                     &lb.histogram,
                     b.lo,
@@ -217,6 +246,10 @@ impl BaseRates {
 
         Ok(Self {
             measured_on: raw.measured_on,
+            aftermath: raw.aftermath.map(|a| Aftermath {
+                measured_on: a.measured_on,
+                organic_median_bps: a.organic_median_bps,
+            }),
             launches: lb.launches,
             base_rate_graduates: lb.base_rate_graduates,
             base_rate_instant: lb.base_rate_instant,
@@ -302,6 +335,34 @@ mod tests {
     const SNAPSHOT: &str = include_str!("../../../docs/research/data/0024-base-rates.json");
 
     #[test]
+    fn the_published_snapshot_carries_the_band_shares_and_the_aftermath() {
+        // Both were added for the public stats document on 2026-09-05, and
+        // both are what the site prints: "70.5% of launches" and "organic
+        // graduations end at a median of -3,228 bps". A snapshot that dropped
+        // either would have the site fall back to its fixture and say so --
+        // which is the right failure, and this is what makes it a loud one.
+        let rates = BaseRates::parse(SNAPSHOT).expect("the published snapshot");
+        let one_to_three = rates
+            .bands
+            .iter()
+            .find(|b| b.name == "one to three")
+            .expect("the refusal band");
+        assert!((one_to_three.fires_on - 0.705).abs() < 1e-9);
+        let aftermath = rates
+            .aftermath
+            .expect("research 0011's figure travels with the snapshot");
+        assert!((aftermath.organic_median_bps - -3228.0).abs() < 1e-9);
+        assert_eq!(aftermath.measured_on, "2026-08-26");
+
+        // An older snapshot without the block still parses: the figure is
+        // absent, not zero, and a consumer that needs it refuses.
+        let mut older: serde_json::Value = serde_json::from_str(SNAPSHOT).expect("json");
+        older.as_object_mut().expect("object").remove("aftermath");
+        let older = BaseRates::parse(&older.to_string()).expect("still a snapshot");
+        assert!(older.aftermath.is_none());
+    }
+
+    #[test]
     fn the_published_snapshot_parses() {
         // The file in the repository, not a fixture. A snapshot the code cannot
         // read is the LEARNINGS 1 shape: a document that outlived the thing it
@@ -342,6 +403,7 @@ mod tests {
             name: name.to_owned(),
             lo,
             hi,
+            fires_on: 0.0,
             never_graduated: 0.0,
             organic: 0.0,
             instant: 0.0,
@@ -350,6 +412,7 @@ mod tests {
         };
         BaseRates {
             measured_on: "2026-09-03".to_owned(),
+            aftermath: None,
             launches: 1,
             base_rate_graduates: 0.0,
             base_rate_instant: 0.0,

@@ -140,6 +140,33 @@ async fn the_monitor_path_stays_reachable() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn the_public_sites_three_documents_are_served_without_an_identity() {
+    // Design 0008 phase 1. The site lives on another origin and has no token;
+    // a document behind the login would make every visitor see the committed
+    // fixture for ever and never notice. Each is public by exact path, and
+    // nothing else under `/v1/public/` is.
+    //
+    // The leaderboard and the pool answer with their honest empty documents
+    // when nothing is on disk. The stats document refuses -- 404, not zeroes
+    // -- because a figure that is not on disk cannot be stated; what matters
+    // here is that the refusal is the handler's and not the guard's.
+    assert_eq!(
+        status(enforcing(), "/v1/public/leaderboard").await,
+        StatusCode::OK
+    );
+    assert_eq!(status(enforcing(), "/v1/public/pool").await, StatusCode::OK);
+    assert_ne!(
+        status(enforcing(), "/v1/public/stats").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        status(enforcing(), "/v1/public/anything-else").await,
+        StatusCode::FORBIDDEN,
+        "the directory is not public, only the three documents"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn switching_access_off_serves_normally() {
     // The other direction. A guard verified only in the refusing direction is
     // indistinguishable from a server that is simply broken, which is finding

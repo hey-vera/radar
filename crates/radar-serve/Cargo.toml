@@ -30,6 +30,11 @@ radar-store.workspace = true
 # The reply log's type and its fold. Read-only here: this server does not run
 # the analyst, it shows what the analyst wrote.
 radar-analyst.workspace = true
+# The contest ledger the public leaderboard and pool read, and the base-rate
+# snapshot and population summary the public stats document is built from.
+# Read-only here, like the reply log.
+radar-contest.workspace = true
+radar-roast.workspace = true
 radar-types.workspace = true
 serde.workspace = true
 serde_json.workspace = true

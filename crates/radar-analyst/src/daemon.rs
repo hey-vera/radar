@@ -485,6 +485,25 @@ pub fn next_wait(found: usize, found_telegram: usize, previous: Duration) -> Dur
     poll::interval(found + found_telegram, previous)
 }
 
+/// Settles a post's reservation when something was sent and releases it when
+/// nothing was.
+///
+/// A reservation for a post that never left -- a dry run, a refused text, a
+/// publisher that failed -- must go back, or the day's budget is spent on
+/// posts nobody received; one that did leave is charged at what was reserved,
+/// because the platform reports no per-call price. A function because CI's
+/// mutants turned this `>` into `==` inside two functions nothing could call
+/// from a test, and a meter that settles the empty case and releases the
+/// real one is a meter that runs out on quiet weeks and never on busy ones.
+fn settle_if_sent(spend: &mut Spend, reservation: radar_provider::Commitment, sent: usize) {
+    if sent > 0 {
+        let charged = reservation.reserved();
+        spend.settle(reservation, charged);
+    } else {
+        spend.release(reservation);
+    }
+}
+
 /// Posts today's "seven days later" if it is due, metering the X post.
 fn announce_day(
     publisher: &dyn Publisher,
@@ -512,11 +531,7 @@ fn announce_day(
         telegram,
         &paths.telegram_log,
     ) {
-        Ok(sent) if sent > 0 => {
-            let charged = reservation.reserved();
-            spend.settle(reservation, charged);
-        }
-        Ok(_) => spend.release(reservation),
+        Ok(sent) => settle_if_sent(spend, reservation, sent),
         Err(e) => {
             spend.release(reservation);
             eprintln!("radar-analyst: cannot post the day: {e}");
@@ -582,11 +597,7 @@ fn announce_week(
         &posts,
         at,
     ) {
-        Ok(sent) if sent > 0 => {
-            let charged = reservation.reserved();
-            spend.settle(reservation, charged);
-        }
-        Ok(_) => spend.release(reservation),
+        Ok(sent) => settle_if_sent(spend, reservation, sent),
         Err(e) => {
             spend.release(reservation);
             eprintln!("radar-analyst: cannot write {}: {e}", paths.posts);
@@ -746,6 +757,47 @@ pub fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_post_that_left_is_charged_and_one_that_did_not_is_given_back() {
+        // Re-applied as CI did: `>` to `==` charges the dry run and refunds the
+        // real post, and both assertions below fail.
+        let dir = std::env::temp_dir().join(format!("radar-daemon-settle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let ledger = dir.join("ledger.json").to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&ledger);
+        let prices = Prices {
+            mention_read: MicroUsd(1_000),
+            post_read: MicroUsd(5_000),
+            reply: MicroUsd(10_000),
+            post: MicroUsd(15_000),
+            model_call: MicroUsd(2_000),
+        };
+        let mut spend = Spend::open(
+            Budget {
+                per_call_max: MicroUsd(50_000),
+                daily_max: MicroUsd(1_000_000),
+            },
+            prices,
+            ledger,
+            1,
+        );
+        let reservation = spend.authorize(Cost::Post, 1).expect("authorised");
+        settle_if_sent(&mut spend, reservation, 0);
+        assert_eq!(
+            spend.spent_today(),
+            MicroUsd::ZERO,
+            "nothing left, nothing charged"
+        );
+
+        let reservation = spend.authorize(Cost::Post, 1).expect("authorised");
+        settle_if_sent(&mut spend, reservation, 2);
+        assert_eq!(
+            spend.spent_today(),
+            MicroUsd(15_000),
+            "a thread that left is one post's price"
+        );
+    }
 
     #[test]
     fn either_lane_finding_something_keeps_the_loop_busy() {

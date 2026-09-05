@@ -135,6 +135,12 @@ impl Telegram {
         self
     }
 
+    /// Where the bot's own posts go, if anywhere.
+    #[must_use]
+    pub fn channel(&self) -> Option<&str> {
+        self.channel.as_deref()
+    }
+
     /// The `getUpdates` URL for everything after `offset`.
     ///
     /// Pure, so the query can be checked without a call. Only messages are
@@ -623,6 +629,27 @@ mod tests {
             );
         }
         assert!(!may_publish(&vars(&[])));
+    }
+
+    #[test]
+    fn a_blank_channel_is_no_channel_and_a_bot_without_one_posts_nothing_on_its_own() {
+        // Re-applied by dropping the `!` in the channel filter: a blank
+        // channel is kept and the bot would post into "" -- the first
+        // assertion fails.
+        let token = ("RADAR_TELEGRAM_BOT_TOKEN", "1:a");
+        let blank =
+            Telegram::from_vars(&vars(&[token, ("RADAR_TELEGRAM_CHANNEL", "  ")])).expect("a bot");
+        assert_eq!(blank.channel(), None);
+        assert!(matches!(blank.post("x"), Err(Undeliverable::Unconfigured)));
+        let none = Telegram::from_vars(&vars(&[token])).expect("a bot");
+        assert_eq!(none.channel(), None);
+        let set = Telegram::from_vars(&vars(&[token, ("RADAR_TELEGRAM_CHANNEL", " -100777 ")]))
+            .expect("a bot");
+        assert_eq!(set.channel(), Some("-100777"));
+        assert_eq!(
+            Telegram::at("b", "t").with_channel("@radar").channel(),
+            Some("@radar")
+        );
     }
 
     #[test]

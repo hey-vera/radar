@@ -132,9 +132,21 @@ mod tests {
             "2024-02-29",
             "1969-12-31T23:59:59Z",
             "",
+            // Each of the three time bounds, one past it. CI's mutants moved
+            // every one of them (`>` to `>=`, `>` to `==`, `||` to `&&`) with
+            // nothing failing, because nothing had tried an hour 24.
+            "2024-01-01T24:00:00Z",
+            "2024-01-01T12:60:00Z",
+            "2024-01-01T12:00:61Z",
         ] {
             assert_eq!(seconds_from_timestamp(bad), None, "{bad:?}");
         }
+        // The bounds themselves are inside: hour 23, minute 59, and second 60,
+        // which is a leap second and is a time the platform can stamp.
+        assert_eq!(
+            seconds_from_timestamp("2024-01-01T23:59:60Z"),
+            Some(19_723 * 86_400 + 23 * 3600 + 59 * 60 + 60)
+        );
     }
 
     #[test]

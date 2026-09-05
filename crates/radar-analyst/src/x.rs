@@ -707,6 +707,25 @@ mod tests {
     }"#;
 
     #[test]
+    fn the_lookup_urls_carry_only_digit_ids_and_the_operator_is_the_configured_user() {
+        // CI's mutants: `user_id` replaced by "" or "xyzzy" -- the contest's
+        // operator becomes nobody, and the account could win its own contest;
+        // and the `!` dropped in `digits_joined`, which keeps an id with no
+        // digits as an empty entry and puts a stray comma in the query.
+        let x = X::at("https://api.test", "bearer", "u42");
+        assert_eq!(x.user_id(), "u42");
+        let ids = vec!["123".to_owned(), "abc".to_owned(), "4x5".to_owned()];
+        assert_eq!(
+            x.metrics_url(&ids),
+            "https://api.test/2/tweets?ids=123,45&tweet.fields=public_metrics"
+        );
+        assert_eq!(
+            x.accounts_url(&ids),
+            "https://api.test/2/users?ids=123,45&user.fields=created_at"
+        );
+    }
+
+    #[test]
     fn a_page_reads_into_mentions_with_the_parent_kept() {
         let got = parse_mentions(PAGE_BODY).expect("a page");
         assert_eq!(got.len(), 2);

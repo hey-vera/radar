@@ -272,6 +272,35 @@ mod tests {
 
     const WEEK: Week = Week(2958);
 
+    #[test]
+    fn only_a_numbered_json_file_in_the_directory_is_a_record() {
+        // Both halves of the name rule. CI's mutants turned the `&&` into `||`
+        // and a numbered file with no extension, holding a valid record,
+        // became a week; the leaderboard would have shown it.
+        let dir = std::env::temp_dir().join(format!("radar-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let write = |name: &str, week: Week| {
+            std::fs::write(
+                dir.join(name),
+                Record::close(week, Ranking::default())
+                    .to_json()
+                    .expect("json"),
+            )
+            .expect("write");
+        };
+        write("2957.json", Week(2957));
+        write("2958", Week(2958));
+        write("2959.json.bak", Week(2959));
+        std::fs::write(dir.join("notes.json"), "{}").expect("write");
+        let weeks: Vec<u64> = records_in(&dir).into_iter().map(|r| r.week.0).collect();
+        assert_eq!(weeks, [2957]);
+        assert!(
+            records_in(&dir.join("nowhere")).is_empty(),
+            "a missing directory is no records"
+        );
+    }
+
     fn ranking_with_winner() -> Ranking {
         Ranking {
             ranked: vec![Ranked {

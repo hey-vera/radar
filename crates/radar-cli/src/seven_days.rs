@@ -195,6 +195,16 @@ mod tests {
             entry([4; 32], week_ago + 30, Some("r4"), None),   // no slot: cannot say quiet
             entry([5; 32], week_ago - DAY, Some("r5"), Some(2_000)), // eight days ago
             entry([6; 32], TODAY - DAY, Some("r6"), Some(2_000)), // yesterday
+            // The day's edges: the first second of the next day is out, the
+            // last second of the day is in. Re-applied `<` as `<=` and r7 is
+            // counted.
+            entry([7; 32], (week_ago / DAY + 1) * DAY, Some("r7"), Some(2_000)),
+            entry(
+                [8; 32],
+                (week_ago / DAY + 1) * DAY - 1,
+                Some("r8"),
+                Some(2_000),
+            ),
         ];
         let outcomes = vec![
             outcome([1; 32], 5_000, Some(900), Some(1_900), Some(100), Some(50)),
@@ -211,7 +221,7 @@ mod tests {
             .iter()
             .map(|r| r.reply_id.as_deref().unwrap_or(""))
             .collect();
-        assert_eq!(mints, ["r1", "r2", "r4"], "{rows:?}");
+        assert_eq!(mints, ["r1", "r2", "r4", "r8"], "{rows:?}");
 
         let r1 = &rows.rows[0];
         assert_eq!(r1.graduation, Some(Graduation::Organic));

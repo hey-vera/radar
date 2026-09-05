@@ -254,6 +254,12 @@ which is what 0022 assumed without checking — and finds that the program's own
 published IDL declares **sixteen** accounts for a buy where mainnet passes
 **eighteen**. A builder written against the most authoritative available reference
 would have been two accounts short. LEARNINGS 25.
+[`0028`](../docs/research/0028-the-fee-after-graduation-is-a-ladder.md) then
+read the same fee program's **second** schedule, the one for the PumpSwap AMM a
+coin graduates into: twenty-five rows by market cap, the creator's share 30 bps
+below 420 SOL, 95 from there to 1,470, down to 5 above 98,240 — the venue's
+published ladder, to the row, with live swaps paying it. The same parser read
+it; the prize page now says which fee applies where.
 
 The shipped policy is `Policy::CLOSED`, which refuses every proposal. But the lane
 is shut a long way upstream of that too: on 2026-08-25 a live run over 41,254

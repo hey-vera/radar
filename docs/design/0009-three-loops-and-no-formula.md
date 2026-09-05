@@ -97,19 +97,21 @@ rows or is marked as an assumption or an external claim.
 | all-in before viral | under $50 a month | same |
 | Telegram Bot API | free; about one message a second per chat, 20 a minute per group, about 30 a second in bulk | core.telegram.org/bots/faq, read 2026-09-05 |
 
-**The fee after graduation, which nothing here has measured.** ADR 0013 and
-the pool page say 30 bps. That is the curve. pump.fun's own fee article
-(updated 2025-09-26) claims the creator keeps earning after graduation on a
-schedule keyed to market cap: 30 bps below 420 SOL of market cap, **95 bps**
-from 420 to 1,470 SOL, stepping down to 5 bps above 98,000 SOL. Radar's read
-of the on-chain schedule on 2026-09-01 found one flat tier for the curve and
-parsed, but did not use, the fees for other pools
-([`crates/radar-pumpfun/src/fees.rs`](../../crates/radar-pumpfun/src/fees.rs)).
-A reference and a capture disagree here, which is LEARNINGS 25, and this
-repository has already found the venue's global account and its fee config
-disagreeing with each other once. **Measure it before any page states a
-post-graduation figure** (section 5, M6). Until then the prize arithmetic is
-right for the curve and unknown after it, in either direction.
+**The fee after graduation — measured 2026-09-05, the same day.** This
+paragraph first said nothing had measured it: ADR 0013 and the pool page say
+30 bps, that is the curve, and pump.fun's own fee article (updated
+2025-09-26) claimed a schedule keyed to market cap after graduation. M6 was
+put first for that reason and [research 0028](../research/0028-the-fee-after-graduation-is-a-ladder.md)
+did it: the fee program keeps a second schedule for the PumpSwap AMM, 25
+rows, and it is the article's ladder to the row — **30 bps below 420 SOL of
+market cap, 95 bps from 420 to 1,470 SOL, stepping down to 5 bps above
+98,240 SOL**. Live swaps pass the fee program and pay the rows;
+[`fees.rs`](../../crates/radar-pumpfun/src/fees.rs) reads the schedule
+unchanged. So the prize arithmetic below is right on the curve and, for a
+coin that graduates and goes past 420 SOL, understates the fee by about
+three times until the coin grows into the lower rows. One thing stays open:
+two of six pools paid a row a *higher* cap selects, which looks like a
+high-water mark and is recorded as a hypothesis, not a rule.
 
 ---
 
@@ -453,7 +455,7 @@ In the order I would build them. Only M6 and M5 are unblocked today.
 
 | # | mechanism | exists | to build | files | gate |
 |---|---|---|---|---|---|
-| M6 | **Measure the post-graduation fee.** Read the fee for a graduated mint off the chain, the way research 0023 read the curve's; write the result up | the parser: `flat` and `tiers` in [`fees.rs`](../../crates/radar-pumpfun/src/fees.rs) | one read, one research note `new:docs/research/0028-…md` | `crates/radar-pumpfun/src/fees.rs` | none. Do it before the pool page states any post-graduation figure |
+| M6 | **Measure the post-graduation fee.** Read the fee for a graduated mint off the chain, the way research 0023 read the curve's; write the result up. **Done 2026-09-05**: [research 0028](../research/0028-the-fee-after-graduation-is-a-ladder.md), the capture asserted by [`the_fee_after_graduation_is_a_ladder.rs`](../../crates/radar-pumpfun/tests/the_fee_after_graduation_is_a_ladder.rs); the pool page now says which fee is which | the parser: `flat` and `tiers` in [`fees.rs`](../../crates/radar-pumpfun/src/fees.rs), which read the second schedule unchanged | nothing further | — | none |
 | M5 | **Telegram publisher.** Long-poll `getUpdates`; each message → `mention::read` → `Gate::admit` → dossier → roast → log → reply. Unset token ⇒ nothing (rule 8). Not a contest entry, not in the record | parser, gate, fact path, `Publisher` trait in [`publish.rs`](../../crates/radar-analyst/src/publish.rs) | `new:crates/radar-analyst/src/telegram.rs`; a second env file; a `radar brief` check | `deploy/README.md` | a bot token from Josh via BotFather, five minutes. A **different** bot from the alert one |
 | M1 | **The contest**, exactly as design 0007 §6.3 C1–C8 | nothing; `new:crates/radar-contest/` | C1–C8 unchanged | as 0007 | the X credential; ADR 0013; C8's self-mint rule **built** |
 | M4 | **"Seven days later."** Once a day: replies seven days old from the log, joined once against the store's outcomes on the creator-index timer's pattern, rendered as one post to X and Telegram | the reply log ([`log.rs`](../../crates/radar-analyst/src/log.rs)); the outcomes; the timer pattern in [`deploy/radar-creator-index.service`](../../deploy/radar-creator-index.service) | `new:crates/radar-analyst/src/daily.rs`; the same fidelity and forbidden checks on the text | — | the bot live for seven days. Day one has nothing to say and says so |
@@ -600,11 +602,13 @@ much.
    collects the average signal density up to the cap. Design 0001 said the
    rule had to be honest before shipping; this one is honest and beatable,
    and the first leaderboard will say which matters more.
-3. **The fee is measured on the curve only.** Post-graduation, the venue's own
-   page and the chain read on 2026-09-01 do not describe the same schedule,
-   and references have been wrong here twice. The prize arithmetic could be
-   off by three times in either direction after graduation. M6 is first for
-   that reason.
+3. **The fee after graduation was unmeasured when this was written, and is
+   measured now.** Research 0028, 2026-09-05: the chain carries the venue's
+   ladder to the row, so the direction is known — the prize is *understated*
+   for a coin past 420 SOL of market cap, never overstated. What remains is
+   how the row is chosen when a coin's cap has fallen back through a step;
+   two pools out of six paid a lower row than their cap selects. Section 1
+   has the figures.
 4. **Section 8 is arguments, not clearance.** The SEC text is staff-level and
    was dissented from the day it appeared; the FCA regime bans precisely the
    benefits this design refuses, which is reassuring and is not an opinion.

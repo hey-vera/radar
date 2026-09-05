@@ -843,6 +843,13 @@ mod tests {
         // variables, because "401" does not.
         let x = X::at("https://example.test", "secret-token", "u42");
         assert!(!x.can_post());
+        // And the other side of it. Asserting only the `false` case leaves
+        // `can_post` replaceable with a constant `false`, which CI found: the
+        // daemon would then report "no signing credential" on a fully
+        // configured instance and never post, for ever, quietly.
+        assert!(
+            X::signing("https://example.test", "secret-token", "u42", credentials()).can_post()
+        );
         let err = x.reply("m1", "text").expect_err("must refuse");
         let rendered = err.to_string();
         assert!(rendered.contains("cannot post"), "{rendered}");

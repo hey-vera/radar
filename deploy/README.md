@@ -761,6 +761,7 @@ is deny-by-default, and each absence is reported rather than assumed:
 | the limits | the admission gate refuses every mention |
 | `RADAR_MODEL_*` | the deterministic template ships instead of a voice |
 | the base-rate snapshot | replies carry no population context |
+| `RADAR_SELF_MINT` | **no token is the analyst's own** and every coin is answered on the same rule — the right state until the token exists. Set to the mint, a price or market-cap fact about it is dropped before the model sees the sheet (ADR 0013 constraint 5). **Set to something that is not an address, the daemon idles and says so**: a misspelt mint must not switch the rule off for the real token |
 
 A daemon that exits on a missing variable looks like a broken deploy. One that
 runs and says `unfunded` on every tick is legible, and `radar brief` can see it.

@@ -48,6 +48,14 @@ pub struct Answering<'a> {
     pub creators: Option<&'a radar_roast::CreatorIndex>,
     /// The model, or `None` for the deterministic template.
     pub provider: Option<&'a dyn radar_model::Provider>,
+    /// The analyst's own token, or `None` when no token is special.
+    ///
+    /// ADR 0013 constraint 5: a price or market-cap fact about this mint is
+    /// dropped from the sheet before the model sees it. Read once from
+    /// `RADAR_SELF_MINT` by the caller, which **stops** on a value that will not
+    /// parse rather than passing `None` -- because `None` here means the rule
+    /// is off, and a misspelt mint must not switch it off for the real token.
+    pub self_mint: Option<&'a Address>,
     /// Seconds since the epoch, supplied rather than read.
     ///
     /// The gate's windows are computed from it, so a caller can drive a day of
@@ -117,7 +125,13 @@ pub fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Answer
         Err(e) => return Answered::Unreadable(e.to_string()),
     };
 
-    let (sheet, reply) = radar_roast::roast(&dossier, ctx.rates, ctx.creators, ctx.provider);
+    let (sheet, reply) = radar_roast::roast(
+        &dossier,
+        ctx.rates,
+        ctx.creators,
+        ctx.provider,
+        ctx.self_mint,
+    );
 
     Answered::Reply(Box::new(Entry {
         at: ctx.now,
@@ -180,6 +194,7 @@ mod tests {
             rates: None,
             creators: None,
             provider: None,
+            self_mint: None,
             now: 1_788_000_000,
         }
     }

@@ -131,11 +131,17 @@ pub fn run(args: &[String]) -> Result<(), String> {
         eprintln!("no creator index; replies will say nothing about who launched the token");
     }
 
+    // ADR 0013 constraint 5, read the way the daemon reads it. A dry run that
+    // ignored it would have the hundred replies Josh reads before launch differ
+    // from the ones the daemon posts, on the one rule that is about the token.
+    let self_mint = radar_analyst::daemon::self_mint_from(&|k| std::env::var(k).ok())?;
+
     let ctx = Answering {
         client: &client,
         rates: rates.as_ref(),
         creators: creators.as_ref(),
         provider: provider.as_deref(),
+        self_mint: self_mint.as_ref(),
         now,
     };
     for mention in &mentions {

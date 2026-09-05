@@ -207,6 +207,7 @@ fn one_poll_reads_answers_and_advances_the_cursor() {
         None,
         None,
         None,
+        None,
         &paths,
     );
 
@@ -316,6 +317,7 @@ fn a_published_reply_is_counted_charged_and_remembered() {
         None,
         None,
         None,
+        None,
         &paths,
     );
 
@@ -378,6 +380,7 @@ fn a_platform_that_refuses_costs_nothing_and_does_not_move_the_cursor() {
         None,
         None,
         None,
+        None,
         &paths,
     );
 
@@ -416,6 +419,7 @@ fn an_exhausted_budget_stops_the_poll_before_it_costs_anything() {
         None,
         None,
         None,
+        None,
         &paths,
     );
 
@@ -451,6 +455,7 @@ fn with_no_credential_the_loop_does_nothing_at_all() {
         &mut gate,
         &mut spend,
         &no_chain(),
+        None,
         None,
         None,
         None,

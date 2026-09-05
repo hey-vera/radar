@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use radar_provider::Budget;
 use radar_roast::BaseRates;
-use radar_types::MicroUsd;
+use radar_types::{Address, MicroUsd};
 
 use crate::admission::{Gate, Limits};
 use crate::answer::{Answered, Answering};
@@ -132,6 +132,63 @@ pub fn limits_from(get: &impl Fn(&str) -> Option<String>) -> Limits {
         dedupe_seconds: get("RADAR_ANALYST_DEDUPE_SECONDS")
             .and_then(|v| v.trim().parse().ok())
             .unwrap_or(3_600),
+    }
+}
+
+/// The analyst's own token, or `None` when no token is special.
+///
+/// ADR 0013 constraint 5. Takes a getter, for the reason [`budget_from`] does.
+///
+/// Three answers, and they are deliberately not two:
+///
+/// - **Unset or blank is `Ok(None)`**: no mint is special, and every coin is
+///   answered on the same rule. This does not bend rule 8 -- there is no spend
+///   and no permission in it, only a rule with nothing to apply to. The token
+///   does not exist until ADR 0013's launch gate is met, and until then the
+///   correct configuration is no configuration.
+/// - **A value that parses is `Ok(Some(mint))`.**
+/// - **A value that does not parse is `Err`, and the caller must not run.** A
+///   misspelt mint would silently switch the rule off for the real token, which
+///   is the one direction ADR 0013 exists to prevent: the analyst stating its
+///   own price. Same shape as a price list that will not parse -- the instance
+///   says what is wrong and answers nothing. The value is not echoed, because
+///   the likeliest wrong value is some other variable's secret pasted on the
+///   wrong line.
+///
+/// # Errors
+///
+/// When the variable is set to something that is not a base58 address.
+pub fn self_mint_from(get: &impl Fn(&str) -> Option<String>) -> Result<Option<Address>, String> {
+    let Some(raw) = get("RADAR_SELF_MINT") else {
+        return Ok(None);
+    };
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(None);
+    }
+    raw.parse::<Address>().map(Some).map_err(|_| {
+        "RADAR_SELF_MINT is set and is not an address, so the analyst's own token cannot be \
+         told apart and nothing is answered. Set it to the mint, or unset it if no token \
+         exists yet."
+            .to_owned()
+    })
+}
+
+/// What the daemon says about which token, if any, is its own.
+///
+/// Said on every start, beside the publishing posture, so an operator reading
+/// the journal after the token exists can see in one line whether the rule is
+/// armed for the right mint.
+#[must_use]
+pub fn self_mint_notice(self_mint: Option<&Address>) -> String {
+    match self_mint {
+        None => "radar-analyst: no RADAR_SELF_MINT, so no token is the analyst's own and every \
+                 coin is answered on the same rule."
+            .to_owned(),
+        Some(mint) => format!(
+            "radar-analyst: RADAR_SELF_MINT={mint} -- its price and market capitalisation are \
+             never stated; everything else about it is answered like any other coin."
+        ),
     }
 }
 
@@ -281,6 +338,17 @@ pub fn run() -> ! {
     }
     let provider = radar_model::from_vars(&env).ok();
 
+    // ADR 0013 constraint 5. A value that will not parse idles the instance
+    // rather than running with the rule off: `self_mint_from` says why.
+    let self_mint = match self_mint_from(&env) {
+        Ok(mint) => mint,
+        Err(e) => {
+            eprintln!("radar-analyst: {e}");
+            idle_forever();
+        }
+    };
+    eprintln!("{}", self_mint_notice(self_mint.as_ref()));
+
     eprintln!(
         "radar-analyst: publisher={} source={} dir={dir}",
         publisher.name(),
@@ -298,6 +366,7 @@ pub fn run() -> ! {
             rates.as_ref(),
             creators.as_ref(),
             provider.as_deref(),
+            self_mint.as_ref(),
             &paths,
         );
         wait = poll::interval(found, wait);
@@ -327,6 +396,7 @@ pub fn tick(
     rates: Option<&BaseRates>,
     creators: Option<&radar_roast::CreatorIndex>,
     provider: Option<&dyn radar_model::Provider>,
+    self_mint: Option<&Address>,
     paths: &Paths,
 ) -> usize {
     let Some(x) = x else {
@@ -366,6 +436,7 @@ pub fn tick(
         rates,
         creators,
         provider,
+        self_mint,
         now: at,
     };
 
@@ -528,6 +599,60 @@ mod tests {
         assert_eq!(limits.per_summoner_daily, 3);
         assert_eq!(limits.global_daily, 50);
         assert_eq!(limits.dedupe_seconds, 900);
+    }
+
+    #[test]
+    fn the_self_mint_is_none_when_unset_or_blank_and_read_when_it_is_an_address() {
+        // Unset and blank both mean no token is special. The token does not
+        // exist until the launch gate is met, so for now the correct
+        // configuration is none, and it must not be reported as an error.
+        assert!(matches!(self_mint_from(&from(&[])), Ok(None)));
+        assert!(matches!(
+            self_mint_from(&from(&[("RADAR_SELF_MINT", "   ")])),
+            Ok(None)
+        ));
+
+        // A real address, with the whitespace an env file leaves around it.
+        let mint = Address::new([3u8; 32]);
+        let padded = format!("  {mint}  ");
+        let read = self_mint_from(&from(&[("RADAR_SELF_MINT", padded.as_str())]));
+        assert!(
+            matches!(read, Ok(Some(m)) if m == mint),
+            "the mint must round-trip"
+        );
+    }
+
+    #[test]
+    fn a_self_mint_that_is_not_an_address_is_an_error_and_not_none() {
+        // The direction that matters. `None` means the rule is off, so a typo
+        // that read as `None` would have the analyst state its own price while
+        // every log line said the rule was configured. Re-apply the bug by
+        // mapping the parse failure to `Ok(None)` and this fails.
+        match self_mint_from(&from(&[("RADAR_SELF_MINT", "not-a-mint")])) {
+            Err(e) => {
+                assert!(e.contains("RADAR_SELF_MINT"), "{e}");
+                assert!(e.contains("nothing is answered"), "{e}");
+                // Not echoed: the likeliest wrong value is another variable's
+                // secret on the wrong line.
+                assert!(!e.contains("not-a-mint"), "{e}");
+            }
+            Ok(m) => panic!("an unparseable mint must not be accepted as {m:?}"),
+        }
+    }
+
+    #[test]
+    fn the_self_mint_notice_names_the_mint_or_says_there_is_none() {
+        // One line in the journal that says whether the rule is armed, and for
+        // which token. Each state says something only it could say.
+        let none = self_mint_notice(None);
+        assert!(none.contains("no RADAR_SELF_MINT"), "{none}");
+        assert!(none.contains("same rule"), "{none}");
+
+        let mint = Address::new([3u8; 32]);
+        let some = self_mint_notice(Some(&mint));
+        assert!(some.contains(&mint.to_string()), "{some}");
+        assert!(some.contains("never stated"), "{some}");
+        assert!(!some.contains("no RADAR_SELF_MINT"), "{some}");
     }
 
     #[test]

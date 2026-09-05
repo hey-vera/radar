@@ -1,0 +1,146 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+@import "tailwindcss";
+
+/* Cabal Hunter's palette.
+
+   Related to the operator console's and deliberately not the same. That surface
+   is read at night beside a terminal by one person who already knows what
+   everything means. This one is read once, on a phone, by a stranger who
+   arrived from a reply on X and will decide in four seconds whether this is
+   worth reading. It has to carry a voice; the console has to carry density.
+
+   Same discipline, though: OKLCH, semantic names, and contrast ratios that were
+   measured rather than guessed. An earlier version of the console's palette
+   estimated a border at "roughly 2:1" and it was 1.53:1. Ratios below are
+   against `--color-ink` unless stated, computed from the OKLCH lightness. */
+@theme {
+  /* Grounds. Near-black with a trace of blue, so the amber reads as warm
+     against it rather than as a colour cast. */
+  --color-ink: oklch(0.15 0.012 265);
+  --color-surface: oklch(0.19 0.014 265);
+  --color-raised: oklch(0.23 0.016 265);
+
+  /* Hairlines, and edges that a reader has to find. Two values for the reason
+     the console has two: WCAG 1.4.11's 3:1 is about content required to
+     identify a control, and a card's edge is not one. */
+  --color-line: oklch(0.30 0.016 265);
+  --color-edge: oklch(0.48 0.018 265);
+
+  /* Text. */
+  --color-text: oklch(0.95 0.004 265);
+  --color-dim: oklch(0.70 0.012 265);
+  --color-faint: oklch(0.56 0.014 265);
+
+  /* The accent, and there is only one.
+
+     Amber, because everything this site says is a warning. A product whose
+     entire measured signal is a REFUSE signal should not be painted in the
+     green that every other crypto page uses to mean "go". */
+  --color-signal: oklch(0.80 0.15 78);
+  --color-signal-dim: oklch(0.62 0.13 78);
+
+  /* Used only where a figure is genuinely good news, which on this site is
+     rare and should look it. */
+  --color-good: oklch(0.76 0.13 158);
+
+  /* Type. A variable font would be one more dependency and one more request;
+     the system stack renders instantly, matches the reader's own device, and on
+     a page that is mostly numbers the difference is small. Revisit if the
+     identity needs it -- that is a design judgement, not a technical one. */
+  --font-sans:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
+    Arial, sans-serif;
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
+    monospace;
+}
+
+html {
+  background: var(--color-ink);
+  color-scheme: dark;
+  /* An anchor link should not drop its target under the header. */
+  scroll-padding-top: 5rem;
+}
+
+body {
+  background: var(--color-ink);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* The one piece of texture: a faint grid, fading out down the page. It reads as
+   a plot rather than as decoration, which is the right association for a page
+   whose argument is entirely measurement. Fixed so it does not scroll, and
+   `pointer-events: none` so it never eats a click. */
+.grid-ground::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background-image:
+    linear-gradient(to right, var(--color-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--color-line) 1px, transparent 1px);
+  background-size: 56px 56px;
+  mask-image: radial-gradient(ellipse 80% 55% at 50% 0%, black 10%, transparent 75%);
+  opacity: 0.5;
+}
+
+/* Numbers are tabular everywhere. A figure that shifts width as it animates
+   reads as broken, and a column of counts that does not line up reads as
+   careless -- on a page whose whole claim is care. */
+.tnum {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum";
+}
+
+/* Focus is visible, always, and in the accent so it cannot be mistaken for a
+   hover state. Removing an outline without replacing it is the single most
+   common accessibility failure on pages like this one. */
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+/* The one entrance animation on the site.
+
+   This was `motion` — the Framer Motion successor — until it was measured:
+   **123 kB raw, 41 kB gzipped, for a single fade-in.** The bundle went from
+   113 kB to 72 kB gzipped by deleting it, a 36% cut, on the one page that is
+   opened from a link in a reply on somebody's phone.
+
+   `motion` is the right answer for gesture handling, layout animation and
+   spring physics. None of those are here. Eight lines of CSS are, and they get
+   `prefers-reduced-motion` for free from the block below. AGENTS.md section 5:
+   the smallest change that fully solves the actual problem. */
+@keyframes enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.enter {
+  animation: enter 0.5s ease-out both;
+}
+
+/* Respected rather than declared. Every animation on this site is decoration
+   over content that is already there, so switching them off costs a reader
+   nothing at all. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

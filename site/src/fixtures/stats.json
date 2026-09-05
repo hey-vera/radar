@@ -1,0 +1,76 @@
+{
+  "_comment": [
+    "What Cabal Hunter has watched. Read off the production box on 2026-09-04 at",
+    "23:55 UTC, by summing the creator index radar-creator-index.timer had just",
+    "rebuilt, plus the band figures from docs/research/data/0024-base-rates.json.",
+    "",
+    "COUNTS, NOT SHARES, and that is deliberate. Every share on the site is",
+    "derived in one place -- honesty.ts -- out of `measured`, never out of",
+    "`launches`. The gap between those two is Cabal Hunter's own outcome backlog,",
+    "and dividing by the wrong one folds that lag into a claim about the venue.",
+    "The Rust side makes the same choice in radar-roast's Population::share, and",
+    "a second copy of the arithmetic here would be a second copy to get wrong.",
+    "",
+    "This file is the fallback. In production the same shape arrives from",
+    "/v1/public/stats and is fresher; when that call fails the page shows this",
+    "and says when it was measured. It never shows a figure without its date.",
+    "",
+    "EVERY NUMBER HERE HAS A DATE ON IT AND IS EXPECTED TO MOVE."
+  ],
+  "measured_at": "2026-09-04T23:55:00Z",
+  "watermark_slot": 444374676,
+  "watched": {
+    "launches": 508814,
+    "creators": 116752,
+    "measured": 506991,
+    "organic": 8999,
+    "instant": 5230,
+    "stillborn": 116427
+  },
+  "bands": {
+    "measured_on": "2026-09-03",
+    "launches": 17497,
+    "base_rate_instant": 0.01183,
+    "rows": [
+      {
+        "name": "one to three",
+        "lo": 1,
+        "hi": 3,
+        "share_of_launches": 0.705,
+        "p_instant": 0.0002,
+        "x_base_instant": 0.0
+      },
+      {
+        "name": "five to seven",
+        "lo": 5,
+        "hi": 7,
+        "share_of_launches": 0.17,
+        "p_instant": 0.0383,
+        "x_base_instant": 3.2
+      },
+      {
+        "name": "exactly six",
+        "lo": 6,
+        "hi": 6,
+        "share_of_launches": 0.057,
+        "p_instant": 0.0517,
+        "x_base_instant": 4.4
+      },
+      {
+        "name": "ten to thirteen",
+        "lo": 10,
+        "hi": 13,
+        "share_of_launches": 0.021,
+        "p_instant": 0.12,
+        "x_base_instant": 10.1
+      }
+    ]
+  },
+  "cost": {
+    "band": "$20-$200",
+    "round_trip_bps": 456
+  },
+  "aftermath": {
+    "organic_median_bps": -3228
+  }
+}

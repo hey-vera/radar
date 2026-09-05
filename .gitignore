@@ -29,3 +29,11 @@ web/tsconfig.tsbuildinfo
 # be committing a snapshot of production that is stale the moment it lands.
 # `deploy/README.md` says where it comes from.
 docs/research/data/creator-index.json
+
+# The public site. Unlike `web/dist`, this directory is NOT tracked at all: no
+# Rust crate embeds it, so there is no `rust-embed` derive that needs the folder
+# to exist for the workspace to compile. It is built in CI and uploaded to
+# static hosting.
+site/dist/
+site/node_modules/
+site/tsconfig.tsbuildinfo

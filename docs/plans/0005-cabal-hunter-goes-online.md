@@ -1,0 +1,54 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+# Plan 0005 — Cabal Hunter goes online
+
+**Status:** in progress
+**Branch:** `feat/cabal-hunter-the-public-site`
+**Base:** `4fa83f9`
+**Planned by:** Opus 5, plan mode, 2026-09-05
+**Design:** [0008](../design/0008-the-public-site.md)
+
+## Objective
+
+Radar has a public face. A stranger who clicks through from one of the bot's
+replies lands on a page that says what this measures, shows figures nobody else
+has, and makes the weekly contest legible enough to enter — served as static
+files that a viral spike cannot knock over, and honest about the two things it
+cannot know yet.
+
+## Not in scope
+
+- The operator console at `web/`. It stays behind Cloudflare Access, untouched.
+- Anything that reads the store per request. The 3.2 s scan is why this site is
+  static and file-backed.
+- `Policy::CLOSED`, the custody lane, the trading lane.
+- The token itself. This builds the page that will report it; ADR 0013 governs
+  the launch and it is Josh's.
+- Visual identity as a finished thing. The first build is a draft to react to.
+
+## Items
+
+- [ ] 1. Design 0008 and this plan in the repository
+      next: committed together, so the plan is a true statement about HEAD
+- [ ] 2. `site/` scaffolded — Vite, React 19, TS, Tailwind 4, vitest, wouter
+      next: mirror `web/`'s config rather than inventing a second one
+- [ ] 3. The design layer: `ui/` primitives, motion, self-hosted font, palette
+- [ ] 4. Home — the whole argument, real figures, from a committed fixture
+- [ ] 5. Leaderboard — the shape, and the honest empty state
+- [ ] 6. Prize pool — the shape, and "no token exists" rather than `0.00`
+- [ ] 7. About — the disclosure X policy requires (design 0007 item B7)
+- [ ] 8. Open Graph and Twitter card meta, the OG image, the `<noscript>` block
+- [ ] 9. `just site`, a CI job, and the `required-checks.txt` line
+- [ ] 10. Phase 1 — the three public endpoints, by exact path, with CORS
+
+## Open questions for Josh
+
+- Q1 (2026-09-05): the `site` status check has to be added to the `main` ruleset
+  as well as to the workflow and `required-checks.txt`. That third place needs
+  admin. — unanswered, does not block items 1–8.
+
+## Handback
+
+Stopped at: item 1.
+Next action: item 2, scaffold `site/`.
+Do not: add public paths by prefix in `access.rs` — exact paths only, for the
+reason its own comments give.

@@ -120,6 +120,44 @@ fn outcome(
     }
 }
 
+/// A token that showed almost no life: few transfers, over quickly.
+///
+/// The store's rule is five or fewer transfers inside three hundred slots, and
+/// this does not restate those numbers -- it builds a token obviously inside
+/// them on both axes.
+fn stillborn_outcome(mint: u8, measured: u64, launch_slot: u64) -> Outcome {
+    let mut o = outcome(mint, measured, launch_slot, None, None);
+    o.transfers = 2;
+    o.last_transfer_slot = Some(Slot(launch_slot + 10));
+    o
+}
+
+/// A recorded decision about `mint`, taken at `decided_at`, that read
+/// `recipients` accounts in the launch block.
+fn decision(mint: u8, launch_slot: u64, decided_at: u64, recipients: u32) -> radar_store::Decision {
+    radar_store::Decision {
+        mint: address(mint),
+        creator: address(100),
+        decided_at: Slot(decided_at),
+        launch_slot: Slot(launch_slot),
+        strategy: "creator_edge".to_owned(),
+        strategy_version: "0.1.0".to_owned(),
+        conclusion: radar_store::Conclusion::Passed,
+        reasons: Vec::new(),
+        notional_micro_usd: None,
+        exit_capacity_micro_usd: None,
+        assumed_round_trip_bps: 850,
+        coordination: None,
+        launch_recipients: Some(recipients),
+        launch_transactions: Some(recipients),
+        authority_prevalence: Some("repeat launcher".to_owned()),
+        kernel_outcome: None,
+        kernel_reasons: Vec::new(),
+        entry_price: None,
+        inputs_digest: "fixture".to_owned(),
+    }
+}
+
 /// Builds a store from the fixtures and returns the table over all of it.
 fn table_over(events: Vec<Event>, outcomes: Vec<Outcome>) -> FeatureTable {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -507,4 +545,199 @@ fn the_table_a_store_produces_feeds_the_protocol() {
         }
         Err(other) => panic!("the protocol refused for the wrong reason: {other}"),
     }
+}
+
+#[test]
+fn the_launch_window_includes_both_of_its_edges_and_nothing_outside_them() {
+    // `--from` and `--to` are how one fold is built at a time, so an off-by-one
+    // at either edge silently changes which rows a fold holds -- and the folds
+    // are the whole protocol.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 1_000).expect("open");
+    for (mint, at) in [(1u8, 1_000u64), (2, 2_000), (3, 3_000), (4, 4_000)] {
+        writer.append(launch(mint, 100, at)).expect("append");
+    }
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let watermark = reader.watermark().expect("readable").expect("rows");
+    let table =
+        features::build(&reader, AsOf::at(watermark), Slot(2_000), Slot(3_000)).expect("built");
+
+    let mints: Vec<u8> = table.rows.iter().map(|r| r.mint.as_bytes()[0]).collect();
+    assert_eq!(mints, vec![2, 3], "both edges are inside the window");
+}
+
+#[test]
+fn a_decision_taken_after_t_is_not_a_fact_about_t() {
+    // The decision lane reads the launch block minutes after the launch. A
+    // decision taken after T knows something T did not, and counting it is the
+    // same leak the creator's record carries -- absent, not zero.
+    let at = 1_000u64;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 1_000).expect("open");
+    writer.append(launch(1, 100, at)).expect("append");
+    writer.append(launch(2, 100, at + 100)).expect("append");
+    writer
+        .append_decision(decision(1, at, at + T + 1, 7))
+        .expect("append");
+    writer
+        .append_decision(decision(2, at + 100, at + 100 + T, 9))
+        .expect("append");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let watermark = reader.watermark().expect("readable").expect("rows");
+    let table =
+        features::build(&reader, AsOf::at(watermark), Slot(0), Slot(u64::MAX)).expect("built");
+
+    let recipients = features::feature_index("decision_launch_recipients").expect("known");
+    let row = |mint: u8| {
+        table
+            .rows
+            .iter()
+            .find(|r| r.mint == address(mint))
+            .expect("a row")
+            .value(recipients)
+    };
+    assert_eq!(row(1), None, "decided one slot after T, so unknown at T");
+    assert_eq!(row(2), Some(9.0), "decided exactly at T, so known at T");
+}
+
+#[test]
+fn the_latest_decision_at_or_before_t_is_the_one_that_counts() {
+    // Two decisions about one mint, both before T. What was known at T is the
+    // later of them; taking the earlier would report a stale reading as
+    // current.
+    let at = 1_000u64;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut writer = Writer::open(dir.path(), 1_000).expect("open");
+    writer.append(launch(1, 100, at)).expect("append");
+    writer
+        .append_decision(decision(1, at, at + 10, 3))
+        .expect("a");
+    writer
+        .append_decision(decision(1, at, at + 20, 11))
+        .expect("b");
+    writer.flush().expect("flush");
+
+    let reader = Reader::open(dir.path());
+    let watermark = reader.watermark().expect("readable").expect("rows");
+    let table =
+        features::build(&reader, AsOf::at(watermark), Slot(0), Slot(u64::MAX)).expect("built");
+    let recipients = features::feature_index("decision_launch_recipients").expect("known");
+    assert_eq!(table.rows[0].value(recipients), Some(11.0));
+}
+
+#[test]
+fn a_trade_outside_the_window_is_not_read_at_all() {
+    // Both edges of the trade window, which is what bounds the memory this
+    // pass needs on a production store. A trade before the launch is a
+    // recording artefact; one after T is the future.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![
+            launch(1, 100, at),
+            buy(1, 10, at - 1, 0, 1),
+            buy(1, 11, at, 0, 1),
+            buy(1, 12, at + T, 0, 1),
+            buy(1, 13, at + T + 1, 0, 1),
+        ],
+        vec![],
+    );
+
+    assert_eq!(
+        value(&table, 1, "trades_6000"),
+        Some(2.0),
+        "the launch slot and T are inside; either side of them is not"
+    );
+}
+
+#[test]
+fn a_creators_counters_count_up_and_apart() {
+    // Four siblings, one of each kind, all measured before T. Each counter has
+    // to move by one and only its own -- a counter that decremented would give
+    // a flattering number, which is the direction nobody notices.
+    let last = 60_000u64;
+    let table = table_over(
+        vec![
+            launch(1, 100, 1_000),
+            launch(2, 100, 2_000),
+            launch(3, 100, 3_000),
+            launch(9, 100, last),
+        ],
+        vec![
+            outcome(1, 10_000, 1_000, Some(100), None),
+            outcome(2, 10_000, 2_000, Some(1), None),
+            stillborn_outcome(3, 10_000, 3_000),
+        ],
+    );
+
+    assert_eq!(value(&table, 9, "creator_prior_launches"), Some(3.0));
+    assert_eq!(value(&table, 9, "creator_prior_organic"), Some(1.0));
+    assert_eq!(value(&table, 9, "creator_prior_instant"), Some(1.0));
+    assert_eq!(value(&table, 9, "creator_prior_stillborn"), Some(1.0));
+
+    // Three prior launches spanning 59,000 slots, which is 59,000 / 216,000 of
+    // a day: the rate is launches divided by days, not multiplied by them.
+    let days = 59_000.0 / 216_000.0;
+    let rate = value(&table, 9, "creator_launches_per_day").expect("a rate");
+    assert!((rate - 3.0 / days).abs() < 1e-9, "{rate}");
+}
+
+#[test]
+fn a_creator_whose_prior_launches_share_one_slot_has_no_rate() {
+    // The denominator is a span, and a span of zero is not a small one --
+    // dividing by it would report an infinite launch rate for two launches in
+    // one block.
+    let table = table_over(
+        vec![
+            launch(1, 100, 1_000),
+            launch(2, 100, 1_000),
+            launch(3, 100, 1_000),
+        ],
+        vec![],
+    );
+    // Every launch shares the slot, so no row has a strictly earlier sibling.
+    for mint in [1u8, 2, 3] {
+        assert_eq!(value(&table, mint, "creator_launches_per_day"), None);
+        assert_eq!(value(&table, mint, "creator_prior_launches"), Some(0.0));
+    }
+}
+
+#[test]
+fn an_activity_window_ends_where_it_says_it_does() {
+    // Twenty-five slots means the launch slot plus twenty-five, inclusive.
+    // Either edge moved changes what "the first twenty-five slots" counted.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![
+            launch(1, 100, at),
+            buy(1, 10, at + 25, 0, 1),
+            buy(1, 11, at + 26, 0, 1),
+        ],
+        vec![],
+    );
+
+    assert_eq!(value(&table, 1, "trades_25"), Some(1.0));
+    assert_eq!(value(&table, 1, "trades_300"), Some(2.0));
+}
+
+#[test]
+fn an_exit_measured_before_t_is_not_a_return() {
+    // The exit has to be a later measurement than the entry, or the "return"
+    // is one reading divided by itself -- which would report zero for every
+    // token whose only measurement predates its own entry.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![launch(1, 100, at)],
+        vec![
+            outcome(1, at + T - 1, at, None, Some(100)),
+            outcome(1, at + T, at, None, Some(300)),
+        ],
+    );
+
+    // The six-hour horizon's last measurement at or before it is the one at T,
+    // which is also the entry -- a later reading than the entry, so a return.
+    assert_eq!(table.rows[0].gross_6h_bps, Some(0.0));
 }

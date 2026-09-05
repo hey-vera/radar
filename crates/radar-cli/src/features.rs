@@ -31,13 +31,7 @@ pub fn run(reader: &Reader, args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("cannot read the store: {e}"))?
         .ok_or("the store holds no events, so there is nothing to build")?;
 
-    let from = slot_flag(args, "--from")?.unwrap_or(Slot(0));
-    let to = slot_flag(args, "--to")?.unwrap_or(watermark);
-    if from > to {
-        return Err(format!(
-            "--from {from} is after --to {to}, which selects no launches"
-        ));
-    }
+    let (from, to) = window(args, watermark)?;
 
     let out = flag(args, "--out").unwrap_or_else(|| features::file_name(watermark));
 
@@ -79,6 +73,22 @@ pub fn run(reader: &Reader, args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The launch window to build, defaulting to the whole store.
+///
+/// A reversed window selects nothing, and a pass that writes an empty file
+/// because two flags were the wrong way round looks exactly like a pass that
+/// found nothing -- so it is a refusal, not an empty result.
+fn window(args: &[String], watermark: Slot) -> Result<(Slot, Slot), String> {
+    let from = slot_flag(args, "--from")?.unwrap_or(Slot(0));
+    let to = slot_flag(args, "--to")?.unwrap_or(watermark);
+    if from > to {
+        return Err(format!(
+            "--from {from} is after --to {to}, which selects no launches"
+        ));
+    }
+    Ok((from, to))
+}
+
 /// Reads a slot from a flag, refusing a value that is not one.
 ///
 /// A slot that does not parse must not fall back to a default: a typo in
@@ -99,6 +109,31 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn a_window_defaults_to_the_whole_store_and_refuses_a_reversed_one() {
+        assert_eq!(
+            window(&args(["features"].as_slice()), Slot(500)),
+            Ok((Slot(0), Slot(500))),
+            "no flags is the whole store, up to the watermark"
+        );
+        assert_eq!(
+            window(
+                &args(["features", "--from", "10", "--to", "10"].as_slice()),
+                Slot(500)
+            ),
+            Ok((Slot(10), Slot(10))),
+            "a single-slot window is a window"
+        );
+        assert!(
+            window(
+                &args(["features", "--from", "11", "--to", "10"].as_slice()),
+                Slot(500)
+            )
+            .is_err(),
+            "reversed selects nothing, and an empty file is not the way to say so"
+        );
     }
 
     #[test]

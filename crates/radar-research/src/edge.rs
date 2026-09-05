@@ -760,7 +760,7 @@ fn search(
         }
         consider(vec![first.term], &first.bits, &mut tried, &mut best);
 
-        for second in masks.iter().skip(i + 1) {
+        for (j, second) in masks.iter().enumerate().skip(i + 1) {
             // Two terms on one feature is a range, which the grammar reaches by
             // a different pair; two thresholds on the same feature in the same
             // direction is one of them restated.
@@ -782,7 +782,11 @@ fn search(
                 &mut best,
             );
 
-            for third in masks.iter().skip(i + 1) {
+            // Past `second`, not past `first`. Skipping only past `first`
+            // enumerated every triple twice -- the same conjunction reached
+            // through two different pairs -- which doubled the search and
+            // doubled the count a reader uses to discount the winner.
+            for third in masks.iter().skip(j + 1) {
                 if third.term.feature == first.term.feature
                     || third.term.feature == second.term.feature
                 {
@@ -1064,6 +1068,497 @@ fn fixed_strata(rates: &BaseRates) -> Vec<Stratum> {
 mod tests {
     use super::*;
     use radar_types::Address;
+    use std::collections::BTreeSet;
+
+    /// The repository's own snapshot, which is where the bar and the round trip
+    /// have to come from.
+    fn rates() -> BaseRates {
+        BaseRates::load("../../docs/research/data/0024-base-rates.json").expect("the snapshot")
+    }
+
+    /// A point with one feature value and a gross return.
+    fn point(slot: u64, values: Vec<Option<f64>>, gross: f64, round_trip: f64) -> Point {
+        Point {
+            launch_slot: Slot(slot),
+            gross,
+            net: gross - round_trip,
+            values,
+        }
+    }
+
+    /// A table of `n` rows, one feature, labelled with `gross`.
+    fn table_of(n: usize, gross: impl Fn(usize) -> f64) -> FeatureTable {
+        let rows = (0..n)
+            .map(|index| {
+                let mut values = vec![None; FEATURES.len()];
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let value = (index % 10) as f64;
+                values[0] = Some(value);
+                let mut bytes = [0u8; 32];
+                bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+                Row {
+                    mint: Address::new(bytes),
+                    creator: Address::new([1; 32]),
+                    launch_slot: Slot(index as u64 * EMBARGO_SLOTS),
+                    t: Slot(index as u64 * EMBARGO_SLOTS + 6_000),
+                    values,
+                    gross_6h_bps: Some(gross(index)),
+                    gross_24h_bps: Some(gross(index)),
+                    mode: None,
+                }
+            })
+            .collect();
+        FeatureTable {
+            watermark: Slot(n as u64 * EMBARGO_SLOTS),
+            entry_offset: crate::features::ENTRY_OFFSET_SLOTS,
+            rows,
+        }
+    }
+
+    #[test]
+    fn the_intersection_is_an_and_and_counts_what_survives_it() {
+        // A conjunction is this and nothing else. An `or` here would make every
+        // three-term stratum wider than its terms, and a reading over the wrong
+        // rows is indistinguishable from a reading over the right ones.
+        let (bits, count) = intersect(&[0b1011, 0b1111], &[0b0011, 0b0101]);
+        assert_eq!(bits, vec![0b0011, 0b0101]);
+        assert_eq!(count, 4);
+
+        let (empty, none) = intersect(&[0b1010], &[0b0101]);
+        assert_eq!(empty, vec![0]);
+        assert_eq!(none, 0);
+    }
+
+    #[test]
+    fn a_reading_is_the_median_the_cost_and_the_share_that_paid() {
+        // Every figure in a reading, pinned against arithmetic done by hand.
+        // Nine rows, gross 100..900, charged 250: the median is the fifth, 500,
+        // the net is 250, and the rows that paid are the four above 250.
+        let round_trip = 250.0;
+        let points: Vec<Point> = (1..=9u32)
+            .map(|i| point(u64::from(i), Vec::new(), f64::from(i) * 100.0, round_trip))
+            .collect();
+        let matched: Vec<usize> = (0..9).collect();
+
+        let reading = summarise(&points, &matched, round_trip).expect("nine rows");
+        assert_eq!(reading.n, 9);
+        assert!((reading.median_gross - 500.0).abs() < f64::EPSILON);
+        assert!(
+            (reading.median_net - 250.0).abs() < f64::EPSILON,
+            "the net is the median less the round trip, not plus it"
+        );
+        assert_eq!(
+            reading.positive, 7,
+            "300 through 900 pay; 200 does not, and 250 exactly would not either"
+        );
+        // 1.2533 * (IQR / 1.349) / sqrt(9), with the quartiles at 300 and 700.
+        let expected = 1.253_3 * ((700.0 - 300.0) / 1.349) / 3.0;
+        assert!(
+            (reading.se_median - expected).abs() < 1e-9,
+            "{} against {expected}",
+            reading.se_median
+        );
+        assert!(
+            summarise(&points, &[], round_trip).is_none(),
+            "no rows, no reading"
+        );
+    }
+
+    #[test]
+    fn a_row_that_exactly_pays_its_costs_has_not_paid() {
+        // The boundary of "positive". A net of exactly zero is a round trip
+        // that consumed the whole move, and counting it as a win would put the
+        // point mass at zero on the winning side -- which is the failure
+        // research 0017 found in its short-hold strata.
+        let round_trip = 250.0;
+        let points = vec![
+            point(1, Vec::new(), 250.0, round_trip),
+            point(2, Vec::new(), 251.0, round_trip),
+        ];
+        let reading = summarise(&points, &[0, 1], round_trip).expect("two rows");
+        assert_eq!(reading.positive, 1);
+    }
+
+    #[test]
+    fn the_net_a_point_carries_is_its_gross_less_the_round_trip() {
+        let table = table_of(10, |_| 1_000.0);
+        let points = points_of(
+            &table,
+            &Options {
+                noise_seed: None,
+                ..Options::default()
+            },
+            250.0,
+        );
+        assert_eq!(points.len(), 10);
+        assert!((points[0].gross - 1_000.0).abs() < f64::EPSILON);
+        assert!((points[0].net - 750.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn a_planted_noise_seed_adds_exactly_one_column_and_nothing_else_does() {
+        let table = table_of(10, |_| 1_000.0);
+        let without = points_of(&table, &Options::default(), 0.0);
+        let with = points_of(
+            &table,
+            &Options {
+                noise_seed: Some(3),
+                ..Options::default()
+            },
+            0.0,
+        );
+        assert_eq!(without[0].values.len(), FEATURES.len());
+        assert_eq!(with[0].values.len(), FEATURES.len() + 1);
+        assert!(with[0].values[FEATURES.len()].is_some());
+    }
+
+    #[test]
+    fn a_stratum_reads_the_planted_column_and_not_a_feature_beside_it() {
+        // The term index past the end of FEATURES is the planted noise, and it
+        // has to reach the noise value rather than fall off the row.
+        let mut values = vec![None; FEATURES.len()];
+        values[0] = Some(1.0);
+        let row = Row {
+            mint: Address::new([9; 32]),
+            creator: Address::new([1; 32]),
+            launch_slot: Slot(1),
+            t: Slot(6_001),
+            values,
+            gross_6h_bps: None,
+            gross_24h_bps: None,
+            mode: None,
+        };
+        let planted = Stratum::named(
+            "noise",
+            vec![Term {
+                feature: FEATURES.len(),
+                at_least: true,
+                threshold: 0.5,
+            }],
+        );
+        assert!(planted.admits(&row, Some(0.9)));
+        assert!(!planted.admits(&row, Some(0.1)));
+        assert!(
+            !planted.admits(&row, None),
+            "no noise value means the row is not in the stratum"
+        );
+        assert_eq!(planted.terms[0].feature_name(), NOISE_FEATURE);
+    }
+
+    #[test]
+    fn the_windows_are_the_exact_slices_the_folds_report() {
+        // Off by one in either edge shifts every fold boundary, which shifts
+        // the purge and the embargo with it.
+        let points: Vec<Point> = (0..500u64)
+            .map(|i| point(i * 10, Vec::new(), 0.0, 0.0))
+            .collect();
+        let windows = split(&points);
+
+        assert_eq!(
+            windows,
+            vec![
+                (Slot(0), Slot(990)),
+                (Slot(1_000), Slot(1_990)),
+                (Slot(2_000), Slot(2_990)),
+                (Slot(3_000), Slot(3_990)),
+                (Slot(4_000), Slot(4_990)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_feature_with_exactly_the_floors_worth_of_values_still_produces_terms() {
+        // The boundary of the grammar's own floor. A feature measured for
+        // exactly MIN_ROWS rows can produce a stratum that clears MIN_ROWS, so
+        // excluding it would drop a testable statement.
+        let mut points: Vec<Point> = (0..MIN_ROWS as u64)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let v = i as f64;
+                point(i, vec![Some(v)], 0.0, 0.0)
+            })
+            .collect();
+        assert!(
+            !grammar(&points, &(0..points.len()).collect::<Vec<_>>(), 1).is_empty(),
+            "exactly the floor is enough"
+        );
+
+        points.pop();
+        assert!(
+            grammar(&points, &(0..points.len()).collect::<Vec<_>>(), 1).is_empty(),
+            "one below the floor is not"
+        );
+    }
+
+    #[test]
+    fn two_thresholds_that_are_merely_close_are_both_kept() {
+        // The dedupe is for a constant feature, whose nine deciles are the same
+        // number. Two genuinely different thresholds a hair apart are two
+        // different statements, and collapsing them would silently shrink the
+        // grammar.
+        let points: Vec<Point> = (0..200u64)
+            .map(|i| {
+                let v = if i < 100 { 1.0 } else { 1.000_1 };
+                point(i, vec![Some(v)], 0.0, 0.0)
+            })
+            .collect();
+        let terms = grammar(&points, &(0..points.len()).collect::<Vec<_>>(), 1);
+        let thresholds: BTreeSet<u64> = terms.iter().map(|t| t.threshold.to_bits()).collect();
+        assert_eq!(thresholds.len(), 2, "{terms:?}");
+    }
+
+    #[test]
+    fn the_search_enumerates_each_conjunction_once_and_never_two_terms_on_one_feature() {
+        // Three terms on three features. Singles are three; pairs are the three
+        // ordered by index; and exactly one triple, because a third term is
+        // taken from past the second rather than past the first. Enumerating a
+        // triple twice would double both the work and the count a reader uses
+        // to discount the winner.
+        let points: Vec<Point> = (0..300u64)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let v = i as f64;
+                point(i, vec![Some(v), Some(v), Some(v)], v, 0.0)
+            })
+            .collect();
+        let rows: Vec<usize> = (0..points.len()).collect();
+        let terms = vec![
+            Term {
+                feature: 0,
+                at_least: true,
+                threshold: 0.0,
+            },
+            Term {
+                feature: 1,
+                at_least: true,
+                threshold: 0.0,
+            },
+            Term {
+                feature: 2,
+                at_least: true,
+                threshold: 0.0,
+            },
+        ];
+
+        let (best, tried, enumeration) = search(&points, &rows, &terms, 0.0, MIN_ROWS, 1_000);
+        assert_eq!(tried, 7, "three singles, three pairs, one triple");
+        assert_eq!(enumeration, Enumeration::Exhaustive);
+        let (stratum, _) = best.expect("something holds three hundred rows");
+        let features: BTreeSet<usize> = stratum.terms.iter().map(|t| t.feature).collect();
+        assert_eq!(
+            features.len(),
+            stratum.terms.len(),
+            "no two terms may sit on one feature: {stratum:?}"
+        );
+    }
+
+    #[test]
+    fn the_floor_is_applied_to_every_width_of_conjunction() {
+        // A floor that only reached singles would let a pair or a triple below
+        // it become the winner, and a winner that cannot be tested displaces
+        // one that can.
+        let points: Vec<Point> = (0..300u64)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let v = i as f64;
+                point(i, vec![Some(v), Some(v)], v, 0.0)
+            })
+            .collect();
+        let rows: Vec<usize> = (0..points.len()).collect();
+        // Each term alone holds 150 rows; together they hold 150 as well, since
+        // the two features are the same values.
+        let terms = vec![
+            Term {
+                feature: 0,
+                at_least: true,
+                threshold: 150.0,
+            },
+            Term {
+                feature: 1,
+                at_least: true,
+                threshold: 150.0,
+            },
+        ];
+
+        let (best, _, _) = search(&points, &rows, &terms, 0.0, 200, 1_000);
+        assert!(best.is_none(), "nothing holds two hundred rows: {best:?}");
+
+        let (found, _, _) = search(&points, &rows, &terms, 0.0, 150, 1_000);
+        assert!(found.is_some(), "exactly the floor is enough");
+    }
+
+    #[test]
+    fn the_budget_stops_the_search_and_says_so() {
+        let points: Vec<Point> = (0..300u64)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let v = i as f64;
+                point(i, vec![Some(v), Some(v), Some(v)], v, 0.0)
+            })
+            .collect();
+        let rows: Vec<usize> = (0..points.len()).collect();
+        let terms = vec![
+            Term {
+                feature: 0,
+                at_least: true,
+                threshold: 0.0,
+            },
+            Term {
+                feature: 1,
+                at_least: true,
+                threshold: 0.0,
+            },
+            Term {
+                feature: 2,
+                at_least: true,
+                threshold: 0.0,
+            },
+        ];
+
+        let (_, tried, enumeration) = search(&points, &rows, &terms, 0.0, MIN_ROWS, 2);
+        assert_eq!(enumeration, Enumeration::StoppedAtBudget);
+        assert!(tried <= 3, "the budget bounds the count: {tried}");
+    }
+
+    #[test]
+    fn a_gain_of_exactly_one_standard_error_is_not_a_gain() {
+        // The boundary of the rule. Strictly greater, in both directions: a
+        // candidate exactly one standard error better has not been shown to be
+        // better, and neither has the incumbent.
+        let simple = Stratum::named(
+            "simple",
+            vec![Term {
+                feature: 0,
+                at_least: true,
+                threshold: 1.0,
+            }],
+        );
+        let held = Reading {
+            n: 400,
+            median_gross: 1_000.0,
+            median_net: 750.0,
+            positive: 300,
+            wilson_lower: 0.7,
+            se_median: 40.0,
+        };
+
+        let exactly = Reading {
+            median_net: 790.0,
+            se_median: 40.0,
+            ..held
+        };
+        assert!(
+            !prefer(&exactly, 1, Some(&(simple.clone(), held))),
+            "exactly one standard error better is not better"
+        );
+        let past = Reading {
+            median_net: 790.1,
+            ..exactly
+        };
+        assert!(prefer(&past, 1, Some(&(simple.clone(), held))));
+
+        // The noise is the larger of the two, so a noisy candidate cannot
+        // displace a quiet incumbent on a small apparent gain.
+        let noisy = Reading {
+            median_net: 800.0,
+            se_median: 200.0,
+            ..held
+        };
+        assert!(
+            !prefer(&noisy, 1, Some(&(simple.clone(), held))),
+            "fifty basis points inside the candidate's own two hundred is noise"
+        );
+    }
+
+    #[test]
+    fn an_equal_bound_falls_through_to_the_simpler_stratum_and_no_further() {
+        let three = Stratum::named(
+            "three",
+            vec![
+                Term {
+                    feature: 0,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 1,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 2,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+            ],
+        );
+        let held = Reading {
+            n: 400,
+            median_gross: 1_000.0,
+            median_net: 750.0,
+            positive: 300,
+            wilson_lower: 0.7,
+            se_median: 40.0,
+        };
+        assert!(
+            prefer(&held, 1, Some(&(three.clone(), held))),
+            "one term beats three"
+        );
+        assert!(
+            !prefer(&held, 3, Some(&(three.clone(), held))),
+            "three against three is not an improvement"
+        );
+        assert!(!prefer(&held, 4, Some(&(three, held))), "and four is worse");
+    }
+
+    #[test]
+    fn exactly_enough_rows_runs_and_one_fewer_is_refused() {
+        // The boundary of the only refusal that is about the table rather than
+        // about the snapshot.
+        let rates = rates();
+        let table = table_of(FOLDS * MIN_ROWS, |i| {
+            #[expect(clippy::cast_precision_loss, reason = "a small index")]
+            let v = (i % 7) as f64 * 100.0;
+            v
+        });
+        assert!(run(&table, &rates, &Options::default()).is_ok());
+
+        let mut short = table;
+        short.rows.pop();
+        assert!(matches!(
+            run(&short, &rates, &Options::default()),
+            Err(EdgeError::TooFewRows { .. })
+        ));
+    }
+
+    #[test]
+    fn every_window_reports_its_own_rows_and_the_test_folds_are_the_last_two() {
+        // A fold table that piled the fitting period's count onto one window
+        // would make the purge look as though it had emptied the other two.
+        let rates = rates();
+        let table = table_of(FOLDS * MIN_ROWS * 4, |i| {
+            #[expect(clippy::cast_precision_loss, reason = "a small index")]
+            let v = (i % 7) as f64 * 100.0;
+            v
+        });
+        let report = run(&table, &rates, &Options::default()).expect("runs");
+
+        assert_eq!(report.folds.len(), FOLDS);
+        for (index, fold) in report.folds.iter().enumerate() {
+            assert!(
+                fold.rows > 0,
+                "window {index} reported no rows: {:?}",
+                report.folds
+            );
+            assert!(fold.from <= fold.to);
+        }
+        let fitted: usize = report.folds[..FIT_FOLDS].iter().map(|f| f.rows).sum();
+        let tested: usize = report.folds[FIT_FOLDS..].iter().map(|f| f.rows).sum();
+        assert!(
+            fitted > tested,
+            "three windows fit and two test, so the fitting period is the larger"
+        );
+    }
 
     fn row(mint: u8, slot: u64, feature: usize, value: f64, gross: f64) -> Row {
         let mut values = vec![None; FEATURES.len()];

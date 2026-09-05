@@ -377,3 +377,77 @@ impl Summary {
         self.not_deterministic > 0 || self.candidate_gone > 0
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{Z_95, percentile, wilson_bounds};
+
+    #[test]
+    fn a_wilson_interval_is_the_textbook_one() {
+        // Pinned against the formula written out by hand, because every
+        // operator in it is a place a mutation lands and none of them changes
+        // the shape of the answer -- an interval that is merely wrong still
+        // looks like an interval.
+        //
+        // Five of ten: p = 0.5, z^2 = 3.8416, n = 10.
+        // denom  = 1 + 0.38416            = 1.38416
+        // centre = (0.5 + 0.19208) / denom = 0.5
+        // half   = (1.96 / denom) * sqrt(0.025 + 0.0096040) = 0.26340...
+        let (lo, hi) = wilson_bounds(5, 10).expect("ten is a sample");
+        assert!((lo - 0.236_55).abs() < 1e-4, "{lo}");
+        assert!((hi - 0.763_45).abs() < 1e-4, "{hi}");
+        assert!(
+            (f64::midpoint(lo, hi) - 0.5).abs() < 1e-9,
+            "at p = 0.5 the interval is symmetric about it"
+        );
+    }
+
+    #[test]
+    fn a_wilson_interval_stays_inside_the_unit_and_never_collapses() {
+        // The reason it is Wilson rather than the normal approximation: at
+        // zero and at one the textbook interval leaves [0, 1] entirely, and a
+        // lower bound below zero read as "no evidence" is a different claim
+        // from "the rate could be anything".
+        let (lo, hi) = wilson_bounds(0, 10).expect("ten is a sample");
+        assert!((lo - 0.0).abs() < 1e-12, "{lo}");
+        assert!(
+            hi > 0.0 && hi < 0.5,
+            "zero of ten is not certainly zero: {hi}"
+        );
+
+        let (lo, hi) = wilson_bounds(10, 10).expect("ten is a sample");
+        assert!(
+            lo > 0.5 && lo < 1.0,
+            "ten of ten is not certainly one: {lo}"
+        );
+        assert!((hi - 1.0).abs() < 1e-12, "{hi}");
+
+        // The bound tightens with the sample, which is the property the edge
+        // harness leans on when it prefers a wider stratum at an equal share.
+        let (small, _) = wilson_bounds(100, 100).expect("a hundred");
+        let (large, _) = wilson_bounds(1_000, 1_000).expect("a thousand");
+        assert!(large > small, "{large} should be tighter than {small}");
+    }
+
+    #[test]
+    fn an_empty_sample_has_no_interval_rather_than_the_whole_range() {
+        // Rule 9. `(0, 1)` would let a caller read "nobody measured this" as
+        // "every rate is plausible" without ever noticing which it had.
+        assert!(wilson_bounds(0, 0).is_none());
+    }
+
+    #[test]
+    fn the_z_is_the_two_sided_ninety_five() {
+        // Named rather than inlined, and worth one assertion: a z of 1.0 would
+        // turn every interval in the repository into a 68% one while every
+        // caption still said 95%.
+        assert!((Z_95 - 1.96).abs() < 1e-12);
+    }
+
+    #[test]
+    fn a_percentile_clamps_at_the_top_and_refuses_an_empty_slice() {
+        assert_eq!(percentile(&[1, 2, 3], 1.0), Some(3));
+        assert_eq!(percentile(&[1, 2, 3], 0.5), Some(2));
+        assert_eq!(percentile(&[], 0.5), None);
+    }
+}

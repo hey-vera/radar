@@ -123,29 +123,42 @@ fn present(report: &Report) {
 
 /// Prints one stratum's fit and test readings.
 fn print_candidate(candidate: &Candidate, bar: f64) {
-    println!("  {}", candidate.stratum.name);
-    if candidate.stratum.name != candidate.stratum.describe() {
-        println!("    {}", candidate.stratum.describe());
+    for line in candidate_lines(candidate, bar) {
+        println!("{line}");
+    }
+}
+
+/// The lines one candidate prints as.
+///
+/// Built rather than printed so the two decisions in here can be tested: a
+/// fitted stratum's name already *is* its description and must not be printed
+/// twice, and a fold with too few rows says so rather than showing a figure.
+fn candidate_lines(candidate: &Candidate, bar: f64) -> Vec<String> {
+    let mut lines = vec![format!("  {}", candidate.stratum.name)];
+    let described = candidate.stratum.describe();
+    if candidate.stratum.name != described {
+        lines.push(format!("    {described}"));
     }
     if let Some(fit) = &candidate.fit {
-        println!("    fit   {}", reading(fit, bar));
+        lines.push(format!("    fit   {}", reading(fit, bar)));
     }
     for (index, test) in candidate.tests.iter().enumerate() {
-        match test {
-            Some(r) => println!("    test{index} {}", reading(r, bar)),
+        lines.push(match test {
+            Some(r) => format!("    test{index} {}", reading(r, bar)),
             // Rule 9: too few rows is not a bad result, it is no result, and a
             // dash must not be read as a zero return.
-            None => println!("    test{index} -- no rows"),
-        }
+            None => format!("    test{index} -- no rows"),
+        });
     }
-    println!(
+    lines.push(format!(
         "    {}",
         if candidate.found {
             "cleared both test folds"
         } else {
             "did not clear both test folds"
         }
-    );
+    ));
+    lines
 }
 
 /// One reading, on one line.
@@ -160,4 +173,73 @@ fn reading(r: &Reading, bar: f64) -> String {
         r.wilson_lower,
         if r.clears(bar) { "clears" } else { "short" }
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use radar_research::edge::{Stratum, Term};
+
+    fn stratum(name: &str) -> Stratum {
+        Stratum::named(
+            name,
+            vec![Term {
+                feature: 0,
+                at_least: true,
+                threshold: 3.0,
+            }],
+        )
+    }
+
+    fn reading_of(n: usize) -> radar_research::edge::Reading {
+        radar_research::edge::Reading {
+            n,
+            median_gross: 900.0,
+            median_net: 650.0,
+            positive: n,
+            wilson_lower: 0.9,
+            se_median: 10.0,
+        }
+    }
+
+    #[test]
+    fn a_fitted_stratum_is_not_described_twice() {
+        // A fitted stratum's name *is* its description, and printing both
+        // would show the same conjunction on two lines -- which reads as two
+        // strata.
+        let described = stratum("x").describe();
+        let candidate = Candidate {
+            stratum: stratum(&described),
+            fit: Some(reading_of(400)),
+            tests: vec![Some(reading_of(200))],
+            found: true,
+        };
+        let lines = candidate_lines(&candidate, 456.0);
+        assert_eq!(
+            lines.iter().filter(|l| l.contains(&described)).count(),
+            1,
+            "{lines:?}"
+        );
+    }
+
+    #[test]
+    fn a_named_stratum_carries_its_terms_beneath_its_name() {
+        // The fixed strata are named for what they mean -- "refused: launching
+        // too fast" -- and a reader has to be able to see the thresholds that
+        // name stands for.
+        let candidate = Candidate {
+            stratum: stratum("refused: launching too fast"),
+            fit: None,
+            tests: vec![None],
+            found: false,
+        };
+        let lines = candidate_lines(&candidate, 456.0);
+        assert!(lines[0].contains("refused: launching too fast"));
+        assert!(lines[1].contains("launch_traders >= 3"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.contains("no rows")),
+            "a fold with too few rows says so rather than showing a figure: {lines:?}"
+        );
+        assert!(lines.last().expect("a verdict").contains("did not clear"));
+    }
 }

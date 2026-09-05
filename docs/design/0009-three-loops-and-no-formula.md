@@ -2,8 +2,12 @@
 # Design 0009 — Three loops, and no formula
 
 **Date:** 2026-09-05
-**Status:** **proposed.** Six decisions in section 3 are Josh's; each has a
-recommendation and an assumed answer if he says nothing. Written in plan mode
+**Status:** **decided, 2026-09-05.** Six decisions in section 3 were Josh's.
+On 2026-09-05 he delegated all six to the author with one instruction — choose
+what benefits the project in the long term — so the picks in section 3 are the
+decisions, recorded as his by delegation. Each row keeps its options and its
+reasoning, because a decision without its reasoning is the thing this
+repository refuses to record. Written in plan mode
 as `workstation:~/.claude/plans/radar-cabal-hunter-logical-kernighan.md` and
 moved here in the first commit of `docs/0009-three-loops-and-no-formula`,
 for the reason design 0007 gives: a plan outside the repository is invisible to
@@ -174,14 +178,23 @@ if it runs on attention and status. Everything below is built that way.
 
 ## 3. Decisions that are Josh's
 
-Each row: the decision, the real options, **my pick** and why, and what this
-document assumes if Josh says nothing. Numbered L1–L6 so they do not collide
-with design 0007's J-rows or design 0008's K-rows.
+Each row: the decision, the real options, **my pick** and why, and the
+decision line. Numbered L1–L6 so they do not collide with design 0007's J-rows
+or design 0008's K-rows.
+
+**How these were decided.** The rows were written as recommendations with an
+assumed answer. Josh read them on 2026-09-05 and delegated all six, asking for
+the choices that benefit the project in the long term. The picks stood on that
+test — each one trades a short-term lever for a slower thing that compounds:
+the record over the price, status over cash, a clean bio sentence over half a
+fee, one mechanism over two. So the "decided" lines below are the picks, and
+they are Josh's by delegation. Reopening one is a design note, not a chat.
 
 ### L1 — Does the creator fee go 100% to the prize, or 50/50 with the operator?
 
-ADR 0013 constraint 3 says 100%. Josh proposed 50/50, so the question is his
-to reopen and this row treats it as open.
+ADR 0013 constraint 3 says 100%. Josh proposed 50/50, so the question was his
+to reopen and this row treats it as open. **Decided 2026-09-05: (a). ADR 0013
+constraint 3 stands unchanged.**
 
 | option | what it is |
 |---|---|
@@ -235,7 +248,7 @@ unverified) say pump.fun now splits creator fees across up to ten wallets on
 chain; if that is true a split is venue configuration rather than payout code,
 and it is publicly readable, which is the only form of (b) I would build.
 
-**Assumed if Josh says nothing: (a).**
+**Decided, 2026-09-05, by delegation: (a).**
 
 ### L2 — Should users be able to burn their own tokens for faster or higher-volume answers?
 
@@ -272,7 +285,7 @@ support, the cheapest honest answer is a plain "supporters" list on the site
 that costs nothing to serve and gives nothing back — and even that goes to the
 lawyer first.
 
-**Assumed if Josh says nothing: not built.**
+**Decided, 2026-09-05, by delegation: not built.**
 
 ### L3 — Is "The Hunt" still the mechanism, given the contest exists?
 
@@ -302,7 +315,7 @@ what the winner gets.**
 Design 0001's header gets a third bullet recording the drop, in the same
 commit as this document.
 
-**Assumed if Josh says nothing: this.**
+**Decided, 2026-09-05, by delegation: this.**
 
 ### L4 — A $3 weekly prize motivates nobody. What is the prize?
 
@@ -333,7 +346,7 @@ not accept donations into it: it changes C4's payout policy (`amount ≤
 collected`) and turns "100% of the fee" into "the fee plus whatever", which is
 a longer sentence again.
 
-**Assumed if Josh says nothing: this.**
+**Decided, 2026-09-05, by delegation: this.**
 
 ### L5 — Telegram as a second surface: what belongs where?
 
@@ -367,7 +380,7 @@ and it costs nothing.
 call. If Telegram grows faster than X, the product's public half is the
 smaller half, and that is section 10's fifth weakness.
 
-**Assumed if Josh says nothing: this.**
+**Decided, 2026-09-05, by delegation: this.**
 
 ### L6 — What, concretely, makes somebody check back daily?
 
@@ -388,7 +401,7 @@ honest way. $0.015 a day on X, about $0.45 a month; free on Telegram.
 Secondary: the hunter rank moving (M3), and the pot filling (L4). Both are
 numbers that change daily and are on the site.
 
-**Assumed if Josh says nothing: this.**
+**Decided, 2026-09-05, by delegation: this.**
 
 ---
 
@@ -442,7 +455,7 @@ In the order I would build them. Only M6 and M5 are unblocked today.
 | M1 | **The contest**, exactly as design 0007 §6.3 C1–C8 | nothing; `new:crates/radar-contest/` | C1–C8 unchanged | as 0007 | the X credential; ADR 0013; C8's self-mint rule **built** |
 | M4 | **"Seven days later."** Once a day: replies seven days old from the log, joined once against the store's outcomes on the creator-index timer's pattern, rendered as one post to X and Telegram | the reply log ([`log.rs`](../../crates/radar-analyst/src/log.rs)); the outcomes; the timer pattern in [`deploy/radar-creator-index.service`](../../deploy/radar-creator-index.service) | `new:crates/radar-analyst/src/daily.rs`; the same fidelity and forbidden checks on the text | — | the bot live for seven days. Day one has nothing to say and says so |
 | M2 | **The weekly teardown post.** The winner's mint gets the full dossier as the week's top-level post, with the winner's handle; the vault, the prize and the transaction in the same post (C8) | B6's weekly post is planned, not written | `new:crates/radar-analyst/src/weekly.rs` as 0007 B6 names it | — | M1 |
-| M3 | **The hunter rank.** Status only. Rule below | the signals are on the sheet ([`sheet.rs`](../../crates/radar-roast/src/sheet.rs)); the per-summoner cap is in the gate | a scoring function in `new:crates/radar-contest/`; a second tab on [`site/src/Leaderboard.tsx`](../../site/src/Leaderboard.tsx) | — | M1, and Josh accepting the rule |
+| M3 | **The hunter rank.** Status only. Rule below | the signals are on the sheet ([`sheet.rs`](../../crates/radar-roast/src/sheet.rs)); the per-summoner cap is in the gate | a scoring function in `new:crates/radar-contest/`; a second tab on [`site/src/Leaderboard.tsx`](../../site/src/Leaderboard.tsx) | — | M1. The rule below is accepted by the same delegation as L1–L6, with its change policy |
 
 **M3's rule, proposed.** Per summoned reply, count the refusal signals the
 fact sheet carried at the time — the launch block in the 10–13 band or above,
@@ -631,8 +644,8 @@ much.
 - **Design 0007**: otherwise unchanged. M2 and M4 extend B6 and C8; M5 is new
   and belongs in a plan file when it starts.
 - **GOAL.md**: unchanged.
-- **Memory, outside the repo**: `memory:project_radar_token_decision.md`
-  after Josh answers L1–L6, and not before.
+- **Memory, outside the repo**: `memory:project_radar_token_decision.md`,
+  updated 2026-09-05 with the six decisions and where they are recorded.
 
 ## External references, read 2026-09-05
 

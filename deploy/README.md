@@ -876,6 +876,46 @@ base64; sign and send it elsewhere; then `radar contest record-payout --week N
 check the unit uses and records it. A transaction that paid anyone else, or a
 different amount, is refused by the same three lines.
 
+### The token: the launch checklist
+
+Design 0007 C7 and ADR 0013. In order, and none skippable. Everything before
+step 6 is Josh's; everything after it is a command that already exists.
+
+1. **The gate is met, in numbers written down before launch** (design 0007 J12):
+   30 days of the bot live on X; 200 distinct summoners; 10% of replies with
+   any engagement. Read them off `radar brief`'s `analyst` line and the reply
+   log. Miss it and the token waits — that is the plan working.
+2. **The legal read** (design 0007 J4; design 0009 §8 lists what to hand over).
+3. **A fresh wallet, for the token and nothing else.** It will hold zero tokens
+   (ADR 0013 constraint 2) and enough SOL for a weekly transaction fee. Its
+   keypair file goes to the box as the payout key — see *The payout* above —
+   and nowhere else.
+4. **Create the token on pump.fun from that wallet with no dev buy.** No
+   allocation, no team or treasury tokens: the launch block's only recipient is
+   the bonding curve (ADR 0013 constraint 1), and that is the first fact the
+   bot will state about it.
+5. **Set `RADAR_SELF_MINT`** to the mint in `/etc/radar/analyst.env` and
+   restart the analyst. A price or market-cap fact about this mint is dropped
+   from the sheet before the model sees it (ADR 0013 constraint 5); a value that
+   does not parse idles the daemon and says so.
+6. **Ask the bot about its own token, from any account.** The reply is the
+   token's fact sheet on the same rule as any other coin — one recipient in the
+   launch block, no history, the venue's base rates. That reply is the first
+   public statement about the token, and it is a measurement.
+7. **Point the site at the endpoints.** `RADAR_SITE_ORIGIN` on `radar-serve`,
+   `RADAR_CONTEST_DIR` set so the `contest` and `vault` checks are armed, the
+   pool page reading `pool.json` once the payout has run once (it writes the
+   reading on every run, dry or not: `radar-payout --week <n> --dry-run`).
+8. **Read `radar brief`.** It gains two lines: `contest` — the latest closed
+   week and where its prize stands — and `vault` — the creator vault as last
+   read, `????` when the reading is missing or more than two days old. Both
+   alarm on absence only once `RADAR_CONTEST_DIR` says a contest runs here.
+9. **The first week.** The record is written on the first tick after Monday
+   00:00 UTC; the summary and the teardown post; the winner claims by replying
+   with an address within seven days; the payout timer pays the next morning
+   and reads the transaction back. Read `data/contest/<week>.json` after each
+   step — it is the evidence, and the leaderboard is built from it.
+
 ### Two credentials, because the platform needs two
 
 Reading mentions and posting replies do **not** take the same credential.

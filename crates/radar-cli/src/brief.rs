@@ -131,6 +131,16 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
         &analyst_dir(&get),
         get("RADAR_ANALYST_DIR").is_some(),
     ));
+    // The contest and the vault, on the same claim rule as the analyst: the
+    // variable that says where the records are is the claim that a contest
+    // runs here, and without it absence is a fact rather than an alarm.
+    let contest_dir = get("RADAR_CONTEST_DIR").unwrap_or_else(|| "data/contest".to_owned());
+    checks.push(contest(&contest_dir, get("RADAR_CONTEST_DIR").is_some()));
+    checks.push(vault(
+        &contest_dir,
+        get("RADAR_CONTEST_DIR").is_some(),
+        u64::try_from(now).unwrap_or(0),
+    ));
     checks.push(creator_index(
         &get("RADAR_CREATOR_INDEX")
             .unwrap_or_else(|| radar_roast::creator::DEFAULT_PATH.to_owned()),
@@ -898,6 +908,108 @@ fn probe_serving(url: &str) -> ServingProbe {
 /// Stated every run rather than only when it changes. An operator reading a
 /// brief should never have to remember whether capital is armed, and a line that
 /// appears only on change is a line whose absence means two different things.
+/// The contest: which week last closed, and where its prize stands.
+///
+/// Design 0007 C7. Reads the week records the analyst writes at close and
+/// reports the latest: winner or none, claimed or not, paid or not. Absent is
+/// `Unknown` once `RADAR_CONTEST_DIR` says a contest runs here -- a week that
+/// closed with no record is the week-close job not running -- and `Ok`
+/// otherwise, for the reason the analyst check gives: every host without the
+/// account is legitimately without records.
+fn contest(dir: &str, declared: bool) -> Check {
+    let missing = if declared {
+        Status::Unknown
+    } else {
+        Status::Ok
+    };
+    let mut records = radar_contest::records_in(std::path::Path::new(dir));
+    let Some(latest) = records.iter().max_by_key(|r| r.week.0).cloned() else {
+        return Check::new(
+            missing,
+            "contest",
+            format!(
+                "no week records at {dir} — no week has closed here, or nothing is closing them"
+            ),
+        );
+    };
+    records.sort_by_key(|r| r.week.0);
+    let standing = match (&latest.winner, &latest.claim, &latest.payout) {
+        (None, _, _) => "no winner, the pool rolls over".to_owned(),
+        (Some(_), None, _) => format!(
+            "winner unclaimed, window closes {}",
+            from_epoch(i64::try_from(latest.claim_window_closes_at()).unwrap_or(0))
+        ),
+        (Some(_), Some(_), None) => "winner claimed, unpaid".to_owned(),
+        (Some(_), Some(_), Some(p)) => format!("paid {} lamports, {}", p.lamports, p.signature),
+    };
+    Check::new(
+        Status::Ok,
+        "contest",
+        format!(
+            "week {} closed {}; {} counted, {} excluded; {standing}; {} records",
+            latest.week.0,
+            from_epoch(i64::try_from(latest.closed_at).unwrap_or(0)),
+            latest.ranking.ranked.len(),
+            latest.ranking.excluded.len(),
+            records.len()
+        ),
+    )
+}
+
+/// Two days: a vault reading older than this is not a reading of the vault.
+const VAULT_READING_STALE_AFTER: u64 = 2 * 86_400;
+
+/// The creator vault, as last read.
+///
+/// The payout process writes `pool.json` on every run, so a reading is at most
+/// a day old when the timer runs. Absent is `Unknown` once a contest is
+/// declared here and `Ok` -- "no token yet" -- otherwise. A reading older
+/// than two days is `Unknown` too: a stale figure served to the pool page is
+/// the thing that page exists to refuse.
+fn vault(dir: &str, declared: bool, now: u64) -> Check {
+    let path = format!("{dir}/pool.json");
+    let missing = if declared {
+        Status::Unknown
+    } else {
+        Status::Ok
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return Check::new(
+            missing,
+            "vault",
+            format!("no vault reading at {path} — no token yet, or the payout has never run here"),
+        );
+    };
+    let Ok(reading) = radar_contest::Vault::from_json(&text) else {
+        return Check::new(
+            Status::Unknown,
+            "vault",
+            format!("{path} does not parse as a vault reading"),
+        );
+    };
+    let age = now.saturating_sub(reading.measured_at);
+    let status = if age > VAULT_READING_STALE_AFTER {
+        Status::Unknown
+    } else {
+        Status::Ok
+    };
+    Check::new(
+        status,
+        "vault",
+        format!(
+            "{} holds {} lamports, measured {}{}",
+            reading.address,
+            reading.lamports,
+            from_epoch(i64::try_from(reading.measured_at).unwrap_or(0)),
+            if status == Status::Unknown {
+                " — stale, more than two days old"
+            } else {
+                ""
+            }
+        ),
+    )
+}
+
 fn trading_lane() -> Check {
     // Derived, not asserted. This read `Policy::CLOSED` and hardcoded both
     // `Status::Ok` and the words "no proposal can become an authorization" — so
@@ -2020,6 +2132,147 @@ mod tests {
         let check = creator_index(path.to_str().expect("a path"), 1_788_000_000);
         assert_eq!(check.status, Status::Unknown, "{}", check.detail);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn the_contest_and_vault_checks_alarm_on_absence_only_once_a_contest_is_declared() {
+        // The analyst check's rule, applied twice. Re-applied by passing `true`
+        // as `declared` in the undeclared half: the status assertions fail
+        // while the text ones still pass, which is the shape of the mistake.
+        let dir =
+            std::env::temp_dir().join(format!("radar-brief-contest-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let dir = dir.to_str().expect("a path");
+        let now = 1_788_000_000;
+
+        let undeclared = contest(dir, false);
+        assert_eq!(undeclared.status, Status::Ok, "{}", undeclared.detail);
+        assert!(
+            undeclared.detail.contains("no week records"),
+            "{}",
+            undeclared.detail
+        );
+        let declared = contest(dir, true);
+        assert_eq!(declared.status, Status::Unknown, "{}", declared.detail);
+
+        let undeclared = vault(dir, false, now);
+        assert_eq!(undeclared.status, Status::Ok, "{}", undeclared.detail);
+        assert!(
+            undeclared.detail.contains("no token yet"),
+            "{}",
+            undeclared.detail
+        );
+        let declared = vault(dir, true, now);
+        assert_eq!(declared.status, Status::Unknown, "{}", declared.detail);
+    }
+
+    #[test]
+    fn the_contest_check_reports_the_latest_week_and_where_its_prize_stands() {
+        let dir = std::env::temp_dir().join(format!("radar-brief-contest-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let dir = dir.to_str().expect("a path");
+        let write = |record: &radar_contest::Record| {
+            std::fs::write(
+                format!("{dir}/{}.json", record.week.0),
+                record.to_json().expect("json"),
+            )
+            .expect("write");
+        };
+        // An older week, paid; the latest, with a winner and no claim yet.
+        let mut old = radar_contest::Record::close(
+            radar_contest::Week(2956),
+            radar_contest::Ranking::default(),
+        );
+        old.winner = Some(radar_contest::Winner {
+            summoner: "a".to_owned(),
+            reply_id: "r".to_owned(),
+            score: 1,
+        });
+        old.claim = Some(radar_contest::Claim {
+            address: "ADDR".to_owned(),
+            reply_id: "c".to_owned(),
+            at: 1,
+        });
+        old.payout = Some(radar_contest::Payout {
+            recipient: "ADDR".to_owned(),
+            lamports: 500,
+            signature: "SIG".to_owned(),
+            at: 2,
+        });
+        write(&old);
+        let mut latest = radar_contest::Record::close(
+            radar_contest::Week(2957),
+            radar_contest::Ranking::default(),
+        );
+        latest.winner = Some(radar_contest::Winner {
+            summoner: "b".to_owned(),
+            reply_id: "r2".to_owned(),
+            score: 4,
+        });
+        write(&latest);
+
+        // The latest by week number, not by file order or by which was written
+        // last. Re-applied by taking the first record found: on a directory
+        // that lists 2957 before 2956 this still passes, so the assertion is on
+        // the week and on the claim window, which only the latest has open.
+        let check = contest(dir, true);
+        assert_eq!(check.status, Status::Ok, "{}", check.detail);
+        assert!(
+            check.detail.starts_with("week 2957 closed"),
+            "{}",
+            check.detail
+        );
+        assert!(
+            check.detail.contains("winner unclaimed, window closes"),
+            "{}",
+            check.detail
+        );
+        assert!(check.detail.contains("2 records"), "{}", check.detail);
+
+        // Paid reads as paid, with the signature a reader can check.
+        std::fs::remove_file(format!("{dir}/2957.json")).expect("rm");
+        let check = contest(dir, true);
+        assert!(
+            check.detail.contains("paid 500 lamports, SIG"),
+            "{}",
+            check.detail
+        );
+    }
+
+    #[test]
+    fn a_vault_reading_is_ok_when_fresh_and_unknown_when_stale_or_unreadable() {
+        let dir = std::env::temp_dir().join(format!("radar-brief-vault-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let dir = dir.to_str().expect("a path");
+        let measured = 1_788_000_000;
+        let reading = radar_contest::Vault {
+            address: "VAULT".to_owned(),
+            lamports: 2_500_000,
+            measured_at: measured,
+        };
+        std::fs::write(format!("{dir}/pool.json"), reading.to_json().expect("json"))
+            .expect("write");
+
+        let fresh = vault(dir, true, measured + VAULT_READING_STALE_AFTER);
+        assert_eq!(fresh.status, Status::Ok, "{}", fresh.detail);
+        assert!(
+            fresh.detail.contains("VAULT holds 2500000 lamports"),
+            "{}",
+            fresh.detail
+        );
+        // One second past two days is stale. Re-applied by comparing with
+        // `>=`: the reading at exactly two days reads stale and the first
+        // assertion fails.
+        let stale = vault(dir, true, measured + VAULT_READING_STALE_AFTER + 1);
+        assert_eq!(stale.status, Status::Unknown, "{}", stale.detail);
+        assert!(stale.detail.contains("stale"), "{}", stale.detail);
+
+        std::fs::write(format!("{dir}/pool.json"), "{not json").expect("write");
+        let broken = vault(dir, false, measured);
+        assert_eq!(broken.status, Status::Unknown, "{}", broken.detail);
     }
 
     #[test]

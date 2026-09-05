@@ -371,6 +371,17 @@ post-collect balance; and no key, wallet or token exists, so nothing here has
 run against a chain. The devnet week design 0007 §6.3 requires is where all
 three become captures.
 
+**The launch has a checklist and the brief has two more lines, as of
+2026-09-05** (design 0007 C7; plan 0006 item 8, the last). `deploy/README.md`
+*The token: the launch checklist* is nine steps in order, the first five
+Josh's. `radar brief` gains `contest` — the latest closed week and where its
+prize stands — and `vault` — the creator vault as `radar-payout` last read it,
+`????` when the reading is missing or more than two days old. Both alarm on
+absence only once `RADAR_CONTEST_DIR` is set, on the analyst check's rule.
+**With that, plan 0006 is complete**: everything design 0009 asked for that
+could be built without a credential, a wallet or a token is built, tested with
+its bugs re-applied, and documented here. What remains is on Josh's list.
+
 **The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
 design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet
 builder drops every `About::Price` fact for the mint in `RADAR_SELF_MINT` before

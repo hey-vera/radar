@@ -143,9 +143,16 @@ time.
       in `radar-pumpfun` from the program's on-chain IDL — a reference, not a
       capture; the devnet week is the capture. Own unit, user, key path and
       timer in `deploy/`. Re-applied bugs in the commit
-- [ ] 8. **C7 — the launch checklist** in `deploy/README.md`, and `radar brief`
+- [x] 8. **C7 — the launch checklist** in `deploy/README.md`, and `radar brief`
       gains `contest` and `vault` checks that report Unknown when unreachable.
       gate: `radar brief` prints the two lines
+      done: 2026-09-05, `feat/launch-checklist`. Nine steps under *The token:
+      the launch checklist* in the deploy guide, the first five Josh's and the
+      rest commands that exist. `contest` reports the latest closed week and
+      where its prize stands; `vault` the reading `radar-payout` writes,
+      Unknown when missing or more than two days old; both alarm on absence
+      only once `RADAR_CONTEST_DIR` is set, on the analyst check's rule. Three
+      tests; re-applied bugs in the commit
 - [x] 9. **Design 0009 §1's sentence** "no crate contains that name" corrected
       to point at STATE.md, and every prose reference in this plan turned into
       a link once #143 has merged.
@@ -173,14 +180,25 @@ time.
 
 ## Handback
 
-Stopped at: items 1–7 and 9 done, stacked in that order: PR #147
+Stopped at: **every item done.** Stacked in order: PR #147
 (`feat/contest-crate`), #148 (`feat/public-endpoints`), #149
 (`research/0028-the-fee-after-graduation`), #150 (`feat/refusal-signals`),
-#151 (`feat/telegram-lane`), #152 (`feat/weekly-and-daily-posts`), then
-`feat/radar-payout`. All wait on merge permission.
-Next action: item 8, the launch checklist and `radar brief`'s `contest` and
-`vault` checks. Then this plan is done and the vision prompt (PR #146) can be
-brought up to date.
+#151 (`feat/telegram-lane`), #152 (`feat/weekly-and-daily-posts`), #153
+(`feat/radar-payout`), then `feat/launch-checklist`. All wait on merge
+permission, and merge in that order; each later PR retargets `main` as the
+one below it lands.
+Next action: none in this plan. The only-Josh list stands (design 0009 §11,
+the vision prompt's list): the `/etc/radar` files and the analyst unit; the X
+developer account and the one live test post; a Telegram bot token and a
+channel; the token's wallet, gated on J12; the legal read; the domain. After
+that, `/plan-the-vision` (PR #146, its remainder table refreshed the same day)
+in a fresh plan-mode session.
+What this plan leaves stated rather than proven, all in STATE.md: the
+`collect_creator_fee` account order (IDL, not a capture); the vault rent
+reserve; the tier rule when a coin's market cap has fallen back through a
+step (research 0028); and that none of the bot, the contest or the payout
+has touched a live platform or chain, because no credential, wallet or token
+exists.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

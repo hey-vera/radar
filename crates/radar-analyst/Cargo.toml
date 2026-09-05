@@ -31,6 +31,12 @@ thiserror.workspace = true
 # HTTP stack to a workspace whose dependency bar is "the alternative is writing
 # it ourselves and getting it wrong".
 ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+# OAuth 1.0a signing. Confined to `oauth.rs`, and see the note in the workspace
+# manifest for why SHA-1 appears in a repository written in 2026.
+hmac.workspace = true
+sha1.workspace = true
+base64.workspace = true
+rand.workspace = true
 
 [lints]
 workspace = true

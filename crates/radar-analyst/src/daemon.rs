@@ -164,21 +164,35 @@ pub fn may_publish(get: &impl Fn(&str) -> Option<String>) -> bool {
     get("RADAR_X_PUBLISH").is_some_and(|v| v.trim().eq_ignore_ascii_case("on"))
 }
 
-/// What the daemon says about which of the three states it is in.
+/// What the daemon says about which state it is in.
 ///
-/// Three, not two, and the middle one is the whole point of [`may_publish`]:
-/// no credential at all; a credential that reads but does not speak; and a live
-/// account. An operator must be able to tell the second from the third at a
-/// glance, because they look identical from everywhere except the reply log.
+/// Four, and each is a real situation somebody will be in:
+///
+/// 1. no bearer, so nothing is read and nothing is posted;
+/// 2. reading, deliberately silent — the state the launch gate is read in;
+/// 3. **switched on with no signing credential**, which is a misconfiguration;
+/// 4. live.
+///
+/// The third exists because the platform needs two different credentials: a
+/// bearer to read mentions, and four OAuth 1.0a values to post. Somebody who
+/// sets the bearer, switches publishing on, and stops there has an instance that
+/// answers every mention and delivers none of them — and states 2 and 3 look
+/// identical from everywhere except the log, so the daemon names them apart on
+/// every start.
 #[must_use]
-pub fn posture(has_credential: bool, publishing: bool) -> &'static str {
-    match (has_credential, publishing) {
-        (false, _) => "radar-analyst: no credential, so nothing is read and nothing is posted.",
-        (true, false) => {
+pub fn posture(has_credential: bool, can_post: bool, publishing: bool) -> &'static str {
+    match (has_credential, can_post, publishing) {
+        (false, _, _) => "radar-analyst: no credential, so nothing is read and nothing is posted.",
+        (true, _, false) => {
             "radar-analyst: reading mentions and answering them to the log ONLY -- \
              set RADAR_X_PUBLISH=on to speak in public."
         }
-        (true, true) => "radar-analyst: LIVE -- replies are being posted publicly.",
+        (true, false, true) => {
+            "radar-analyst: RADAR_X_PUBLISH=on but there is no signing credential, so every \
+             reply will be answered and none delivered. A bearer can read; posting needs \
+             RADAR_X_API_KEY, RADAR_X_API_SECRET, RADAR_X_ACCESS_TOKEN and RADAR_X_ACCESS_SECRET."
+        }
+        (true, true, true) => "radar-analyst: LIVE -- replies are being posted publicly.",
     }
 }
 
@@ -223,7 +237,10 @@ pub fn run() -> ! {
     let x = X::from_env();
     let publishing = may_publish(&env);
     let publisher = publisher_for(x.clone(), publishing);
-    eprintln!("{}", posture(x.is_some(), publishing));
+    eprintln!(
+        "{}",
+        posture(x.is_some(), x.as_ref().is_some_and(X::can_post), publishing)
+    );
 
     let Some(prices) = Prices::from_vars(&env) else {
         // Not an exit. A price list is a spending decision and its absence is a
@@ -601,14 +618,23 @@ mod tests {
     fn the_three_states_are_told_apart_in_words() {
         // Reading-but-silent and live look identical from everywhere except the
         // reply log, so the daemon says which it is on every start.
-        assert!(posture(false, false).contains("no credential"));
-        assert!(posture(true, false).contains("log ONLY"));
-        assert!(posture(true, false).contains("RADAR_X_PUBLISH=on"));
-        assert!(posture(true, true).contains("LIVE"));
+        assert!(posture(false, false, false).contains("no credential"));
+        assert!(posture(true, true, false).contains("log ONLY"));
+        assert!(posture(true, true, false).contains("RADAR_X_PUBLISH=on"));
+        assert!(posture(true, true, true).contains("LIVE"));
 
-        // A credential is required to speak, so "publishing without one" is not
-        // a state that can exist -- and if it ever did, it must not be reported
+        // A bearer is required to speak, so "publishing without one" is not a
+        // state that can exist -- and if it ever did, it must not be reported
         // as live.
-        assert!(posture(false, true).contains("no credential"));
+        assert!(posture(false, true, true).contains("no credential"));
+
+        // The misconfiguration the second credential introduced: switched on,
+        // able to read, unable to sign. Answers everything, delivers nothing.
+        // It must not read as either of its neighbours.
+        let unsigned = posture(true, false, true);
+        assert!(unsigned.contains("no signing credential"), "{unsigned}");
+        assert!(unsigned.contains("RADAR_X_API_KEY"), "{unsigned}");
+        assert!(!unsigned.contains("LIVE"), "{unsigned}");
+        assert!(!unsigned.contains("log ONLY"), "{unsigned}");
     }
 }

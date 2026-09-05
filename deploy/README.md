@@ -784,7 +784,38 @@ The daemon prints which of its three states it is in on every start:
 ```
 radar-analyst: no credential, so nothing is read and nothing is posted.
 radar-analyst: reading mentions and answering them to the log ONLY -- set RADAR_X_PUBLISH=on to speak in public.
+radar-analyst: RADAR_X_PUBLISH=on but there is no signing credential, so every reply will be answered and none delivered. ...
 radar-analyst: LIVE -- replies are being posted publicly.
+```
+
+### Two credentials, because the platform needs two
+
+Reading mentions and posting replies do **not** take the same credential.
+`POST /2/tweets` refuses an app-only bearer token and requires user context —
+checked against `docs.x.com` on 2026-09-05, after the client had already shipped
+sending a bearer to it. Reading would have worked; the first real reply would
+have been refused.
+
+| what | credential | portal name |
+|---|---|---|
+| read mentions | `RADAR_X_BEARER` | Bearer Token |
+| identify the account | `RADAR_X_USER_ID` | the numeric id, not the handle |
+| post a reply | `RADAR_X_API_KEY` + `RADAR_X_API_SECRET` | API Key, API Key Secret |
+| | `RADAR_X_ACCESS_TOKEN` + `RADAR_X_ACCESS_SECRET` | Access Token, Access Token Secret |
+
+OAuth 1.0a rather than OAuth 2.0, deliberately: four static values, no browser
+redirect, no two-hour expiry, and no refresh loop whose failure would leave a bot
+that has quietly stopped talking.
+
+**Set App permissions to "Read and write" before generating the access token.**
+A token minted under "Read" keeps those permissions for life and fails to post
+with a 403 that does not say why.
+
+The numeric user id, which `/2/users/me` will not give you from a bearer:
+
+```bash
+curl -s -H "Authorization: Bearer $RADAR_X_BEARER" \
+  "https://api.x.com/2/users/by/username/CabalHunter"
 ```
 
 ```bash

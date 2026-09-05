@@ -405,9 +405,23 @@ pub fn run() -> ! {
             self_mint.as_ref(),
             &paths,
         );
-        wait = poll::interval(found + found_telegram, wait);
+        wait = next_wait(found, found_telegram, wait);
         std::thread::sleep(wait);
     }
+}
+
+/// How long to sleep after a tick that found `found` X mentions and
+/// `found_telegram` Telegram messages.
+///
+/// Either lane finding something keeps the loop busy: the two counts are
+/// added and handed to [`poll::interval`]. A function rather than a line
+/// inside [`run`] because `run` never returns, and CI's mutants replaced the
+/// `+` with `*` and `-` with nothing failing -- a loop that went idle while
+/// one lane was busy, or one that panicked on underflow, and no test could
+/// see either.
+#[must_use]
+pub fn next_wait(found: usize, found_telegram: usize, previous: Duration) -> Duration {
+    poll::interval(found + found_telegram, previous)
 }
 
 /// Sleeps rather than exiting, so a misconfigured unit is visible as a running
@@ -534,6 +548,17 @@ pub fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn either_lane_finding_something_keeps_the_loop_busy() {
+        // Re-applied as CI did: `+` to `*` makes (0, 1) idle and the second
+        // assertion fails; `+` to `-` panics on (0, 1) and the test fails there.
+        assert_eq!(next_wait(1, 0, poll::IDLE), poll::BUSY);
+        assert_eq!(next_wait(0, 1, poll::IDLE), poll::BUSY);
+        assert_eq!(next_wait(2, 3, poll::IDLE), poll::BUSY);
+        // Nothing found on either lane: the wait doubles from where it was.
+        assert_eq!(next_wait(0, 0, poll::BUSY), poll::BUSY * 2);
+    }
 
     /// A getter over a fixed table, so the rules can be tested without touching
     /// process-wide environment variables.

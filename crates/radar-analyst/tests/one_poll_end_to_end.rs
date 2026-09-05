@@ -760,6 +760,65 @@ fn a_telegram_message_is_answered_into_its_own_log_and_never_into_the_record() {
 }
 
 #[test]
+fn a_telegram_reply_that_is_sent_is_counted_and_remembered_by_the_gate() {
+    // The success path: the publisher posts, the entry carries the id, the
+    // count comes back, and the gate is told -- so the same coin is refused
+    // as already answered on the next poll rather than answered twice. CI's
+    // mutants turned the counter's `+=` into `-=` and `*=` with nothing
+    // failing, because the other Telegram test publishes through the dry run.
+    let mint = "So11111111111111111111111111111111111111112";
+    let page = format!(
+        r#"{{"ok":true,"result":[
+          {{"update_id":51,"message":{{"message_id":9,"from":{{"id":9001}},"chat":{{"id":-100777}},"text":"@radar_bot {mint}"}}}}
+        ]}}"#
+    );
+    let (base, _seen) = platform(&page);
+    let (rpc, _stop, _requests) = empty_chain();
+    let dir = workspace("telegram-sent");
+    let paths = Paths::under(&dir);
+    let bot = radar_analyst::telegram::Telegram::at(base, "1:token");
+    let mut gate = Gate::new(open_limits(), Vec::new());
+    let client = radar_onchain::RpcClient::new(rpc);
+
+    let answered = radar_analyst::telegram::tick(
+        Some(&bot),
+        &Posts,
+        &mut gate,
+        &client,
+        None,
+        None,
+        None,
+        None,
+        &paths,
+    );
+    assert_eq!(answered, 1, "one message answered and sent");
+    let logged = radar_analyst::log::latest(&paths.telegram_log).expect("the telegram log");
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].reply_id.as_deref(), Some("posted--100777:9"));
+
+    // The same page again: the fake does not honour the offset, so the same
+    // message comes back, and the gate's dedupe refuses it as already answered.
+    let again = radar_analyst::telegram::tick(
+        Some(&bot),
+        &Posts,
+        &mut gate,
+        &client,
+        None,
+        None,
+        None,
+        None,
+        &paths,
+    );
+    assert_eq!(again, 0, "the gate remembered the mint");
+    assert_eq!(
+        radar_analyst::log::latest(&paths.telegram_log)
+            .expect("log")
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn with_no_telegram_token_the_lane_reads_nothing_and_writes_nothing() {
     let (rpc, _stop, requests) = empty_chain();
     let dir = workspace("telegram-off");

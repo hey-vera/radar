@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon::Paths;
 use crate::log::Entry;
-use crate::x::X;
+use crate::x::{Mention, X};
 
 /// One refusal by the X gate, as the week-close job needs it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,6 +180,49 @@ pub fn sightings(log: &[Entry], week: Week) -> Vec<Sighting> {
             })
         })
         .collect()
+}
+
+/// Reads a winner's claim out of a mention, if that is what it is.
+///
+/// Design 0007 C3. A claim is a public reply from the winning account, within
+/// the claim window, naming an address -- parsed with the same strict rule as
+/// a summons, so there is no field an instruction can travel in. When the
+/// mention is one, the claim is written into the week's record and the week
+/// is returned; the caller then does not answer the mention as a summons,
+/// because a wallet address is not a coin.
+///
+/// The first claim stands. A second address from the same winner in the same
+/// window is a summons like any other, and is answered as one -- which is a
+/// visible "no record" rather than a silent second claim.
+#[must_use]
+pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week> {
+    let crate::mention::Asked::Mint(address) = crate::mention::read(&mention.text) else {
+        return None;
+    };
+    if address.parse::<radar_types::Address>().is_err() {
+        return None;
+    }
+    let mut record = radar_contest::records_in(std::path::Path::new(contest_dir))
+        .into_iter()
+        .find(|r| {
+            r.claim.is_none()
+                && r.accepts_claim_at(now)
+                && r.winner
+                    .as_ref()
+                    .is_some_and(|w| w.summoner == mention.author)
+        })?;
+    record.claim = Some(radar_contest::Claim {
+        address,
+        reply_id: mention.id.clone(),
+        at: now,
+    });
+    let path = record_path(contest_dir, record.week);
+    let text = record.to_json().ok()?;
+    if let Err(e) = write_atomically(&path, &text) {
+        eprintln!("radar-analyst: cannot write the claim to {path}: {e}");
+        return None;
+    }
+    Some(record.week)
 }
 
 /// The week that closed most recently before `now`, if any has.
@@ -535,6 +578,64 @@ mod tests {
         append_refusal(&path, &line).expect("append");
         append_refusal(&path, &line).expect("append");
         assert_eq!(read_refusals(&path), vec![line.clone(), line]);
+    }
+
+    #[test]
+    fn a_winners_address_inside_the_window_is_a_claim_and_everything_else_is_a_summons() {
+        // The winner names an address within seven days of close: written into
+        // the record, and the mention is not answered. Somebody else naming an
+        // address, the winner naming nothing, the winner after the window, and
+        // a second claim are all summonses. Re-applied by dropping
+        // `accepts_claim_at`: the late claim is recorded and the fourth
+        // assertion fails.
+        let dir = std::env::temp_dir().join(format!("radar-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = dir.to_string_lossy().into_owned();
+        let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+        record.winner = Some(radar_contest::Winner {
+            summoner: "alice".to_owned(),
+            reply_id: "r1".to_owned(),
+            score: 3,
+        });
+        write_atomically(&record_path(&dir, WEEK), &record.to_json().expect("json"))
+            .expect("write");
+        let address = radar_types::Address::new([5u8; 32]).to_string();
+        let mention = |author: &str, text: &str| Mention {
+            id: format!("m-{author}"),
+            author: author.to_owned(),
+            text: text.to_owned(),
+            parent: None,
+        };
+        let inside = WEEK.closes_at() + 3_600;
+        let late = record.claim_window_closes_at();
+
+        assert_eq!(
+            try_claim(&mention("bob", &format!("pay me {address}")), &dir, inside),
+            None
+        );
+        assert_eq!(try_claim(&mention("alice", "thanks!"), &dir, inside), None);
+        assert_eq!(
+            try_claim(&mention("alice", &format!("here {address}")), &dir, late),
+            None
+        );
+        assert_eq!(
+            try_claim(&mention("alice", &format!("here {address}")), &dir, inside),
+            Some(WEEK)
+        );
+        let saved = radar_contest::records_in(std::path::Path::new(&dir));
+        let claim = saved[0].claim.as_ref().expect("a claim");
+        assert_eq!(
+            (claim.address.as_str(), claim.reply_id.as_str(), claim.at),
+            (address.as_str(), "m-alice", inside)
+        );
+        // A second address from the winner is a summons: the first claim stands.
+        let other = radar_types::Address::new([6u8; 32]).to_string();
+        assert_eq!(try_claim(&mention("alice", &other), &dir, inside + 1), None);
+        assert_eq!(
+            saved[0].claim.as_ref().map(|c| c.address.as_str()),
+            Some(address.as_str())
+        );
     }
 
     #[test]

@@ -24,6 +24,9 @@
 //! own name, and a lookup that fails is a refusal rather than a fallback.
 
 use radar_decode::pumpfun::{Instruction, KNOWN};
+use radar_types::Address;
+
+use crate::transaction::AccountMeta;
 
 /// A trade against the bonding curve.
 ///
@@ -139,9 +142,122 @@ impl Trade {
     }
 }
 
+/// The system program: all zeros, `11111111111111111111111111111111`.
+pub const SYSTEM_PROGRAM: Address = Address::new([0u8; 32]);
+
+/// `collect_creator_fee`: moves the fees a creator's launches have earned out of
+/// the creator vault into the creator's wallet.
+///
+/// The account order is the program's own, read off its on-chain Anchor IDL
+/// (v0.1.0, account `AYgC53tU…`, 2026-09-05): creator, creator vault, system
+/// program, event authority, the program itself; no arguments. The IDL marks
+/// the creator writable and **not** a signer -- the collection is
+/// permissionless and always lands in the creator's wallet -- but the creator
+/// signs here because it is the fee payer of a transaction that goes on to
+/// transfer what was collected. **An IDL is a reference, not a capture**
+/// (LEARNINGS 25; research 0023 found this program's IDL two accounts short
+/// on `buy`), so the first mainnet `collect_creator_fee` this crate sends is
+/// the capture, and the devnet week design 0007 §6.3 requires is where it is
+/// first exercised.
+///
+/// `None` only when a derivation fails, which for a real creator it cannot.
+#[must_use]
+pub fn collect_creator_fee(creator: &Address) -> Option<crate::transaction::Instruction> {
+    let discriminator = KNOWN
+        .iter()
+        .find(|(ix, _, _)| *ix == Instruction::CollectCreatorFee)
+        .map(|(_, bytes, _)| *bytes)?;
+    Some(crate::transaction::Instruction {
+        program_id: radar_decode::pumpfun::PROGRAM_ID,
+        accounts: vec![
+            AccountMeta::signer(*creator),
+            AccountMeta::writable(crate::pda::creator_vault(creator)?),
+            AccountMeta::readonly(SYSTEM_PROGRAM),
+            AccountMeta::readonly(crate::pda::event_authority()?),
+            AccountMeta::readonly(radar_decode::pumpfun::PROGRAM_ID),
+        ],
+        data: discriminator.to_vec(),
+    })
+}
+
+/// A system-program transfer of `lamports` from `from` to `to`.
+///
+/// Instruction index 2 as a little-endian `u32`, then the amount as a `u64`:
+/// the wire format of `SystemInstruction::Transfer`, written here rather than
+/// pulled from an SDK for the reason the rest of this crate is.
+#[must_use]
+pub fn system_transfer(
+    from: &Address,
+    to: &Address,
+    lamports: u64,
+) -> crate::transaction::Instruction {
+    let mut data = Vec::with_capacity(12);
+    data.extend_from_slice(&2u32.to_le_bytes());
+    data.extend_from_slice(&lamports.to_le_bytes());
+    crate::transaction::Instruction {
+        program_id: SYSTEM_PROGRAM,
+        accounts: vec![AccountMeta::signer(*from), AccountMeta::writable(*to)],
+        data,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collect_creator_fee_names_the_idls_five_accounts_in_order_and_carries_only_its_discriminator()
+     {
+        // The on-chain IDL's list, 2026-09-05. A reference until a capture
+        // replaces it; the test pins that the builder says what the reference
+        // says, so a drift between them is a test and not a failed transaction.
+        let creator = Address::new([9u8; 32]);
+        let ix = collect_creator_fee(&creator).expect("derivations succeed");
+        assert_eq!(ix.program_id, radar_decode::pumpfun::PROGRAM_ID);
+        assert_eq!(
+            ix.data,
+            vec![0x14, 0x16, 0x56, 0x7b, 0xc6, 0x1c, 0xdb, 0x84]
+        );
+        let names: Vec<(Address, bool, bool)> = ix
+            .accounts
+            .iter()
+            .map(|a| (a.pubkey, a.signer, a.writable))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                (creator, true, true),
+                (
+                    crate::pda::creator_vault(&creator).expect("vault"),
+                    false,
+                    true
+                ),
+                (SYSTEM_PROGRAM, false, false),
+                (
+                    crate::pda::event_authority().expect("authority"),
+                    false,
+                    false
+                ),
+                (radar_decode::pumpfun::PROGRAM_ID, false, false),
+            ]
+        );
+        assert_eq!(
+            SYSTEM_PROGRAM.to_string(),
+            "11111111111111111111111111111111"
+        );
+    }
+
+    #[test]
+    fn a_system_transfer_is_index_two_then_the_amount_from_a_signer_to_a_writable() {
+        let (from, to) = (Address::new([1u8; 32]), Address::new([2u8; 32]));
+        let ix = system_transfer(&from, &to, 1_234_567);
+        assert_eq!(ix.program_id, SYSTEM_PROGRAM);
+        assert_eq!(&ix.data[..4], &[2, 0, 0, 0]);
+        assert_eq!(&ix.data[4..], &1_234_567u64.to_le_bytes());
+        assert_eq!(ix.data.len(), 12);
+        assert!(ix.accounts[0].signer && ix.accounts[0].pubkey == from);
+        assert!(ix.accounts[1].writable && !ix.accounts[1].signer && ix.accounts[1].pubkey == to);
+    }
 
     /// Instruction data lifted verbatim from mainnet transactions on
     /// 2026-09-01, alongside the account layouts in

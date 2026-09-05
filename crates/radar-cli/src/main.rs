@@ -15,6 +15,7 @@ mod analyst;
 mod basis;
 mod brief;
 mod consider;
+mod contest;
 mod control;
 mod cost;
 mod dossier;
@@ -712,6 +713,7 @@ fn main() -> ExitCode {
         "study" => event_study(&args),
         "creator-index" => creator_index(&args),
         "seven-days-later" => seven_days::run(&args),
+        "contest" => contest::run(&args),
         "dossier" => dossier::run(&args),
         "roast" => roast::run(&args),
         "analyst" => analyst::run(&args),

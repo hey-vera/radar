@@ -1326,12 +1326,15 @@ dependencies = [
  "radar-analyst",
  "radar-asof",
  "radar-backfill",
+ "radar-contest",
  "radar-decode",
  "radar-exec",
  "radar-graph",
  "radar-instruments",
  "radar-model",
  "radar-onchain",
+ "radar-payout",
+ "radar-pumpfun",
  "radar-research",
  "radar-risk",
  "radar-roast",
@@ -1435,6 +1438,23 @@ dependencies = [
 name = "radar-onchain"
 version = "0.0.1"
 dependencies = [
+ "radar-decode",
+ "radar-pumpfun",
+ "radar-types",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "ureq",
+]
+
+[[package]]
+name = "radar-payout"
+version = "0.0.1"
+dependencies = [
+ "base64",
+ "bs58",
+ "ed25519-dalek",
+ "radar-contest",
  "radar-decode",
  "radar-pumpfun",
  "radar-types",

@@ -685,6 +685,17 @@ pub fn tick(
 
     let mut answered = 0;
     for mention in &mentions {
+        // A winner naming an address inside the claim window is claiming, not
+        // summoning. Checked first, and at the cost of a directory listing
+        // only: the claim is written into the record and the mention is not
+        // answered, because a wallet is not a coin.
+        if let Some(week) = crate::contest::try_claim(mention, &paths.contest_dir, at) {
+            eprintln!(
+                "radar-analyst: {} -> claim recorded for week {}",
+                mention.id, week.0
+            );
+            continue;
+        }
         match crate::answer::answer(mention, gate, &ctx) {
             Answered::Reply(entry) => {
                 let mint = entry.mint.clone().unwrap_or_default();

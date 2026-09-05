@@ -1,0 +1,37 @@
+[package]
+name = "radar-payout"
+description = "Pays the week's prize from the creator vault to the claimed address, under three refusals, and does nothing else."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+authors.workspace = true
+
+[dependencies]
+radar-contest.workspace = true
+radar-decode.workspace = true
+radar-pumpfun.workspace = true
+radar-types.workspace = true
+# The one signature this process makes. The same library the signer uses; a
+# second implementation of ed25519 would be a second thing to get wrong.
+ed25519-dalek.workspace = true
+base64.workspace = true
+bs58.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+# Direct RPC, never the x402 lane (rule 7). The same client the analyst uses.
+ureq = { version = "3", default-features = false, features = ["rustls", "json"] }
+
+[[bin]]
+name = "radar-payout"
+path = "src/main.rs"
+
+[lib]
+name = "radar_payout"
+path = "src/lib.rs"
+
+[lints]
+workspace = true

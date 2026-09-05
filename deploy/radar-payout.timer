@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-payout.timer, then:
+#   sudo systemctl enable --now radar-payout.timer
+#
+# Once a day. A claim can arrive at any point in the seven-day window after a
+# week closes (design 0007 §6.2), and a day's delay on a prize worth tens of
+# dollars costs nothing; a payout process that ran every minute would be a key
+# used every minute. Every run pays each claimed, unpaid week and refuses the
+# rest, so a missed run is caught up by the next.
+[Unit]
+Description=Pay any claimed, unpaid contest week
+Documentation=https://github.com/hey-vera/radar
+
+[Timer]
+OnCalendar=*-*-* 01:00:00 UTC
+Persistent=true
+AccuracySec=15min
+Unit=radar-payout.service
+
+[Install]
+WantedBy=timers.target

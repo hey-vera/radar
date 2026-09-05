@@ -309,6 +309,18 @@ measurement, so an author adding a market-cap line through them has to choose
 running with the rule off; unset means no token is special, which is the right
 configuration until the token exists.
 
+**The contest crate exists, as of 2026-09-05, and is pure** (design 0007 C1,
+design 0009 M3): weeks that open Monday 00:00 UTC; the published score,
+three per repost and quote and one per like and reply, over the bot's own
+replies; every exclusion returned with its reason; a winner with a three-week
+cooldown; the seven-day claim window; one JSON record per week; the payout
+policy as one function with three refusals; and the hunter tally with the
+daily cap applied again so volume cannot win. No clock, no network, no key.
+**Its callers are not built yet** — the public leaderboard endpoint reads its
+record, the week-close job writes one, `radar-payout` asks its policy — and
+plan 0006 lands them in that order, the first as its next item. Until then it
+is a document that compiles, said plainly rather than discovered later.
+
 Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
 against the chain and append-only against its own log.
 

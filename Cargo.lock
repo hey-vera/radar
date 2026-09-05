@@ -1344,6 +1344,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "radar-contest"
+version = "0.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "radar-customer"
 version = "0.0.1"
 dependencies = [

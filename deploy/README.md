@@ -844,6 +844,38 @@ No file, no post. No replies seven days ago, no post and a line in the journal.
 A `<date>.posted` marker stops a day being posted twice. With
 `RADAR_TELEGRAM_CHANNEL` set, both posts also go to that chat.
 
+### The payout: its own key, unit and user
+
+Design 0007 C4 and ADR 0013. `radar-payout` pays each claimed, unpaid week
+from the creator vault to the claimed address in one transaction —
+`collect_creator_fee`, then a system transfer of everything above the vault's
+rent reserve — and reads that transaction back before the week's record says
+paid. It is **not** the trading signer: a different key, a different user, a
+different unit, and it cannot sign a trade.
+
+```bash
+sudo useradd --system --no-create-home --shell /usr/sbin/nologin radar-payout
+sudo install -m 0400 -o radar-payout -g radar-payout <creator-keypair.json> /etc/radar/payout.json
+sudo install -m 0640 -o root -g radar-payout deploy/payout.env.example /etc/radar/payout.env
+sudo setfacl -m u:radar-payout:rwx /home/guardian/radar/data/contest
+sudo install -m755 dist/radar-payout /usr/local/bin/radar-payout
+sudo install -D -m644 deploy/radar-payout.service /etc/systemd/system/radar-payout.service
+sudo install -D -m644 deploy/radar-payout.timer   /etc/systemd/system/radar-payout.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-payout.timer
+```
+
+The key is the wallet that launched the token and nothing else: it holds no
+tokens (ADR 0013 constraint 2) and enough SOL for a transaction fee. Its blast
+radius is one week of creator fees. `RADAR_RPC_URL` unset means nothing is paid.
+
+**The fallback, when the unit cannot run:** `radar contest pay --week N
+--creator <wallet> --rpc <url> --dry-run` prints the exact unsigned transaction,
+base64; sign and send it elsewhere; then `radar contest record-payout --week N
+--creator <wallet> --rpc <url> --signature <sig>` reads it back through the same
+check the unit uses and records it. A transaction that paid anyone else, or a
+different amount, is refused by the same three lines.
+
 ### Two credentials, because the platform needs two
 
 Reading mentions and posting replies do **not** take the same credential.

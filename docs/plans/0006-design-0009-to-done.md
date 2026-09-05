@@ -123,11 +123,26 @@ time.
       `RADAR_X_PRICE_POST`. Both posts pass the two checks in tests that
       re-apply a dropped authorisation; a post that fails is recorded and not
       sent, and the thread stops. Nothing has been posted: no credential
-- [ ] 7. **C4 `radar-payout` and C5 the manual fallback**: the three policy
+- [x] 7. **C4 `radar-payout` and C5 the manual fallback**: the three policy
       refusals — wrong recipient, second payout for a week, amount above
       collected — each proven by re-applying the bug; its own unit and user; no
       network but RPC.
       gate: the refusals; the fallback prints the exact transaction
+      done: 2026-09-05, `feat/radar-payout`. New crate `radar-payout` (lib +
+      binary): `plan` from the record and the vault balance — the recipient is
+      the claim, the amount is everything above the vault's rent reserve, so
+      there is no field for a wrong one; the policy's three refusals via
+      `Payout::permitted`; `sign` with the creator key; `verify` reads the
+      transaction back and accepts exactly the planned transfer; `pay` records
+      only after verification; `record_payout` is the fallback and goes
+      through the same `verify`. `radar contest pay --dry-run` prints the
+      unsigned transaction base64; `radar contest record-payout` records a
+      hand-made one. C3 came with it: `try_claim` in the analyst writes a
+      winner's address into the record inside the window and does not answer
+      it as a summons. `collect_creator_fee` and a system transfer are built
+      in `radar-pumpfun` from the program's on-chain IDL — a reference, not a
+      capture; the devnet week is the capture. Own unit, user, key path and
+      timer in `deploy/`. Re-applied bugs in the commit
 - [ ] 8. **C7 — the launch checklist** in `deploy/README.md`, and `radar brief`
       gains `contest` and `vault` checks that report Unknown when unreachable.
       gate: `radar brief` prints the two lines
@@ -158,12 +173,14 @@ time.
 
 ## Handback
 
-Stopped at: items 1–6 and 9 done, stacked in that order: PR #147
+Stopped at: items 1–7 and 9 done, stacked in that order: PR #147
 (`feat/contest-crate`), #148 (`feat/public-endpoints`), #149
 (`research/0028-the-fee-after-graduation`), #150 (`feat/refusal-signals`),
-#151 (`feat/telegram-lane`), then `feat/weekly-and-daily-posts`. All wait on
-merge permission.
-Next action: item 7, `radar-payout` and the manual fallback. Then 8.
+#151 (`feat/telegram-lane`), #152 (`feat/weekly-and-daily-posts`), then
+`feat/radar-payout`. All wait on merge permission.
+Next action: item 8, the launch checklist and `radar brief`'s `contest` and
+`vault` checks. Then this plan is done and the vision prompt (PR #146) can be
+brought up to date.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

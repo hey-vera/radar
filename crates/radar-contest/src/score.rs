@@ -488,6 +488,29 @@ mod tests {
     }
 
     #[test]
+    fn the_age_bar_is_under_thirty_days_so_thirty_counts() {
+        // The site says "accounts under 30 days are excluded". Under, not
+        // up to: an account exactly 30 days old counts and one of 29 does
+        // not. Both edges pinned because CI's mutants run on 2026-09-05
+        // turned `<` into `<=` and every test still passed -- the rule had
+        // moved a day and nothing said so.
+        let rules = Rules::published("radar");
+        for (days, eligible) in [(29, false), (30, true), (31, true)] {
+            let mut st = standings(&["w"]);
+            st.get_mut("w").expect("w").account_age_days = Some(days);
+            let ranking = rank(WEEK, &[entry("r", "w", 1, Metrics::default())], &st, &rules);
+            assert_eq!(
+                ranking.ranked.len() == 1,
+                eligible,
+                "an account {days} days old: eligible should be {eligible}"
+            );
+            if !eligible {
+                assert_eq!(ranking.excluded[0].1, Excluded::AccountTooNew { days });
+            }
+        }
+    }
+
+    #[test]
     fn a_week_with_nothing_counted_has_no_winner_rather_than_a_default_one() {
         let ranking = rank(WEEK, &[], &BTreeMap::new(), &Rules::published("radar"));
         assert!(ranking.winner().is_none());

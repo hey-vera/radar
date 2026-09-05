@@ -212,6 +212,18 @@ exclude_re = [
     # discovered on the first real reply.
     'replace Credentials::from_env -> Option<Self> with None',
 
+    # `Telegram::from_env` is the third of the shape, and the same argument: it
+    # reads `RADAR_TELEGRAM_BOT_TOKEN`, `RADAR_TELEGRAM_API_BASE` and
+    # `RADAR_TELEGRAM_CHANNEL` and hands them to `from_vars`, which is tested
+    # with the token present, absent and blank, the base defaulted and
+    # overridden, and the channel present and blank. The reading cannot be
+    # tested without `std::env::set_var`, for the reason above.
+    #
+    # The mutation's effect is the safe direction and is said out loud:
+    # `None` means the lane is off, and `telegram::posture` prints "telegram
+    # off -- no RADAR_TELEGRAM_BOT_TOKEN" on every start.
+    'replace Telegram::from_env -> Option<Self> with None',
+
     # The daemon's two thinnest wrappers, and neither is equivalent -- each is
     # **unreachable by a test in this workspace**, which is a different and more
     # honest claim.

@@ -394,10 +394,23 @@ fn analyst(dir: &str, declared: bool) -> Check {
     // An earlier version computed the age and then discarded it, which mutation
     // testing found by replacing the subtraction with an addition and nothing
     // failing. A number nothing reads is not a number.
-    let detail = format!(
+    let mut detail = format!(
         "{answered} answered, {published} published; last at {}",
         from_epoch(i64::try_from(last).unwrap_or(0))
     );
+    // The free lane, when it has ever answered. Its own file, so its absence
+    // is the ordinary state of every host without a bot token and is not
+    // reported; its presence is a count, never an alarm, for the same reason
+    // the X count is not one.
+    if let Ok(telegram) = radar_analyst::log::latest(&format!("{dir}/telegram.jsonl")) {
+        use std::fmt::Write as _;
+        let sent = telegram.iter().filter(|e| e.reply_id.is_some()).count();
+        let _ = write!(
+            detail,
+            "; telegram {} answered, {sent} sent",
+            telegram.len()
+        );
+    }
     Check::new(Status::Ok, "analyst", detail)
 }
 

@@ -35,6 +35,13 @@ pub struct Paths {
     pub cursor: String,
     /// The spend ledger.
     pub ledger: String,
+    /// The Telegram lane's own log. **Never read for the contest**: the
+    /// leaderboard, the week-close job and the hunter tally read `log`, and a
+    /// Telegram answer stays out of the record by being in a different file
+    /// rather than by carrying a flag (design 0009 L5).
+    pub telegram_log: String,
+    /// The Telegram lane's `getUpdates` offset.
+    pub telegram_cursor: String,
 }
 
 impl Paths {
@@ -45,6 +52,8 @@ impl Paths {
             log: format!("{dir}/replies.jsonl"),
             cursor: format!("{dir}/cursor"),
             ledger: format!("{dir}/ledger.json"),
+            telegram_log: format!("{dir}/telegram.jsonl"),
+            telegram_cursor: format!("{dir}/telegram.cursor"),
         }
     }
 }
@@ -299,6 +308,17 @@ pub fn run() -> ! {
         posture(x.is_some(), x.as_ref().is_some_and(X::can_post), publishing)
     );
 
+    // The free lane, on its own token, its own switch, its own caps and its
+    // own log (design 0009 L5). Same rule 8 shape as X: no token, nothing read.
+    let telegram = crate::telegram::Telegram::from_env();
+    let telegram_publishing = crate::telegram::may_publish(&env);
+    let telegram_publisher = crate::telegram::publisher_for(telegram.clone(), telegram_publishing);
+    eprintln!(
+        "{}",
+        crate::telegram::posture(telegram.is_some(), telegram_publishing)
+    );
+    let mut telegram_gate = Gate::new(crate::telegram::limits_from(&env), Vec::new());
+
     let Some(prices) = Prices::from_vars(&env) else {
         // Not an exit. A price list is a spending decision and its absence is a
         // configuration state, not a crash -- but nothing may be answered
@@ -350,9 +370,14 @@ pub fn run() -> ! {
     eprintln!("{}", self_mint_notice(self_mint.as_ref()));
 
     eprintln!(
-        "radar-analyst: publisher={} source={} dir={dir}",
+        "radar-analyst: publisher={} source={} telegram={} dir={dir}",
         publisher.name(),
-        if x.is_some() { "x" } else { "none" }
+        if x.is_some() { "x" } else { "none" },
+        if telegram.is_some() {
+            telegram_publisher.name()
+        } else {
+            "off"
+        }
     );
 
     let mut wait = poll::BUSY;
@@ -369,9 +394,34 @@ pub fn run() -> ! {
             self_mint.as_ref(),
             &paths,
         );
-        wait = poll::interval(found, wait);
+        let found_telegram = crate::telegram::tick(
+            telegram.as_ref(),
+            telegram_publisher.as_ref(),
+            &mut telegram_gate,
+            &client,
+            rates.as_ref(),
+            creators.as_ref(),
+            provider.as_deref(),
+            self_mint.as_ref(),
+            &paths,
+        );
+        wait = next_wait(found, found_telegram, wait);
         std::thread::sleep(wait);
     }
+}
+
+/// How long to sleep after a tick that found `found` X mentions and
+/// `found_telegram` Telegram messages.
+///
+/// Either lane finding something keeps the loop busy: the two counts are
+/// added and handed to [`poll::interval`]. A function rather than a line
+/// inside [`run`] because `run` never returns, and CI's mutants replaced the
+/// `+` with `*` and `-` with nothing failing -- a loop that went idle while
+/// one lane was busy, or one that panicked on underflow, and no test could
+/// see either.
+#[must_use]
+pub fn next_wait(found: usize, found_telegram: usize, previous: Duration) -> Duration {
+    poll::interval(found + found_telegram, previous)
 }
 
 /// Sleeps rather than exiting, so a misconfigured unit is visible as a running
@@ -498,6 +548,17 @@ pub fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn either_lane_finding_something_keeps_the_loop_busy() {
+        // Re-applied as CI did: `+` to `*` makes (0, 1) idle and the second
+        // assertion fails; `+` to `-` panics on (0, 1) and the test fails there.
+        assert_eq!(next_wait(1, 0, poll::IDLE), poll::BUSY);
+        assert_eq!(next_wait(0, 1, poll::IDLE), poll::BUSY);
+        assert_eq!(next_wait(2, 3, poll::IDLE), poll::BUSY);
+        // Nothing found on either lane: the wait doubles from where it was.
+        assert_eq!(next_wait(0, 0, poll::BUSY), poll::BUSY * 2);
+    }
 
     /// A getter over a fixed table, so the rules can be tested without touching
     /// process-wide environment variables.

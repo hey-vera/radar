@@ -681,3 +681,155 @@ fn a_thirty_mention_burst_from_one_account_reads_the_chain_at_most_cap_times() {
     // The whole page was seen, so the burst is not re-read next poll either.
     assert_eq!(cursor.as_deref(), Some("5029"));
 }
+
+// ---------------------------------------------------------------------------
+// The Telegram lane (design 0009 L5, plan 0006 item 5).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_telegram_message_is_answered_into_its_own_log_and_never_into_the_record() {
+    // One poll of the free lane against a fake Bot API and the empty chain. A
+    // text message naming an address is answered -- into `telegram.jsonl`, with
+    // a `tg:` summoner and a `chat:message` id -- and `replies.jsonl`, the
+    // record the contest reads, is never created. A sticker in the same page
+    // is skipped and still acknowledged: the offset lands one past the largest
+    // update id, sticker included, or Telegram re-sends it on every poll.
+    //
+    // Re-applied two ways. Writing the entry to `paths.log` instead of
+    // `paths.telegram_log`: the record exists and the second assertion fails.
+    // Taking the offset from the last mention rather than the largest update
+    // id: 42 instead of 43 and the cursor assertion fails.
+    let mint = "So11111111111111111111111111111111111111112";
+    let page = format!(
+        r#"{{"ok":true,"result":[
+          {{"update_id":41,"message":{{"message_id":7,"from":{{"id":9001}},"chat":{{"id":-100777}},"text":"@radar_bot {mint}"}}}},
+          {{"update_id":42,"message":{{"message_id":8,"from":{{"id":9002}},"chat":{{"id":-100777}},"sticker":{{"file_id":"s"}}}}}}
+        ]}}"#
+    );
+    let (base, seen) = platform(&page);
+    let (rpc, _stop, requests) = empty_chain();
+    let dir = workspace("telegram");
+    let paths = Paths::under(&dir);
+    let bot = radar_analyst::telegram::Telegram::at(base, "1:token");
+    let mut gate = Gate::new(open_limits(), Vec::new());
+    let client = radar_onchain::RpcClient::new(rpc);
+
+    let answered = radar_analyst::telegram::tick(
+        Some(&bot),
+        &DryRun,
+        &mut gate,
+        &client,
+        None,
+        None,
+        None,
+        None,
+        &paths,
+    );
+    assert_eq!(answered, 0, "a dry run sends nothing");
+    assert!(
+        requests.load(std::sync::atomic::Ordering::Relaxed) > 0,
+        "the chain was read"
+    );
+
+    let request = seen
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the bot api saw a request");
+    assert!(request.contains("/bot1:token/getUpdates"), "{request}");
+    assert!(request.contains("allowed_updates="), "{request}");
+
+    let logged = radar_analyst::log::latest(&paths.telegram_log).expect("the telegram log");
+    assert_eq!(logged.len(), 1, "{logged:?}");
+    assert_eq!(logged[0].mention_id, "-100777:7");
+    assert_eq!(logged[0].summoner, "tg:9001");
+    assert_eq!(logged[0].mint.as_deref(), Some(mint));
+    assert!(logged[0].reply_id.is_none(), "dry run");
+    assert_eq!(logged[0].signals, Some(Vec::new()));
+    assert!(
+        !std::path::Path::new(&paths.log).exists(),
+        "a Telegram answer is not in the record"
+    );
+    assert!(
+        !std::path::Path::new(&paths.cursor).exists(),
+        "and does not move the X cursor"
+    );
+    assert_eq!(
+        radar_analyst::read_cursor(&paths.telegram_cursor).as_deref(),
+        Some("43"),
+        "one past the largest update id, sticker included"
+    );
+}
+
+#[test]
+fn a_telegram_reply_that_is_sent_is_counted_and_remembered_by_the_gate() {
+    // The success path: the publisher posts, the entry carries the id, the
+    // count comes back, and the gate is told -- so the same coin is refused
+    // as already answered on the next poll rather than answered twice. CI's
+    // mutants turned the counter's `+=` into `-=` and `*=` with nothing
+    // failing, because the other Telegram test publishes through the dry run.
+    let mint = "So11111111111111111111111111111111111111112";
+    let page = format!(
+        r#"{{"ok":true,"result":[
+          {{"update_id":51,"message":{{"message_id":9,"from":{{"id":9001}},"chat":{{"id":-100777}},"text":"@radar_bot {mint}"}}}}
+        ]}}"#
+    );
+    let (base, _seen) = platform(&page);
+    let (rpc, _stop, _requests) = empty_chain();
+    let dir = workspace("telegram-sent");
+    let paths = Paths::under(&dir);
+    let bot = radar_analyst::telegram::Telegram::at(base, "1:token");
+    let mut gate = Gate::new(open_limits(), Vec::new());
+    let client = radar_onchain::RpcClient::new(rpc);
+
+    let answered = radar_analyst::telegram::tick(
+        Some(&bot),
+        &Posts,
+        &mut gate,
+        &client,
+        None,
+        None,
+        None,
+        None,
+        &paths,
+    );
+    assert_eq!(answered, 1, "one message answered and sent");
+    let logged = radar_analyst::log::latest(&paths.telegram_log).expect("the telegram log");
+    assert_eq!(logged.len(), 1);
+    assert_eq!(logged[0].reply_id.as_deref(), Some("posted--100777:9"));
+
+    // The same page again: the fake does not honour the offset, so the same
+    // message comes back, and the gate's dedupe refuses it as already answered.
+    let again = radar_analyst::telegram::tick(
+        Some(&bot),
+        &Posts,
+        &mut gate,
+        &client,
+        None,
+        None,
+        None,
+        None,
+        &paths,
+    );
+    assert_eq!(again, 0, "the gate remembered the mint");
+    assert_eq!(
+        radar_analyst::log::latest(&paths.telegram_log)
+            .expect("log")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn with_no_telegram_token_the_lane_reads_nothing_and_writes_nothing() {
+    let (rpc, _stop, requests) = empty_chain();
+    let dir = workspace("telegram-off");
+    let paths = Paths::under(&dir);
+    let mut gate = Gate::new(open_limits(), Vec::new());
+    let client = radar_onchain::RpcClient::new(rpc);
+    let answered = radar_analyst::telegram::tick(
+        None, &DryRun, &mut gate, &client, None, None, None, None, &paths,
+    );
+    assert_eq!(answered, 0);
+    assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 0);
+    assert!(!std::path::Path::new(&paths.telegram_log).exists());
+    assert!(!std::path::Path::new(&paths.telegram_cursor).exists());
+}

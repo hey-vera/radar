@@ -790,6 +790,28 @@ radar-analyst: RADAR_X_PUBLISH=on but there is no signing credential, so every r
 radar-analyst: LIVE -- replies are being posted publicly.
 ```
 
+### Telegram: the free lane, on a second bot
+
+Design 0009 L5: X is the public record and the contest; Telegram is where the
+same question costs nothing to answer, so it is where the volume goes. The
+daemon runs both lanes from one process and one env file, with the same parser,
+the same gate shape and the same fact path — only the transport differs.
+
+Three things are deliberately separate. **The token** is a different bot from
+the alert channel's (`RADAR_TELEGRAM_BOT_TOKEN`; make it in BotFather and never
+reuse the alert bot's, or a stranger's message can land in the alert chat).
+**The caps** are `RADAR_TELEGRAM_PER_SUMMONER_DAILY`, `RADAR_TELEGRAM_GLOBAL_DAILY`
+and `RADAR_TELEGRAM_DEDUPE_SECONDS`, unset meaning zero meaning refuse. **The
+log** is `telegram.jsonl` beside `replies.jsonl`, and nothing that scores the
+contest reads it — a Telegram answer is kept out of the record by being in a
+different file, not by a flag.
+
+The lane has the same two switches as X: the token makes it read and answer
+into `telegram.jsonl`; `RADAR_TELEGRAM_PUBLISH=on` makes it reply in the chat.
+The daemon prints which state the lane is in on every start, on the line after
+the X posture, and `radar brief`'s `analyst` line gains a telegram count once
+the file exists.
+
 ### Two credentials, because the platform needs two
 
 Reading mentions and posting replies do **not** take the same credential.

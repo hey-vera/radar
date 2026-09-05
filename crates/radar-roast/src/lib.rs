@@ -50,12 +50,13 @@ pub mod voice;
 
 pub use baserates::BaseRates;
 pub use creator::{CreatorIndex, Population};
-pub use sheet::{Fact, FactSheet};
+pub use sheet::{About, Fact, FactSheet};
 pub use verdict::{Verdict, template};
 pub use voice::{Fellback, Reply, write};
 
 use radar_model::Provider;
 use radar_onchain::Dossier;
+use radar_types::Address;
 
 /// Builds the reply for a dossier.
 ///
@@ -64,14 +65,20 @@ use radar_onchain::Dossier;
 /// none is an error, and every one of them makes the reply **say less rather
 /// than say more**, which is the only safe direction for a system whose claim
 /// is that it states what it measured.
+///
+/// `self_mint` is the analyst's own token, or `None` when no token is special.
+/// It is a required argument rather than a builder step a caller could omit,
+/// because ADR 0013 constraint 5 is a property of every reply and a caller that
+/// forgot it would produce a reply that looked exactly right.
 #[must_use]
 pub fn roast(
     dossier: &Dossier,
     rates: Option<&BaseRates>,
     creators: Option<&CreatorIndex>,
     provider: Option<&dyn Provider>,
+    self_mint: Option<&Address>,
 ) -> (FactSheet, Reply) {
-    let sheet = FactSheet::build(dossier, rates, creators);
+    let sheet = FactSheet::build(dossier, rates, creators, self_mint);
     let reply = write(&sheet, provider);
     (sheet, reply)
 }

@@ -99,11 +99,19 @@ pub fn run(args: &[String]) -> Result<(), String> {
         );
     }
 
+    // ADR 0013 constraint 5: the analyst's own token never has its price or
+    // market cap stated. Read the way the daemon reads it and refused the same
+    // way -- a mint that will not parse is the rule silently switched off for
+    // the real token, so the command stops rather than printing a reply that
+    // looks right.
+    let self_mint = radar_analyst::daemon::self_mint_from(&|k| std::env::var(k).ok())?;
+
     let (sheet, reply) = radar_roast::roast(
         &dossier,
         rates.as_ref(),
         creators.as_ref(),
         provider.as_deref(),
+        self_mint.as_ref(),
     );
 
     if wants_sheet(args) {

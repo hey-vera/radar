@@ -295,6 +295,20 @@ by re-applying the bug it prevents:
 - **The gate refuses before the chain is read**, because the read is the
   expensive part.
 
+**The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
+design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet
+builder drops every `About::Price` fact for the mint in `RADAR_SELF_MINT` before
+the model sees the sheet, leaving one line that says why. **No fact on the sheet
+is a price today** — the builder emits structure, history, depth, cost and
+population — so the rule has nothing to drop yet; it exists so the first price
+or market-cap fact anyone adds is withheld for the analyst's own token by
+construction. The residual, stated: `Fact::exact` and `Fact::share` tag a
+measurement, so an author adding a market-cap line through them has to choose
+`About::Price` themselves, and nothing makes the compiler ask. A
+`RADAR_SELF_MINT` that is set and will not parse idles the daemon rather than
+running with the rule off; unset means no token is special, which is the right
+configuration until the token exists.
+
 Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
 against the chain and append-only against its own log.
 

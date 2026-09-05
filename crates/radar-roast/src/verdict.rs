@@ -242,7 +242,7 @@ fn short(label: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sheet::Fact;
+    use crate::sheet::{About, Fact};
 
     /// A sheet shaped like the real ones the box produced on 2026-09-04: a
     /// creator with a long record, the population beside it, the launch block,
@@ -258,16 +258,19 @@ mod tests {
                 // happened: written with one band, it passed, and against a
                 // real sheet it published $0.20-$2's 3042 bps.
                 Fact {
+                    about: About::Measurement,
                     label: "round trip for a position of $0.20-$2".to_owned(),
                     rendered: "3042 bps (30.4%)".to_owned(),
                     values: vec![3042.0, 30.4],
                 },
                 Fact {
+                    about: About::Measurement,
                     label: "round trip for a position of $2-$20".to_owned(),
                     rendered: "250 bps (2.5%)".to_owned(),
                     values: vec![250.0, 2.5],
                 },
                 Fact {
+                    about: About::Measurement,
                     label: "round trip for a position of $20-$200".to_owned(),
                     rendered: "456 bps (4.6%)".to_owned(),
                     values: vec![456.0, 4.6],
@@ -419,6 +422,7 @@ mod tests {
         let wanted = LEAD[0];
         let mut s = sheet();
         s.facts = vec![Fact {
+            about: About::Measurement,
             label: wanted.to_owned(),
             rendered: String::new(),
             values: vec![],

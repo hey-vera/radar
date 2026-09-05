@@ -135,6 +135,78 @@ pub fn limits_from(get: &impl Fn(&str) -> Option<String>) -> Limits {
     }
 }
 
+/// Whether this instance may actually say anything in public.
+///
+/// # Why this is not the credential
+///
+/// It was. The token was both the reader and the publisher, so pasting it into
+/// `/etc/radar/analyst.env` turned a silent instance into a public account in
+/// one step — and there was no way to read live mentions while answering
+/// nobody.
+///
+/// That is the wrong shape for two reasons. The launch gate in design 0007 asks
+/// for a hundred replies to be **read beside their fact sheets** before anybody
+/// outside sees one, and with one switch that gate could only be satisfied by
+/// publishing the hundred. And on 2026-09-04 two wrong figures were found in the
+/// reply path in a single day — a cost 6.7× too high, and a charge signed as a
+/// gain — both by looking at real output. The first hundred replies are exactly
+/// where the next one gets found, and they should not be found in public.
+///
+/// So speaking is its own decision. Rule 8: the most consequential action here
+/// requires somebody to type a word, not merely to have pasted a token.
+///
+/// Anything other than `on` is off, including `true`, `1` and `yes`. A ceiling
+/// spelled wrongly must not read as permission, and neither must this — the
+/// value is checked against exactly one word so that a typo fails closed and
+/// the log says which state it is in.
+#[must_use]
+pub fn may_publish(get: &impl Fn(&str) -> Option<String>) -> bool {
+    get("RADAR_X_PUBLISH").is_some_and(|v| v.trim().eq_ignore_ascii_case("on"))
+}
+
+/// What the daemon says about which of the three states it is in.
+///
+/// Three, not two, and the middle one is the whole point of [`may_publish`]:
+/// no credential at all; a credential that reads but does not speak; and a live
+/// account. An operator must be able to tell the second from the third at a
+/// glance, because they look identical from everywhere except the reply log.
+#[must_use]
+pub fn posture(has_credential: bool, publishing: bool) -> &'static str {
+    match (has_credential, publishing) {
+        (false, _) => "radar-analyst: no credential, so nothing is read and nothing is posted.",
+        (true, false) => {
+            "radar-analyst: reading mentions and answering them to the log ONLY -- \
+             set RADAR_X_PUBLISH=on to speak in public."
+        }
+        (true, true) => "radar-analyst: LIVE -- replies are being posted publicly.",
+    }
+}
+
+/// Which publisher the loop speaks through.
+///
+/// # Why this is a function
+///
+/// It was three lines inside [`run`], and `run` never returns, so nothing could
+/// call it. Mutation testing said so precisely: deleting the arm that selects the
+/// live client left every test passing, and the resulting daemon is one that
+/// holds a valid credential, is switched on, and silently posts nothing.
+///
+/// That is the single most consequential line in this crate in the direction
+/// nobody notices. A daemon that wrongly *posts* is caught within a minute by
+/// anybody looking at the account; a daemon that wrongly *stays silent* looks
+/// exactly like a quiet week, which the `analyst` check in `radar brief` is
+/// deliberately built not to alarm about.
+///
+/// So the choice is out here where a test can make it, and `Publisher::name`
+/// is what the test reads.
+#[must_use]
+pub fn publisher_for(x: Option<X>, publishing: bool) -> Box<dyn Publisher> {
+    match (x, publishing) {
+        (Some(client), true) => Box::new(client),
+        _ => Box::new(DryRun),
+    }
+}
+
 /// Runs the loop. Never returns.
 pub fn run() -> ! {
     let dir = env("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned());
@@ -144,14 +216,14 @@ pub fn run() -> ! {
     }
     let paths = Paths::under(&dir);
 
-    // The source and the publisher are the same credential. Absent, the loop
-    // reads nothing and posts nothing -- which is the resting state, and it is
-    // reported rather than assumed.
+    // The credential is the **source**. Speaking is a separate decision, and
+    // `may_publish` says why. Absent the credential the loop reads nothing and
+    // posts nothing; present but not switched on, it reads and answers into the
+    // log, which is the state the launch gate is read in.
     let x = X::from_env();
-    let publisher: Box<dyn Publisher> = match &x {
-        Some(client) => Box::new(client.clone()),
-        None => Box::new(DryRun),
-    };
+    let publishing = may_publish(&env);
+    let publisher = publisher_for(x.clone(), publishing);
+    eprintln!("{}", posture(x.is_some(), publishing));
 
     let Some(prices) = Prices::from_vars(&env) else {
         // Not an exit. A price list is a spending decision and its absence is a
@@ -457,5 +529,86 @@ mod tests {
         assert_ne!(paths.log, paths.cursor);
         assert_ne!(paths.cursor, paths.ledger);
         assert_ne!(paths.log, paths.ledger);
+    }
+
+    /// A getter over a fixed list, so nothing touches the process environment.
+    fn vars<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<String> + 'a {
+        move |k: &str| {
+            pairs
+                .iter()
+                .find(|(name, _)| *name == k)
+                .map(|(_, v)| (*v).to_owned())
+        }
+    }
+
+    #[test]
+    fn speaking_in_public_needs_its_own_word() {
+        // The switch this exists for. A credential makes the account *readable*;
+        // it must not make it *audible*, because the launch gate asks for a
+        // hundred replies to be read beside their fact sheets first and there
+        // was no way to do that without publishing them.
+        assert!(may_publish(&vars(&[("RADAR_X_PUBLISH", "on")])));
+        assert!(may_publish(&vars(&[("RADAR_X_PUBLISH", "ON")])));
+        assert!(may_publish(&vars(&[("RADAR_X_PUBLISH", "  on  ")])));
+    }
+
+    #[test]
+    fn anything_that_is_not_that_word_is_silence() {
+        // Including every value an operator might reasonably expect to work.
+        // A ceiling spelled wrongly must not read as permission, and this is a
+        // ceiling on speech.
+        //
+        // `true`, `1` and `yes` are here deliberately: each one is somebody
+        // confidently enabling the account and getting silence, which is the
+        // safe direction and is reported by `posture` rather than left a
+        // mystery.
+        for value in ["", " ", "off", "true", "1", "yes", "no", "onn", "n"] {
+            assert!(
+                !may_publish(&vars(&[("RADAR_X_PUBLISH", value)])),
+                "{value:?} must not enable publishing"
+            );
+        }
+        assert!(!may_publish(&vars(&[])), "absent is silence");
+    }
+
+    /// A client that is never called — only [`Publisher::name`] is read.
+    fn a_client() -> X {
+        X::at("https://example.test", "bearer", "u42")
+    }
+
+    #[test]
+    fn only_a_credential_that_is_switched_on_speaks() {
+        // CI found this by deleting the arm that selects the live client and
+        // watching every test pass. The daemon that leaves behind holds a valid
+        // credential, is switched on, and silently posts nothing.
+        //
+        // It is the failure direction nobody notices: a daemon that wrongly
+        // posts is caught within a minute by anybody looking at the account, and
+        // one that wrongly stays silent looks exactly like a quiet week — which
+        // `radar brief`'s analyst check is deliberately built not to alarm on.
+        assert_eq!(publisher_for(Some(a_client()), true).name(), "x");
+
+        // Every other combination is silence, and each is a real state: no
+        // credential yet; a credential being read beside its fact sheets before
+        // anybody outside sees a reply; and the switch on with nothing to speak
+        // through, which must not be mistaken for the first case.
+        assert_eq!(publisher_for(Some(a_client()), false).name(), "dry-run");
+        assert_eq!(publisher_for(None, true).name(), "dry-run");
+        assert_eq!(publisher_for(None, false).name(), "dry-run");
+    }
+
+    #[test]
+    fn the_three_states_are_told_apart_in_words() {
+        // Reading-but-silent and live look identical from everywhere except the
+        // reply log, so the daemon says which it is on every start.
+        assert!(posture(false, false).contains("no credential"));
+        assert!(posture(true, false).contains("log ONLY"));
+        assert!(posture(true, false).contains("RADAR_X_PUBLISH=on"));
+        assert!(posture(true, true).contains("LIVE"));
+
+        // A credential is required to speak, so "publishing without one" is not
+        // a state that can exist -- and if it ever did, it must not be reported
+        // as live.
+        assert!(posture(false, true).contains("no credential"));
     }
 }

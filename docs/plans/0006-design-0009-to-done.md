@@ -60,11 +60,21 @@ time.
       by an empty 200, and the record filename rule's `&&` — and the second
       commit reads the three bodies at the router and pins both halves of
       the name rule; each re-applied by hand, each failing its test
-- [ ] 3. **M6 — the fee after graduation, measured.** Capture a PumpSwap swap
+- [x] 3. **M6 — the fee after graduation, measured.** Capture a PumpSwap swap
       for a graduated pump.fun token; does it pass the fee program and its
       config; re-read the schedule today; write research 0028; correct the pool
       page copy only if the chain disagrees with 30 bps.
-      gate: the note carries the query and the transaction; conformance green
+      done: 2026-09-05, `docs/research/0028-the-fee-after-graduation-is-a-ladder.md`.
+      The fee program keeps a 25-row schedule for the PumpSwap AMM, read by
+      `fees.rs` unchanged and captured in
+      `crates/radar-pumpfun/tests/fixtures/pumpswap_fees.json`; six tests in
+      `crates/radar-pumpfun/tests/the_fee_after_graduation_is_a_ladder.rs`
+      walk the ladder and the fossils. A buy and a sell pass the fee program
+      and pay the rows to the lamport. The chain disagrees with a flat 30 bps
+      above 420 SOL of market cap, so the pool page, ADR 0013 and design 0009
+      §1 now say which fee is which; the site test asserts the qualifier and
+      fails with it removed. Open: two of six pools paid a row a higher cap
+      selects — recorded as a hypothesis, not coded
 - [ ] 4. **Refusal signals counted at answer time** (M3's other half, and
       0007 B's live gate): a signal count on the fact sheet, carried on the
       reply log entry; the three X-shaped adversarial cases — an instruction in
@@ -115,10 +125,11 @@ time.
 
 ## Handback
 
-Stopped at: items 1, 2 and 9 done. Item 1 is PR #147; item 2 is stacked on
-it as `feat/public-endpoints`.
-Next action: item 3, the post-graduation fee, measured — a research note, no
-deploy. Then item 4. Merge #147 first so item 3's branch comes off `main`.
+Stopped at: items 1, 2, 3 and 9 done. Item 1 is PR #147; item 2 is stacked
+on it as `feat/public-endpoints` (PR #148); item 3 is stacked on that as
+`research/0028-the-fee-after-graduation`. All three wait on merge permission.
+Next action: item 4, the refusal-signal count on the log entry and the three
+X-shaped adversarial cases. Then item 5.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

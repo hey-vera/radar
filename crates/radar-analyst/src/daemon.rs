@@ -182,6 +182,31 @@ pub fn posture(has_credential: bool, publishing: bool) -> &'static str {
     }
 }
 
+/// Which publisher the loop speaks through.
+///
+/// # Why this is a function
+///
+/// It was three lines inside [`run`], and `run` never returns, so nothing could
+/// call it. Mutation testing said so precisely: deleting the arm that selects the
+/// live client left every test passing, and the resulting daemon is one that
+/// holds a valid credential, is switched on, and silently posts nothing.
+///
+/// That is the single most consequential line in this crate in the direction
+/// nobody notices. A daemon that wrongly *posts* is caught within a minute by
+/// anybody looking at the account; a daemon that wrongly *stays silent* looks
+/// exactly like a quiet week, which the `analyst` check in `radar brief` is
+/// deliberately built not to alarm about.
+///
+/// So the choice is out here where a test can make it, and `Publisher::name`
+/// is what the test reads.
+#[must_use]
+pub fn publisher_for(x: Option<X>, publishing: bool) -> Box<dyn Publisher> {
+    match (x, publishing) {
+        (Some(client), true) => Box::new(client),
+        _ => Box::new(DryRun),
+    }
+}
+
 /// Runs the loop. Never returns.
 pub fn run() -> ! {
     let dir = env("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned());
@@ -197,10 +222,7 @@ pub fn run() -> ! {
     // log, which is the state the launch gate is read in.
     let x = X::from_env();
     let publishing = may_publish(&env);
-    let publisher: Box<dyn Publisher> = match (&x, publishing) {
-        (Some(client), true) => Box::new(client.clone()),
-        _ => Box::new(DryRun),
-    };
+    let publisher = publisher_for(x.clone(), publishing);
     eprintln!("{}", posture(x.is_some(), publishing));
 
     let Some(prices) = Prices::from_vars(&env) else {
@@ -547,6 +569,32 @@ mod tests {
             );
         }
         assert!(!may_publish(&vars(&[])), "absent is silence");
+    }
+
+    /// A client that is never called — only [`Publisher::name`] is read.
+    fn a_client() -> X {
+        X::at("https://example.test", "bearer", "u42")
+    }
+
+    #[test]
+    fn only_a_credential_that_is_switched_on_speaks() {
+        // CI found this by deleting the arm that selects the live client and
+        // watching every test pass. The daemon that leaves behind holds a valid
+        // credential, is switched on, and silently posts nothing.
+        //
+        // It is the failure direction nobody notices: a daemon that wrongly
+        // posts is caught within a minute by anybody looking at the account, and
+        // one that wrongly stays silent looks exactly like a quiet week — which
+        // `radar brief`'s analyst check is deliberately built not to alarm on.
+        assert_eq!(publisher_for(Some(a_client()), true).name(), "x");
+
+        // Every other combination is silence, and each is a real state: no
+        // credential yet; a credential being read beside its fact sheets before
+        // anybody outside sees a reply; and the switch on with nothing to speak
+        // through, which must not be mistaken for the first case.
+        assert_eq!(publisher_for(Some(a_client()), false).name(), "dry-run");
+        assert_eq!(publisher_for(None, true).name(), "dry-run");
+        assert_eq!(publisher_for(None, false).name(), "dry-run");
     }
 
     #[test]

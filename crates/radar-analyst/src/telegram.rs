@@ -56,6 +56,12 @@ pub const API: &str = "https://api.telegram.org";
 pub struct Telegram {
     token: String,
     base: String,
+    /// The chat the weekly and daily posts go to, or `None`.
+    ///
+    /// `RADAR_TELEGRAM_CHANNEL`. Replies need no channel -- they go where the
+    /// question was -- so a bot with a token and no channel answers people and
+    /// posts nothing on its own, and [`Publisher::post`] says so.
+    channel: Option<String>,
 }
 
 impl core::fmt::Debug for Telegram {
@@ -66,6 +72,7 @@ impl core::fmt::Debug for Telegram {
         f.debug_struct("Telegram")
             .field("token", &"<redacted>")
             .field("base", &self.base)
+            .field("channel", &self.channel)
             .finish()
     }
 }
@@ -105,16 +112,33 @@ impl Telegram {
         Some(Self {
             token: token.trim().to_owned(),
             base: get("RADAR_TELEGRAM_API_BASE").unwrap_or_else(|| API.to_owned()),
+            channel: get("RADAR_TELEGRAM_CHANNEL")
+                .map(|c| c.trim().to_owned())
+                .filter(|c| !c.is_empty()),
         })
     }
 
-    /// A bot pointed at a different root, for tests.
+    /// A bot pointed at a different root, for tests. No channel.
     #[must_use]
     pub fn at(base: impl Into<String>, token: impl Into<String>) -> Self {
         Self {
             token: token.into(),
             base: base.into(),
+            channel: None,
         }
+    }
+
+    /// The same bot, posting its own posts into `channel`.
+    #[must_use]
+    pub fn with_channel(mut self, channel: impl Into<String>) -> Self {
+        self.channel = Some(channel.into());
+        self
+    }
+
+    /// Where the bot's own posts go, if anywhere.
+    #[must_use]
+    pub fn channel(&self) -> Option<&str> {
+        self.channel.as_deref()
     }
 
     /// The `getUpdates` URL for everything after `offset`.
@@ -307,6 +331,22 @@ impl Publisher for Telegram {
         let body = send_body(in_reply_to, text).ok_or_else(|| {
             Undeliverable::Failed(format!("not a chat:message id: {in_reply_to}"))
         })?;
+        let response = self
+            .send(&body)
+            .map_err(|e| Undeliverable::Failed(e.to_string()))?;
+        parse_sent_id(&response).map_err(|e| Undeliverable::Failed(e.to_string()))
+    }
+
+    fn post(&self, text: &str) -> Result<String, Undeliverable> {
+        let Some(channel) = &self.channel else {
+            return Err(Undeliverable::Unconfigured);
+        };
+        let body = serde_json::json!({
+            "chat_id": channel,
+            "text": text,
+            "disable_web_page_preview": true,
+        })
+        .to_string();
         let response = self
             .send(&body)
             .map_err(|e| Undeliverable::Failed(e.to_string()))?;
@@ -589,6 +629,27 @@ mod tests {
             );
         }
         assert!(!may_publish(&vars(&[])));
+    }
+
+    #[test]
+    fn a_blank_channel_is_no_channel_and_a_bot_without_one_posts_nothing_on_its_own() {
+        // Re-applied by dropping the `!` in the channel filter: a blank
+        // channel is kept and the bot would post into "" -- the first
+        // assertion fails.
+        let token = ("RADAR_TELEGRAM_BOT_TOKEN", "1:a");
+        let blank =
+            Telegram::from_vars(&vars(&[token, ("RADAR_TELEGRAM_CHANNEL", "  ")])).expect("a bot");
+        assert_eq!(blank.channel(), None);
+        assert!(matches!(blank.post("x"), Err(Undeliverable::Unconfigured)));
+        let none = Telegram::from_vars(&vars(&[token])).expect("a bot");
+        assert_eq!(none.channel(), None);
+        let set = Telegram::from_vars(&vars(&[token, ("RADAR_TELEGRAM_CHANNEL", " -100777 ")]))
+            .expect("a bot");
+        assert_eq!(set.channel(), Some("-100777"));
+        assert_eq!(
+            Telegram::at("b", "t").with_channel("@radar").channel(),
+            Some("@radar")
+        );
     }
 
     #[test]

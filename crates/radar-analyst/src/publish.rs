@@ -70,6 +70,22 @@ pub trait Publisher: core::fmt::Debug {
     ///
     /// [`Undeliverable`] when there is no credential or the platform refused.
     fn reply(&self, in_reply_to: &str, text: &str) -> Result<String, Undeliverable>;
+
+    /// Publishes a top-level post -- the weekly result, the daily "seven days
+    /// later" -- returning its id.
+    ///
+    /// A different product from a reply and, on X, a different price (design
+    /// 0007 §11), which is why it is a separate method rather than `reply`
+    /// with no parent: a caller cannot post to the timeline by forgetting an
+    /// argument. Required, not defaulted -- a default that returned
+    /// [`Undeliverable::Unconfigured`] would make a live publisher silently
+    /// post nothing, which is the failure direction nobody notices.
+    ///
+    /// # Errors
+    ///
+    /// [`Undeliverable`] when there is no credential, no channel to post into,
+    /// or the platform refused.
+    fn post(&self, text: &str) -> Result<String, Undeliverable>;
 }
 
 /// A publisher that writes the reply down and posts nothing.
@@ -89,6 +105,10 @@ impl Publisher for DryRun {
         // Not an error dressed as success: no reply id exists because no reply
         // exists. `Entry::reply_id` stays `None`, and the log therefore records
         // what Radar would have said rather than claiming it said it.
+        Err(Undeliverable::Unconfigured)
+    }
+
+    fn post(&self, _text: &str) -> Result<String, Undeliverable> {
         Err(Undeliverable::Unconfigured)
     }
 }
@@ -237,6 +257,9 @@ mod tests {
             *self.seen.lock().expect("not poisoned") = lines;
             Ok("reply-1".to_owned())
         }
+        fn post(&self, _: &str) -> Result<String, Undeliverable> {
+            Ok("post-1".to_owned())
+        }
     }
 
     #[test]
@@ -271,6 +294,9 @@ mod tests {
         }
         fn reply(&self, _: &str, _: &str) -> Result<String, Undeliverable> {
             Ok("reply-1".to_owned())
+        }
+        fn post(&self, _: &str) -> Result<String, Undeliverable> {
+            Ok("post-1".to_owned())
         }
     }
 

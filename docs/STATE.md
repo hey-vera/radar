@@ -333,6 +333,25 @@ lane's state on start; `radar brief` counts it once the file exists. **Nothing
 has been sent through it**: there is no bot token on the box, and the box does
 not run the analyst.
 
+**The week closes and the account has two appointments, as of 2026-09-05**
+(design 0009 §7, M2, M4; plan 0006 item 6). On the first tick after Monday
+00:00 UTC, `contest.rs` reads the closed week's published replies from the
+log, their public metrics and the entrants' account ages from X, the week's
+refusals from `refusals.jsonl` — which the gate now writes — and earlier
+records for the cooldown, applies the published rule, and writes
+`data/contest/<week>.json` and the hunter tally beside it, atomically. A reply
+the platform returned no metrics for is excluded as unscored, never scored
+zero. Then `weekly.rs` posts the result under 280 characters — counts, the top
+reply's score and URL, the pool in SOL, never a price, never a handle — with
+the winning coin's fact sheet as the reply, every numeral on an authorised
+list the same fidelity and forbidden checks read. Daily at 12:00 UTC,
+`daily.rs` posts "seven days later" from a file `radar seven-days-later`
+writes on a timer: the join of week-old replies against the store's outcomes,
+which the daemon is not allowed to make itself. Both go to X, priced as a
+top-level post (`RADAR_X_PRICE_POST`, the fifth required price), and to a
+Telegram channel when one is configured. **Nothing has been posted**, for the
+same reason nothing has been replied to.
+
 **The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
 design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet
 builder drops every `About::Price` fact for the mint in `RADAR_SELF_MINT` before

@@ -812,6 +812,38 @@ The daemon prints which state the lane is in on every start, on the line after
 the X posture, and `radar brief`'s `analyst` line gains a telegram count once
 the file exists.
 
+### The two appointments: the week's result and "seven days later"
+
+Design 0009 §7. Both are posts the account makes on its own, and both are
+priced as a top-level post — `RADAR_X_PRICE_POST`, the fifth required price;
+with it unset the daemon answers nothing, as with the other four.
+
+**The week closes** on the first tick after Monday 00:00 UTC. The daemon reads
+the closed week's published replies from `replies.jsonl`, their public metrics
+and the entrants' account ages from X, the week's refusals from
+`refusals.jsonl` (which the gate writes), and the earlier records for the
+cooldown; applies the published rule; writes `data/contest/<week>.json` and
+`hunter-<week>.json` beside it. Then it posts the result — counts, the top
+reply's score and URL, the pool in SOL, never a price or a handle — with the
+winning coin's fact sheet as the reply. Every post is recorded in `posts.jsonl`
+before it is said and again after, like a reply. A week with entries and no X
+client is **not** closed; the daemon says so and tries next tick.
+
+**"Seven days later"** posts at 12:00 UTC from `data/analyst/daily/<date>.json`,
+which `radar seven-days-later` writes at 11:30 on a timer — the one join the
+analyst is not allowed to make, because it reads the store:
+
+```bash
+sudo install -D -m644 deploy/radar-seven-days.service /etc/systemd/system/radar-seven-days.service
+sudo install -D -m644 deploy/radar-seven-days.timer   /etc/systemd/system/radar-seven-days.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-seven-days.timer
+```
+
+No file, no post. No replies seven days ago, no post and a line in the journal.
+A `<date>.posted` marker stops a day being posted twice. With
+`RADAR_TELEGRAM_CHANNEL` set, both posts also go to that chat.
+
 ### Two credentials, because the platform needs two
 
 Reading mentions and posting replies do **not** take the same credential.

@@ -42,18 +42,42 @@ pub struct Paths {
     pub telegram_log: String,
     /// The Telegram lane's `getUpdates` offset.
     pub telegram_cursor: String,
+    /// Who the X gate refused, and when. The week-close job reads it: an
+    /// account refused during the week does not win it (design 0007 §6.2).
+    pub refusals: String,
+    /// The account's own posts -- the weekly result, the daily "seven days
+    /// later" -- recorded before they are said, like replies.
+    pub posts: String,
+    /// The contest's week records and the pool reading, which the public
+    /// endpoints serve.
+    pub contest_dir: String,
+    /// The daily "seven days later" rows, written by `radar seven-days-later`
+    /// on a timer and posted from here.
+    pub daily_dir: String,
 }
 
 impl Paths {
     /// Under one directory, so an operator moves one thing.
+    ///
+    /// The contest directory is a sibling rather than a child: `radar-serve`
+    /// reads it as `RADAR_CONTEST_DIR`, defaulting to `data/contest`, and the
+    /// two defaults have to name the same place.
     #[must_use]
     pub fn under(dir: &str) -> Self {
+        let contest_dir = std::path::Path::new(dir).parent().map_or_else(
+            || "data/contest".to_owned(),
+            |p| format!("{}/contest", p.display()),
+        );
         Self {
             log: format!("{dir}/replies.jsonl"),
             cursor: format!("{dir}/cursor"),
             ledger: format!("{dir}/ledger.json"),
             telegram_log: format!("{dir}/telegram.jsonl"),
             telegram_cursor: format!("{dir}/telegram.cursor"),
+            refusals: format!("{dir}/refusals.jsonl"),
+            posts: format!("{dir}/posts.jsonl"),
+            contest_dir,
+            daily_dir: format!("{dir}/daily"),
         }
     }
 }
@@ -288,6 +312,10 @@ pub fn publisher_for(x: Option<X>, publishing: bool) -> Box<dyn Publisher> {
 }
 
 /// Runs the loop. Never returns.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the daemon's start-up, read once top to bottom"
+)]
 pub fn run() -> ! {
     let dir = env("RADAR_ANALYST_DIR").unwrap_or_else(|| "data/analyst".to_owned());
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -405,6 +433,39 @@ pub fn run() -> ! {
             self_mint.as_ref(),
             &paths,
         );
+        // The week closes on the tick after Monday 00:00 UTC, once. The
+        // record is written first; the posts are written from the record.
+        let rules = radar_contest::Rules::published(x.as_ref().map_or("radar", X::user_id));
+        match crate::contest::close_if_due(
+            x.as_ref(),
+            &paths,
+            now(),
+            &rules,
+            limits.per_summoner_daily,
+        ) {
+            Ok(Some(record)) => announce_week(
+                &record,
+                publisher.as_ref(),
+                telegram_publisher.as_ref(),
+                &mut spend,
+                &client,
+                rates.as_ref(),
+                creators.as_ref(),
+                provider.as_deref(),
+                self_mint.as_ref(),
+                &paths,
+            ),
+            Ok(None) => {}
+            Err(e) => eprintln!("radar-analyst: cannot write the week's record: {e}"),
+        }
+        // The daily post, from the rows the timer job wrote, once past the
+        // hour. Priced as one top-level post when it goes out on X.
+        announce_day(
+            publisher.as_ref(),
+            telegram_publisher.as_ref(),
+            &mut spend,
+            &paths,
+        );
         wait = next_wait(found, found_telegram, wait);
         std::thread::sleep(wait);
     }
@@ -422,6 +483,138 @@ pub fn run() -> ! {
 #[must_use]
 pub fn next_wait(found: usize, found_telegram: usize, previous: Duration) -> Duration {
     poll::interval(found + found_telegram, previous)
+}
+
+/// Settles a post's reservation when something was sent and releases it when
+/// nothing was.
+///
+/// A reservation for a post that never left -- a dry run, a refused text, a
+/// publisher that failed -- must go back, or the day's budget is spent on
+/// posts nobody received; one that did leave is charged at what was reserved,
+/// because the platform reports no per-call price. A function because CI's
+/// mutants turned this `>` into `==` inside two functions nothing could call
+/// from a test, and a meter that settles the empty case and releases the
+/// real one is a meter that runs out on quiet weeks and never on busy ones.
+fn settle_if_sent(spend: &mut Spend, reservation: radar_provider::Commitment, sent: usize) {
+    if sent > 0 {
+        let charged = reservation.reserved();
+        spend.settle(reservation, charged);
+    } else {
+        spend.release(reservation);
+    }
+}
+
+/// Posts today's "seven days later" if it is due, metering the X post.
+fn announce_day(
+    publisher: &dyn Publisher,
+    telegram: &dyn Publisher,
+    spend: &mut Spend,
+    paths: &Paths,
+) {
+    let at = now();
+    if crate::daily::due(at, &paths.daily_dir).is_none() {
+        return;
+    }
+    let vault = std::fs::read_to_string(format!("{}/pool.json", paths.contest_dir))
+        .ok()
+        .and_then(|text| radar_contest::Vault::from_json(&text).ok());
+    let Ok(reservation) = spend.authorize(Cost::Post, day_of(at)) else {
+        eprintln!("radar-analyst: budget spent; today's post is not published");
+        return;
+    };
+    match crate::daily::post_if_due(
+        at,
+        &paths.daily_dir,
+        vault.as_ref(),
+        publisher,
+        &paths.posts,
+        telegram,
+        &paths.telegram_log,
+    ) {
+        Ok(sent) => settle_if_sent(spend, reservation, sent),
+        Err(e) => {
+            spend.release(reservation);
+            eprintln!("radar-analyst: cannot post the day: {e}");
+        }
+    }
+}
+
+/// Posts a closed week: the summary, then the winner's coin torn down as a
+/// reply to it, on X and -- when a channel is configured -- on Telegram.
+///
+/// The teardown reads the chain once for the winning mint, the way a summoned
+/// reply would, and is written by the same roaster under the same checks. A
+/// week with no winner posts the summary alone.
+#[allow(clippy::too_many_arguments)]
+fn announce_week(
+    record: &radar_contest::Record,
+    publisher: &dyn Publisher,
+    telegram: &dyn Publisher,
+    spend: &mut Spend,
+    client: &radar_onchain::RpcClient,
+    rates: Option<&BaseRates>,
+    creators: Option<&radar_roast::CreatorIndex>,
+    provider: Option<&dyn radar_model::Provider>,
+    self_mint: Option<&radar_types::Address>,
+    paths: &Paths,
+) {
+    let at = now();
+    let vault = std::fs::read_to_string(format!("{}/pool.json", paths.contest_dir))
+        .ok()
+        .and_then(|text| radar_contest::Vault::from_json(&text).ok());
+    let mut posts = vec![crate::weekly::summary(record, vault.as_ref())];
+
+    if let Some(winner) = record.ranking.winner() {
+        match winner.entry.mint.parse::<radar_types::Address>() {
+            Ok(mint) => {
+                let mut budget = radar_onchain::budget::Budget::default();
+                match radar_onchain::build(client, &mut budget, &mint) {
+                    Ok(dossier) => {
+                        let (sheet, reply) =
+                            radar_roast::roast(&dossier, rates, creators, provider, self_mint);
+                        posts.push(crate::weekly::teardown(&sheet, &reply));
+                    }
+                    Err(e) => {
+                        eprintln!("radar-analyst: no teardown, the chain could not be read: {e}");
+                    }
+                }
+            }
+            Err(_) => eprintln!("radar-analyst: no teardown, the winning mint is not an address"),
+        }
+    }
+
+    // One top-level post and up to one reply, priced as such. Refused by the
+    // meter means recorded and not said, like everything else here.
+    let today = day_of(at);
+    let Ok(reservation) = spend.authorize(Cost::Post, today) else {
+        eprintln!("radar-analyst: budget spent; the week's post is not published");
+        return;
+    };
+    match crate::weekly::publish(
+        publisher,
+        &paths.posts,
+        &format!("weekly:{}", record.week.0),
+        &posts,
+        at,
+    ) {
+        Ok(sent) => settle_if_sent(spend, reservation, sent),
+        Err(e) => {
+            spend.release(reservation);
+            eprintln!("radar-analyst: cannot write {}: {e}", paths.posts);
+            return;
+        }
+    }
+    // Free, and recorded in the same file under the same id so a reader sees
+    // both lanes side by side.
+    if let Err(e) = crate::weekly::publish(
+        telegram,
+        &paths.telegram_log,
+        &format!("weekly:{}", record.week.0),
+        &posts,
+        at,
+    ) {
+        eprintln!("radar-analyst: cannot write {}: {e}", paths.telegram_log);
+    }
 }
 
 /// Sleeps rather than exiting, so a misconfigured unit is visible as a running
@@ -528,6 +721,22 @@ pub fn tick(
                 // not published. They are still worth a line: an account that
                 // answers nothing should say what it is seeing.
                 eprintln!("radar-analyst: {} -> {other:?}", mention.id);
+                // A gate refusal is also a fact the contest needs: an account
+                // refused during the week does not win it. Appended, never
+                // fatal -- a refusal that could not be written is a line on
+                // the terminal, and the reply loop carries on.
+                if let Answered::Refused(why) = &other
+                    && let Err(e) = crate::contest::append_refusal(
+                        &paths.refusals,
+                        &crate::contest::RefusalLine {
+                            at,
+                            summoner: mention.author.clone(),
+                            why: crate::answer::describe(why),
+                        },
+                    )
+                {
+                    eprintln!("radar-analyst: cannot write {}: {e}", paths.refusals);
+                }
             }
         }
     }
@@ -548,6 +757,47 @@ pub fn tick(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_post_that_left_is_charged_and_one_that_did_not_is_given_back() {
+        // Re-applied as CI did: `>` to `==` charges the dry run and refunds the
+        // real post, and both assertions below fail.
+        let dir = std::env::temp_dir().join(format!("radar-daemon-settle-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a temp dir");
+        let ledger = dir.join("ledger.json").to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&ledger);
+        let prices = Prices {
+            mention_read: MicroUsd(1_000),
+            post_read: MicroUsd(5_000),
+            reply: MicroUsd(10_000),
+            post: MicroUsd(15_000),
+            model_call: MicroUsd(2_000),
+        };
+        let mut spend = Spend::open(
+            Budget {
+                per_call_max: MicroUsd(50_000),
+                daily_max: MicroUsd(1_000_000),
+            },
+            prices,
+            ledger,
+            1,
+        );
+        let reservation = spend.authorize(Cost::Post, 1).expect("authorised");
+        settle_if_sent(&mut spend, reservation, 0);
+        assert_eq!(
+            spend.spent_today(),
+            MicroUsd::ZERO,
+            "nothing left, nothing charged"
+        );
+
+        let reservation = spend.authorize(Cost::Post, 1).expect("authorised");
+        settle_if_sent(&mut spend, reservation, 2);
+        assert_eq!(
+            spend.spent_today(),
+            MicroUsd(15_000),
+            "a thread that left is one post's price"
+        );
+    }
 
     #[test]
     fn either_lane_finding_something_keeps_the_loop_busy() {

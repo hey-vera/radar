@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-seven-days.timer, then:
+#   sudo systemctl enable --now radar-seven-days.timer
+#
+# Once a day at 11:30 UTC, half an hour before the analyst posts "seven days
+# later" at 12:00 UTC (design 0009 L6). The job joins the analyst's reply log
+# with the store's outcomes and writes one file; the daemon reads it and posts.
+# If the job has not run, the daemon finds no file and posts nothing, which is
+# the honest state rather than a stale one.
+#
+# Persistent=true so a run missed while the box was down happens on boot; the
+# daemon only posts a file dated today, so a late run still lands on the right
+# day or not at all.
+[Unit]
+Description=Join a week-old day of Radar replies against the store's outcomes
+Documentation=https://github.com/hey-vera/radar
+
+[Timer]
+OnCalendar=*-*-* 11:30:00 UTC
+Persistent=true
+AccuracySec=5min
+Unit=radar-seven-days.service
+
+[Install]
+WantedBy=timers.target

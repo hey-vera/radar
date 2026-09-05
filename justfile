@@ -242,6 +242,11 @@ licence-headers:
 # added; never lower it to make a run go green.
 export MIN_WEB_TESTS := "173"
 
+# The public site at cabalhunter.org. Lower because it has four pages, and it
+# exists for the same reason MIN_WEB_TESTS does: `vitest run` exits zero when it
+# finds no test files at all, so a broken `include` turns the suite off silently.
+export MIN_SITE_TESTS := "19"
+
 # The interface: install exactly the locked dependencies, check them for known
 # advisories, type-check, test, and build.
 #
@@ -253,9 +258,27 @@ export MIN_WEB_TESTS := "173"
 # recipe with its own CI job, and `web/dist/.gitkeep` is what lets the crate
 # compile when nobody has run it.
 web:
+    just _npm_app web "$MIN_WEB_TESTS"
+
+# The public site: the same pipeline, on the other application.
+#
+# Also not part of `just ci`, and for the same reason -- but doubly so here,
+# because nothing in the Rust workspace embeds this one. It is uploaded to
+# static hosting, so a backend developer never needs to have built it.
+site:
+    just _npm_app site "$MIN_SITE_TESTS"
+
+# The pipeline both applications run: install exactly the locked dependencies,
+# check them for advisories, type-check, test against a floor, and build.
+#
+# Parameterised rather than copied. The audit-retry reasoning below cost two
+# days of red CI to work out, and a second copy of it would be a second copy to
+# keep correct -- the failure this repository has recorded three times under a
+# different name.
+_npm_app app floor:
     #!/usr/bin/env bash
     set -euo pipefail
-    cd web
+    cd {{app}}
     npm ci
     # `npm audit`, retried -- but only when it could not *run*.
     #
@@ -294,7 +317,7 @@ web:
     # `NO_COLOR` because the count is grepped out of this, and vitest wraps the
     # number in ANSI escapes that a naive pattern reads straight past -- which
     # would leave the floor comparing against an empty string forever.
-    NO_COLOR=1 npm run test 2>&1 | tee /tmp/radar-web-tests.log
+    NO_COLOR=1 npm run test 2>&1 | tee "/tmp/radar-{{app}}-tests.log"
     # The count, checked rather than trusted. `vitest run` exits zero when it
     # finds no test files at all, so a broken `include` pattern would turn the
     # whole suite off and still go green -- which is the failure LEARNINGS 5
@@ -303,14 +326,14 @@ web:
     # `|| true` on both: under `pipefail` a grep that matches nothing exits
     # non-zero and takes the recipe with it, which would report "no tests" as a
     # crash rather than as the floor failing.
-    passed=$(grep -oE 'Tests +[0-9]+ passed' /tmp/radar-web-tests.log || true)
+    passed=$(grep -oE 'Tests +[0-9]+ passed' "/tmp/radar-{{app}}-tests.log" || true)
     passed=$(echo "$passed" | grep -oE '[0-9]+' | head -1 || true)
     passed=${passed:-0}
-    if [ "$passed" -lt "$MIN_WEB_TESTS" ]; then
-      echo "--- $passed web tests passed, floor is $MIN_WEB_TESTS ---" >&2
+    if [ "$passed" -lt "{{floor}}" ]; then
+      echo "--- $passed {{app}} tests passed, floor is {{floor}} ---" >&2
       exit 1
     fi
-    echo "--- $passed web tests passed ---"
+    echo "--- $passed {{app}} tests passed ---"
     npm run build
 
 

@@ -38,6 +38,13 @@
 # which is the quieter version of the failure entry 13 records: not a claim that
 # was false, but a check that looked like a gate and was not one.
 #
+# `site` was added here on 2026-09-05 and is NOT in the ruleset yet -- that edit
+# needs admin and is Josh's. Until he makes it, the line below is exactly what
+# the paragraph above describes: a check that runs on every pull request, looks
+# like a gate, and blocks nothing. Said here rather than discovered later.
+#
+#   gh api -X PUT repos/hey-vera/radar/rules/... # or the ruleset UI
+#
 # There are no bypass actors, admins included. An override means editing the
 # ruleset, which is a deliberate act and leaves a trace -- the point, given how
 # this file read yesterday.
@@ -52,3 +59,4 @@ cargo-deny      = just cargo-deny
 msrv            = github-only: pinned toolchain, no local recipe (the host may not have 1.90 for its triple)
 mutants         = just mutants
 web             = just web
+site            = just site

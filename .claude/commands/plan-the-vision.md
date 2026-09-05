@@ -15,7 +15,11 @@ Its first commit moves it into the repository. No code.
 
 Design 0007 is the plan. Designs 0008 and 0009 extend it. On 2026-09-05 a check
 of every row found the foundation half-built and the vision not started; the
-table below is that check. A vision built on an unfinished foundation is the
+table below is that check, **refreshed at the end of the same day** after plan
+0006 (the plan file for design 0009, under docs/plans once the stack has
+merged) closed design 0009's remainder in eight stacked PRs, #147 to #154. Those PRs may or may not have merged when
+you read this; the table says which rows they cover so you can check `main`
+rather than trust it. A vision built on an unfinished foundation is the
 failure design 0004 records, so the document has two parts and Part A comes
 first, in the document and in the work:
 
@@ -58,23 +62,25 @@ table; it is where to look, not what is true.**
 | design | row | found | blocked on |
 |---|---|---|---|
 | 0007 A | fix what bites | done, except the alert file under `/etc/radar` which is root-owned | one root command from Josh |
-| 0007 B | the bot goes public | code complete; the unit file exists in `deploy/`; **not installed on the box, no `/etc/radar/analyst.env`**, no 24-hour live dry run, no X-shaped cases in the adversarial fixture, B6's weekly post unwritten | the X credential and Josh's two prices; the install is a root step |
-| 0007 C | the token and the contest | only C8, the self-mint rule (PR #145). No `new:crates/radar-contest/`, no `new:crates/radar-payout/` | the credential; J12's 30-day gate; the token |
+| 0007 B | the bot goes public | code complete, and since 2026-09-05 (PRs #150, #151, #152): the three X-shaped cases in the loop's end-to-end test, a Telegram lane, the weekly post (B6) and the daily "seven days later", the per-summoner cap charged on admission. **Still not installed on the box, no `/etc/radar/analyst.env`**, no 24-hour live dry run | the X credential and Josh's two prices (now five: `RADAR_X_PRICE_POST` joined them); the install is a root step |
+| 0007 C | the token and the contest | C1 the contest crate (#147), C2 the week-close job and C3 the claim (#152, #153), C4 `radar-payout` and C5 the fallback (#153), C7 the checklist and the brief's `contest`/`vault` lines (#154), C8 the self-mint rule (#145). **Nothing has run against a platform or a chain**; the `collect_creator_fee` account order is from the IDL, not a capture | the credential; J12's 30-day gate; the token; the devnet week |
 | 0007 D | manual-sign trading for humans | nothing built | an audience (B and C) |
 | 0007 E | the learning loop | E2 done (live base rates in the creator index). E1 features, E3 `radar edge`, E4 the organic cohort, E5 the weekly re-run: **not built, and nothing blocks them** | — |
 | 0007 F | repository and workflow | F1 partial (secret scanning and push protection on; Dependabot security updates off), F6 `just orient` done, F5 withdrawn. F2 deploy by tag, F3 reviewer agent, F4 PR template, F8 version and tags: not done. Workspace is 0.0.1 with no tags | — |
-| 0008 | the public site | phase 0 merged. Phase 1's three public endpoints and the OG image: not done. Phases 2 and 3 | the credential; the token |
-| 0009 | three loops | L1–L6 decided. M6 measure the post-graduation fee and M5 the Telegram publisher: **not built, and unblocked** (M5 needs a bot token, five minutes). M1–M4 | the credential; the launch |
+| 0008 | the public site | phase 0 merged. Phase 1's three public endpoints built (#148); phase 3's pool reading is written by `radar-payout` on every run (#153). **The OG image is still missing.** Phase 2 is item 6 of plan 0006 (#152) | the credential; the token; the domain |
+| 0009 | three loops | L1–L6 decided. M1–M6 all built (plan 0006, #147–#154): M6 is research 0028 — the fee after graduation is the venue's 25-row ladder, on chain; M5 the Telegram lane; M1–M4 the contest, the teardown post, the hunter tally, the daily post. **Open:** which ladder row applies when a coin's market cap has fallen back through a step (two of six pools paid a lower row) | the credential; the launch |
 | plans | `docs/plans/` | kill date 2026-09-17 stands: delete it if handbacks are written and not read | evidence |
 
 **Only Josh can do these**, from 0007 section 3, 0008 section 9 and 0009:
 the alert file and the analyst env file under `/etc/radar`; a NOPASSWD line
 for restarting the radar units; the X developer account, its credit and the
-one live test post that settles the two prices; Dependabot security updates
-(one click); the token's name and a fresh wallet, gated on J12; the legal read
+one live test post that settles the prices; Dependabot security updates
+(one click); the token's name and a fresh wallet, gated on J12, and its keypair
+installed as the payout key (`deploy/README.md`, *The payout*); the legal read
 (J4, and 0009 section 8 has what to hand the lawyer); the `cabalhunter.org`
-domain and its Cloudflare Pages project; a Telegram bot token for M5. List them
-in the document with what each one unblocks, and put nothing else on his list.
+domain and its Cloudflare Pages project; a Telegram bot token for the lane and
+a channel for the posts; merging the stack #147–#154, in order. List them in
+the document with what each one unblocks, and put nothing else on his list.
 
 ## The question
 
@@ -136,7 +142,7 @@ wrong by 10× in four places.
 | measured selection edge | 0 bps | 0017 |
 | the bar | ~456 bps; ~850 before a position above about $59 | 0022 |
 | venue fee on the curve | 125 bps a side; creator 30 bps | 0023 |
-| the fee after graduation | **unmeasured**; the venue's own page claims a market-cap schedule | 0009 section 1, M6 |
+| the fee after graduation | measured 2026-09-05: the fee program's 25-row ladder by market cap, creator 30 bps below 420 SOL, 95 to 1,470, down to 5 above 98,240; 4 of 6 live pools paid the row their cap selects | 0028 (PR #149) |
 | X: summoned reply / top-level post | $0.010 / $0.015 | 0007 section 11 |
 | Helius free tier | 6,000–28,000 dossiers a month | same |
 | all-in before viral | under $50 a month | same |
@@ -196,6 +202,6 @@ wrong by 10× in four places.
 ## Deliverable
 
 `new:docs/design/0010-<slug>.md` on a branch from `origin/main`, opened as a
-PR, with `new:docs/plans/0006-<slug>.md` for the first unit of Part A on the
-same branch. A plan under `~/.claude/plans/` is invisible to the repository
+PR, with `new:docs/plans/0007-<slug>.md` for the first unit of Part A on the
+same branch (0006 is taken: it is the plan that closed design 0009). A plan under `~/.claude/plans/` is invisible to the repository
 and does not count as written down.

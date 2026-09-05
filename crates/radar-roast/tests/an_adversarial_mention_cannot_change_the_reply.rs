@@ -9,6 +9,12 @@
 //! Each case was checked by re-applying the bug, the standard
 //! `watermark_holds.rs` sets: the comment says what was put back and what then
 //! failed.
+//!
+//! The three X-shaped cases design 0007 §5 names -- an instruction in a
+//! mention, a reply whose parent holds the address, a 30-mention burst from
+//! one account -- reach the loop before they reach a sheet, so they live with
+//! the loop: `crates/radar-analyst/tests/one_poll_end_to_end.rs`, from
+//! 2026-09-05.
 
 use radar_agent::untrusted;
 use radar_model::{Answer, Provider, Request, Unreachable};

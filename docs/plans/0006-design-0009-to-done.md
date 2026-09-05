@@ -75,12 +75,22 @@ time.
       §1 now say which fee is which; the site test asserts the qualifier and
       fails with it removed. Open: two of six pools paid a row a higher cap
       selects — recorded as a hypothesis, not coded
-- [ ] 4. **Refusal signals counted at answer time** (M3's other half, and
+- [x] 4. **Refusal signals counted at answer time** (M3's other half, and
       0007 B's live gate): a signal count on the fact sheet, carried on the
       reply log entry; the three X-shaped adversarial cases — an instruction in
       a mention, a parent holding an LP mint, a 30-mention burst from one
       account — each producing a sheet or a refusal.
-      gate: the cases in the fixture; re-applied bugs fail
+      done: 2026-09-05, `feat/refusal-signals`. `radar_roast::sheet::Signal`,
+      three variants, computed in `FactSheet::build` and never rendered; the
+      strongest band is `BaseRates::strongest_band`, read off the snapshot;
+      `log::Entry.signals` is `Option<Vec<Signal>>`, `None` on a line older
+      than the field. The burst case found the bug: the per-summoner cap
+      counted *replies*, so thirty mentions with unreadable mints, or thirty
+      while the publisher was down, were thirty dossiers and no refusal. The
+      cap is now charged on admission; the global cap still on sending. The
+      three cases are in `crates/radar-analyst/tests/one_poll_end_to_end.rs`
+      with a chain that counts its requests; each re-applied bug fails its
+      test (see the commit)
 - [ ] 5. **M5 — the Telegram publisher and source**, testable in dry run: an
       unset token means nothing is read and nothing is sent; the same parser,
       gate and fact path; not a contest entry and not in the record.
@@ -125,11 +135,11 @@ time.
 
 ## Handback
 
-Stopped at: items 1, 2, 3 and 9 done. Item 1 is PR #147; item 2 is stacked
-on it as `feat/public-endpoints` (PR #148); item 3 is stacked on that as
-`research/0028-the-fee-after-graduation`. All three wait on merge permission.
-Next action: item 4, the refusal-signal count on the log entry and the three
-X-shaped adversarial cases. Then item 5.
+Stopped at: items 1, 2, 3, 4 and 9 done, stacked in that order: PR #147
+(`feat/contest-crate`), #148 (`feat/public-endpoints`), #149
+(`research/0028-the-fee-after-graduation`), then `feat/refusal-signals`. All
+wait on merge permission.
+Next action: item 5, the Telegram publisher and source, in dry run. Then 6.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

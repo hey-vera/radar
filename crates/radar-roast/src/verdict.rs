@@ -293,6 +293,7 @@ mod tests {
             ],
             untrusted: vec![("token name".to_owned(), "GOAT".to_owned())],
             unknown: Vec::new(),
+            signals: Vec::new(),
         }
     }
 
@@ -407,6 +408,7 @@ mod tests {
             ],
             untrusted: vec![("token name".to_owned(), "Gay Pepe".to_owned())],
             unknown: vec!["the creator's launch count".to_owned()],
+            signals: Vec::new(),
         }
     }
 
@@ -532,6 +534,7 @@ mod tests {
             facts: Vec::new(),
             untrusted: Vec::new(),
             unknown: vec!["the launch block could not be read".to_owned()],
+            signals: Vec::new(),
         };
         let text = template(&empty);
         assert!(text.contains("not known"));

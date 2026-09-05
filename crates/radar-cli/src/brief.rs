@@ -2094,6 +2094,7 @@ mod tests {
                 fact_sheet: String::new(),
                 reply: "text".to_owned(),
                 fellback: None,
+                signals: None,
                 reply_id: None,
             };
             // The intent, then the outcome, exactly as `publish` writes them.
@@ -2132,6 +2133,7 @@ mod tests {
             fact_sheet: String::new(),
             reply: "text".to_owned(),
             fellback: Some("not published: no credential".to_owned()),
+            signals: None,
             reply_id: None,
         };
         radar_analyst::log::append(&log, &entry).expect("intent");

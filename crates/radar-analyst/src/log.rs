@@ -57,6 +57,16 @@ pub struct Entry {
     /// `None` for a dry run or a failed post. Distinguishing "we decided this"
     /// from "we published this" matters: only the second is a public statement.
     pub reply_id: Option<String>,
+    /// The refusal signals the sheet carried, for the hunter rank (design 0009
+    /// M3), in the sheet's fixed order.
+    ///
+    /// `None` on a line written before the count existed (2026-09-05), which
+    /// is unknown and not empty: an old reply cannot be scored, and a rule that
+    /// read it as zero would rank its summoner below one whose coin was clean.
+    /// `Some(vec![])` is a sheet that was counted and carried nothing. An
+    /// absent field reads as `None` because that is what serde does with an
+    /// `Option`; the test below pins that this schema relies on it.
+    pub signals: Option<Vec<radar_roast::sheet::Signal>>,
 }
 
 /// Appends to a log file.
@@ -135,6 +145,37 @@ pub fn latest(path: &str) -> std::io::Result<Vec<Entry>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_line_written_before_the_count_existed_reads_as_unknown_and_not_as_nothing() {
+        // Rule 9 on the log's own history. Lines from before 2026-09-05 have
+        // no `signals` field; they must load, and they must load as `None`,
+        // because "not counted" ranks nobody and "counted zero" ranks the
+        // summoner below everyone whose coin carried one signal. The type is
+        // what makes this true -- a missing `Option` is `None` to serde -- so
+        // the mutant here is a `Vec<Signal>` with a default, and it was made:
+        // the three assertions below then refuse to compile, because a `Vec`
+        // is not an `Option`. That is the type doing the work, and this test
+        // is here so the schema cannot drift to the `Vec` without a reader
+        // meeting the reason.
+        let old = r#"{"at":1,"mention_id":"m","summoner":"s","mint":null,"read_at_slot":null,"fact_sheet":"","reply":"","fellback":null,"reply_id":null}"#;
+        let entry: super::Entry = serde_json::from_str(old).expect("an old line still loads");
+        assert_eq!(entry.signals, None);
+
+        let counted = r#"{"at":1,"mention_id":"m","summoner":"s","mint":null,"read_at_slot":null,"fact_sheet":"","reply":"","fellback":null,"reply_id":null,"signals":["creator_bought_own_launch","launch_block_in_strongest_band"]}"#;
+        let entry: super::Entry = serde_json::from_str(counted).expect("a counted line loads");
+        assert_eq!(
+            entry.signals,
+            Some(vec![
+                radar_roast::sheet::Signal::CreatorBoughtOwnLaunch,
+                radar_roast::sheet::Signal::LaunchBlockInStrongestBand,
+            ])
+        );
+        // And a counted sheet that carried nothing is `Some([])`, not `None`.
+        let clean = r#"{"at":1,"mention_id":"m","summoner":"s","mint":null,"read_at_slot":null,"fact_sheet":"","reply":"","fellback":null,"reply_id":null,"signals":[]}"#;
+        let entry: super::Entry = serde_json::from_str(clean).expect("loads");
+        assert_eq!(entry.signals, Some(Vec::new()));
+    }
+
     use super::*;
 
     fn entry() -> Entry {
@@ -147,6 +188,7 @@ mod tests {
             fact_sheet: "recipients: 6\n".to_owned(),
             reply: "Six token accounts.".to_owned(),
             fellback: None,
+            signals: None,
             reply_id: Some("r1".to_owned()),
         }
     }

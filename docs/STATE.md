@@ -299,7 +299,26 @@ by re-applying the bug it prevents:
   `s<ZWSP>cam` is two tokens to a checker and one word to a reader. Cleaning
   afterwards would assemble exactly the statement the checks refused.
 - **The gate refuses before the chain is read**, because the read is the
-  expensive part.
+  expensive part. **And, since 2026-09-05, the summoner's cap is charged on
+  admission**, not on sending: the read is the cost, and until then thirty
+  mentions from one account naming thirty unreadable mints — or thirty of
+  anything while the publisher was down — were thirty dossiers and no refusal,
+  because the cap counted replies and none of those was one. The account's
+  global cap is still charged on sending, so a publisher outage cannot spend
+  it. Found by the 30-mention burst case in
+  `crates/radar-analyst/tests/one_poll_end_to_end.rs`, which now runs against
+  a chain that counts its requests.
+
+**Every reply carries its refusal-signal count, as of 2026-09-05** (design
+0009 M3). `radar_roast::sheet::Signal` has three variants — the launch block in
+the snapshot's strongest band or above it, a creator with measured launches and
+no organic graduation, a dev buy that was seen — computed where the sheet is
+built and never rendered, so the model is shown facts and not a verdict. The
+strongest band is read off the snapshot (`BaseRates::strongest_band`), which is
+research 0024's lesson made mechanical. The reply log entry carries them as
+`Option<Vec<Signal>>`: `None` on a line older than the field, which is unknown
+and not zero. The tally in `radar-contest` sums them; the job that feeds it the
+log is plan 0006 item 6.
 
 **The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
 design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet

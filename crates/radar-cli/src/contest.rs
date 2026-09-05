@@ -82,3 +82,50 @@ pub fn run(args: &[String]) -> Result<(), String> {
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn pay_refuses_to_do_anything_without_dry_run_before_it_touches_a_chain() {
+        // The command only plans; saying so is the flag. CI's mutants inverted
+        // the check and nothing failed, because nothing had run the command.
+        // The endpoint here is a closed port: a run that got past the check
+        // would fail on the network and not with this message.
+        let creator = radar_types::Address::new([1u8; 32]).to_string();
+        let out = run(&args(&[
+            "contest",
+            "pay",
+            "--week",
+            "1",
+            "--creator",
+            &creator,
+            "--rpc",
+            "http://127.0.0.1:1",
+        ]));
+        let why = out.expect_err("refused");
+        assert!(why.contains("--dry-run"), "{why}");
+        // And the usage line for anything else.
+        let other = run(&args(&[
+            "contest",
+            "sing",
+            "--week",
+            "1",
+            "--creator",
+            &creator,
+            "--rpc",
+            "x",
+        ]));
+        assert!(other.expect_err("usage").contains("record-payout"));
+        assert!(
+            run(&args(&["contest", "pay"]))
+                .expect_err("flags")
+                .contains("--week")
+        );
+    }
+}

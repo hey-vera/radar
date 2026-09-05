@@ -1022,6 +1022,142 @@ mod tests {
     }
 
     #[test]
+    fn the_unsigned_transaction_round_trips_through_base64_and_sign_refuses_the_wrong_shape() {
+        // CI's mutants: `unsigned_base64` replaced by "xyzzy", and the length
+        // bound in `sign` moved every way it can move.
+        let creator = wallet_of(&key());
+        let p = plan(&record(true), &creator, VAULT_RENT_RESERVE + 5, &BLOCKHASH).expect("a plan");
+        let decoded = base64::engine::general_purpose::STANDARD
+            .decode(p.unsigned_base64())
+            .expect("base64");
+        assert_eq!(decoded, p.unsigned);
+
+        // 65 bytes is a count and an empty slot with no message: refused. 66 is
+        // the smallest one-signer transaction with a message and is signed.
+        assert!(sign(&[1u8; 65], &key()).is_err());
+        let mut smallest = vec![1u8];
+        smallest.extend_from_slice(&[0u8; 64]);
+        smallest.push(9);
+        let signed = sign(&smallest, &key()).expect("one byte of message is enough to sign");
+        assert_eq!(signed.len(), 66);
+        assert_ne!(&signed[1..65], &[0u8; 64], "the slot was filled");
+        assert!(sign(&[], &key()).is_err());
+    }
+
+    #[test]
+    fn the_fallback_refuses_a_payment_from_the_wrong_wallet_even_to_the_right_claim() {
+        // Re-applied by turning the `||` into `&&`: a transfer from a stranger's
+        // wallet to the claimed address is recorded as the week's payout, which
+        // is a payout the creator never made.
+        let d = dir("wrong-sender");
+        write_record(&d, &record(true)).expect("record");
+        let creator = wallet_of(&key());
+        let stranger = Fake {
+            vault: VAULT_RENT_RESERVE,
+            confirms: Some(vec![Transfer {
+                from: Address::new([8u8; 32]),
+                to: recipient(),
+                lamports: 777,
+            }]),
+            ..Fake::default()
+        };
+        assert!(matches!(
+            record_payout(&stranger, &d, WEEK, &creator, "HAND9", 5),
+            Err(PayError::Verify(_))
+        ));
+        assert_eq!(read_record(&d, WEEK).expect("record").payout, None);
+    }
+
+    /// A JSON-RPC node that answers each method with a canned result.
+    fn fake_node() -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a port");
+        let port = listener.local_addr().expect("an address").port();
+        std::thread::spawn(move || {
+            for incoming in listener.incoming() {
+                let Ok(mut stream) = incoming else {
+                    return;
+                };
+                let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(2)));
+                let mut buf = vec![0u8; 65_536];
+                let mut n = 0;
+                let mut need = usize::MAX;
+                while n < buf.len() && n < need {
+                    let Ok(read) = stream.read(&mut buf[n..]) else {
+                        break;
+                    };
+                    if read == 0 {
+                        break;
+                    }
+                    n += read;
+                    if need == usize::MAX
+                        && let Some(end) = buf[..n].windows(4).position(|w| w == [13, 10, 13, 10])
+                    {
+                        let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                        let length = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length:"))
+                            .and_then(|v| v.trim().parse::<usize>().ok())
+                            .unwrap_or(0);
+                        need = end + 4 + length;
+                    }
+                }
+                let request = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let result = if request.contains("getBalance") {
+                    r#"{"context":{"slot":1},"value":1234567}"#.to_owned()
+                } else if request.contains("getLatestBlockhash") {
+                    format!(
+                        r#"{{"context":{{"slot":1}},"value":{{"blockhash":"{}","lastValidBlockHeight":9}}}}"#,
+                        bs58::encode([7u8; 32]).into_string()
+                    )
+                } else if request.contains("sendTransaction") {
+                    r#""SIGNATURE1""#.to_owned()
+                } else if request.contains("getTransaction") {
+                    format!(
+                        r#"{{"slot":2,"transaction":{{"message":{{"instructions":[{{"program":"system","parsed":{{"type":"transfer","info":{{"source":"{}","destination":"{}","lamports":500}}}}}}]}}}},"meta":{{"innerInstructions":[]}}}}"#,
+                        Address::new([2u8; 32]),
+                        Address::new([3u8; 32])
+                    )
+                } else {
+                    "null".to_owned()
+                };
+                let body = format!(r#"{{"jsonrpc":"2.0","id":1,"result":{result}}}"#);
+                let crlf = String::from_utf8(vec![13, 10]).expect("ascii");
+                let head = format!(
+                    "HTTP/1.1 200 OK{crlf}Content-Length: {}{crlf}Content-Type: application/json{crlf}Connection: close{crlf}{crlf}",
+                    body.len()
+                );
+                let _ = stream.write_all(format!("{head}{body}").as_bytes());
+                let _ = stream.flush();
+            }
+        });
+        format!("http://127.0.0.1:{port}")
+    }
+
+    #[test]
+    fn the_rpc_client_reads_each_answer_out_of_the_nodes_shape() {
+        // CI's mutants replaced `latest_blockhash` with a fixed array and
+        // nothing failed, because nothing had asked a node. This asks a fake
+        // one, method by method, and reads back what it said.
+        let rpc = Rpc::new(fake_node());
+        assert_eq!(rpc.balance(&Address::new([1u8; 32])), Ok(1_234_567));
+        assert_eq!(rpc.latest_blockhash(), Ok([7u8; 32]));
+        assert_eq!(rpc.send("AAEC"), Ok("SIGNATURE1".to_owned()));
+        let transfers = rpc
+            .transfers_in("SIGNATURE1")
+            .expect("read")
+            .expect("on chain");
+        assert_eq!(
+            transfers,
+            vec![Transfer {
+                from: Address::new([2u8; 32]),
+                to: Address::new([3u8; 32]),
+                lamports: 500,
+            }]
+        );
+    }
+
+    #[test]
     fn a_keypair_file_loads_only_when_its_halves_agree() {
         let d = dir("key");
         let k = key();

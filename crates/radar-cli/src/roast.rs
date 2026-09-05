@@ -205,26 +205,19 @@ fn today() -> String {
 
 /// A `YYYY-MM-DD` date from a count of days since the 1970 epoch.
 ///
-/// Civil-from-days, Howard Hinnant's algorithm.
-///
 /// **This was inside `today()` and copied into the test module.** The tests
 /// then exercised the copy, so every mutation of the real arithmetic survived --
 /// twenty-four of them, reported by CI on 2026-09-03. It is LEARNINGS 18's shape
 /// applied to a test: two instruments compared as if they were one, except here
-/// only one of them was ever run. The function is now production code with one
-/// definition, and the tests call it.
+/// only one of them was ever run.
+///
+/// On 2026-09-05 the definition moved to `radar_types::civil`, because the
+/// public endpoints needed the same function for a contest week's Monday and a
+/// second copy would have been the same mistake one crate over. This is the
+/// one caller's name for it, and the tests below still pin every boundary --
+/// now of the shared definition.
 fn from_days(days: i64) -> String {
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    format!("{y:04}-{m:02}-{d:02}")
+    radar_types::civil::date_from_days(days)
 }
 
 #[cfg(test)]

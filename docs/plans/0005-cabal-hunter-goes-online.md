@@ -53,7 +53,11 @@ cannot know yet.
       checks, verified by reading the ruleset back rather than the write.
 - [ ] 11. The 1200×630 OG image
       next: it is the first thing anybody sees of this product on X
-- [ ] 10. Phase 1 — the three public endpoints, by exact path, with CORS
+- [x] 10. Phase 1 — the three public endpoints, by exact path, with CORS
+      done: 2026-09-05, as plan 0006 item 2 — `crates/radar-serve/src/public.rs`,
+      with the evidence recorded there. The stats document needs a
+      `population.json` the creator-index job now writes; until the box runs
+      that binary the endpoint answers 404 and the site shows its dated fixture
 
 ## Open questions for Josh
 
@@ -69,7 +73,7 @@ Stopped at: Phase 0 complete. The site builds, tests and renders; four pages,
 19 tests, 71.6 kB gzipped.
 
 Next action: item 11 (the OG image — `site/index.html` references `og.png` and
-it does not exist), then item 10 (the three public endpoints).
+it does not exist). Item 10 landed on 2026-09-05 under plan 0006.
 
 Two bugs this found, both by looking at the running page rather than by a test:
 the round trip rendered as `+4.6%` — a cost signed as a gain, on the one figure

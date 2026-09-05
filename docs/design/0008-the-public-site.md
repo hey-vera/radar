@@ -232,7 +232,12 @@ the endpoint exists. This is the thing Josh asked to see.
 `/v1/public/pool` on `radar-serve`, each reading a published file. Added to
 `Audience::Public` **by exact path, never by prefix** — `access.rs` already warns
 in its own comments that a prefix rule is how `/v1/store` ends up in front of the
-wrong reader. CORS for the site's origin only. Deliverable now.
+wrong reader. CORS for the site's origin only. **Built 2026-09-05** as plan
+0006 item 2, in [`crates/radar-serve/src/public.rs`](../../crates/radar-serve/src/public.rs).
+Two things it needed: the stats document reads a small `population.json` the
+creator-index job now writes beside the index rather than parsing 116,000
+records per request, and research 0011's aftermath figure now travels in the
+base-rate snapshot with its own date rather than in code.
 
 **Phase 2 — the leaderboard's data. Blocked on the X credential.** The
 `radar-contest` crate (pure: week boundaries, `Entry`, `Score`, the scoring rule

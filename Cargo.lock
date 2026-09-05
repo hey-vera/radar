@@ -1505,6 +1505,7 @@ dependencies = [
  "radar-types",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 
@@ -1518,11 +1519,13 @@ dependencies = [
  "radar-agent",
  "radar-analyst",
  "radar-asof",
+ "radar-contest",
  "radar-customer",
  "radar-instruments",
  "radar-model",
  "radar-research",
  "radar-risk",
+ "radar-roast",
  "radar-store",
  "radar-types",
  "ring",

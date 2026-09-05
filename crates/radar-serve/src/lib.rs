@@ -26,6 +26,7 @@ pub mod link;
 pub mod mcp;
 mod ops;
 pub mod privy;
+pub mod public;
 pub mod share;
 pub mod siws;
 pub mod x402;
@@ -153,6 +154,12 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/tokens/{mint}", get(token))
         .route("/v1/store", get(store_counts))
         .route("/v1/analyst/replies", get(analyst_replies))
+        // The public site's three documents. Public by exact path in
+        // `access::audience_of`; each reads a published file and never the
+        // store.
+        .route("/v1/public/stats", get(public::stats))
+        .route("/v1/public/leaderboard", get(public::leaderboard))
+        .route("/v1/public/pool", get(public::pool))
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/config", get(customer_config))
         .route("/v1/customer/siws/challenge", post(siws::challenge))

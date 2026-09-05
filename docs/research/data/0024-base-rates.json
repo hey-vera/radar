@@ -270,5 +270,10 @@
       "usd": 1.0,
       "round_trip": 3042
     }
+  },
+  "aftermath": {
+    "_comment": "Research 0011, 59,647 priced mints, the live recorder: held from first fill to last observed price, organic graduations end at a median of -3,228 bps. Graduating is not winning. Carried here with its own date so the public site states it from a file and never from memory; added 2026-09-05 for the stats endpoint.",
+    "measured_on": "2026-08-26",
+    "organic_median_bps": -3228
   }
 }

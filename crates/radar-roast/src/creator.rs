@@ -210,7 +210,23 @@ impl CreatorIndex {
         self.creators.is_empty()
     }
 
-    /// Writes the index where a consumer will find it.
+    /// The totals, for a reader that needs five numbers and not 116,000
+    /// records.
+    ///
+    /// `None` when the population was never measured: a summary of zeroes
+    /// would be five claims that nothing ever graduated.
+    #[must_use]
+    pub fn summary(&self) -> Option<Summary> {
+        self.population.map(|population| Summary {
+            built_at: self.built_at,
+            watermark_slot: self.watermark_slot,
+            creators: u64::try_from(self.creators.len()).unwrap_or(u64::MAX),
+            population,
+        })
+    }
+
+    /// Writes the index where a consumer will find it, and the summary beside
+    /// it.
     ///
     /// # Errors
     ///
@@ -224,7 +240,16 @@ impl CreatorIndex {
         // no record.
         let temp = format!("{path}.new");
         std::fs::write(&temp, json)?;
-        std::fs::rename(&temp, path)
+        std::fs::rename(&temp, path)?;
+        // The public site reads the totals without parsing the records, so
+        // they are published as their own small file, from the same pass, at
+        // the same moment. Only when there is something to say: an index with
+        // no population writes no summary, and a reader finds nothing rather
+        // than zeroes.
+        if let Some(summary) = self.summary() {
+            summary.write(&summary_path_beside(path))?;
+        }
+        Ok(())
     }
 
     /// Reads an index from disk.
@@ -239,9 +264,115 @@ impl CreatorIndex {
     }
 }
 
+/// Where the summary is published by default, beside the index.
+pub const SUMMARY_PATH: &str = "docs/research/data/population.json";
+
+/// The summary's path, given the index's: the same directory, its own name.
+#[must_use]
+pub fn summary_path_beside(index_path: &str) -> String {
+    std::path::Path::new(index_path)
+        .with_file_name("population.json")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// The population totals, published beside the index.
+///
+/// What the public site's stats document is built from. The index itself is
+/// one record per creator -- 116,752 of them on 2026-09-04 -- and a public
+/// endpoint that parsed it per request to read five totals would be the
+/// three-second store scan in miniature, behind a viral link.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Summary {
+    /// When the index was built, as seconds since the epoch.
+    pub built_at: u64,
+    /// The watermark it was built at.
+    pub watermark_slot: u64,
+    /// How many creators the index holds.
+    pub creators: u64,
+    /// The totals.
+    pub population: Population,
+}
+
+impl Summary {
+    /// Writes the summary, beside and renamed like the index.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error, or a serialisation failure.
+    pub fn write(&self, path: &str) -> std::io::Result<()> {
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let temp = format!("{path}.new");
+        std::fs::write(&temp, json)?;
+        std::fs::rename(&temp, path)
+    }
+
+    /// Reads a summary from disk.
+    ///
+    /// # Errors
+    ///
+    /// The I/O error, or a parse failure. Absent means **not measured**, and
+    /// the caller says so rather than filling in zeroes.
+    pub fn read(path: &str) -> std::io::Result<Self> {
+        let text = std::fs::read_to_string(path)?;
+        serde_json::from_str(&text)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_summary_is_written_beside_the_index_and_only_when_there_is_one() {
+        // The public site reads this file and not the index. Re-apply the bug
+        // by dropping the summary write from `write` and the read below fails.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let index_path = dir.path().join("creator-index.json");
+        let index_path = index_path.to_string_lossy().into_owned();
+        let summary_path = summary_path_beside(&index_path);
+        assert!(summary_path.ends_with("population.json"), "{summary_path}");
+
+        let mut creators = BTreeMap::new();
+        creators.insert("c1".to_owned(), Record::default());
+        creators.insert("c2".to_owned(), Record::default());
+        let index = CreatorIndex {
+            watermark_slot: 444_374_676,
+            built_at: 1_788_000_000,
+            population: Some(Population {
+                launches: 10,
+                measured: 8,
+                organic: 1,
+                instant: 1,
+                stillborn: 2,
+            }),
+            creators,
+        };
+        index.write(&index_path).expect("writes");
+        let summary = Summary::read(&summary_path).expect("the summary is beside the index");
+        assert_eq!(summary.creators, 2);
+        assert_eq!(summary.watermark_slot, 444_374_676);
+        assert_eq!(summary.built_at, 1_788_000_000);
+        assert_eq!(summary.population.measured, 8);
+
+        // An index with no population writes no summary: absent, not zeroes.
+        // In its own directory, because the summary's name is fixed and the
+        // first index's summary is already beside it.
+        let older = CreatorIndex {
+            population: None,
+            ..index
+        };
+        let elsewhere = tempfile::tempdir().expect("a second temp dir");
+        let older_path = elsewhere.path().join("creator-index.json");
+        let older_path = older_path.to_string_lossy().into_owned();
+        older.write(&older_path).expect("writes");
+        assert!(
+            Summary::read(&summary_path_beside(&older_path)).is_err(),
+            "no population, so no summary file"
+        );
+    }
 
     #[test]
     fn a_creator_absent_from_the_index_is_unknown_rather_than_innocent() {

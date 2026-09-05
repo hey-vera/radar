@@ -28,6 +28,8 @@ thiserror.workspace = true
 # Test-only: the adversarial fixture builds dossiers by hand and needs the
 # untrusted fence marker to attempt closing it.
 radar-agent.workspace = true
+# The summary-beside-the-index test writes to a directory it owns.
+tempfile = "3"
 
 [lints]
 workspace = true

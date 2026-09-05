@@ -596,6 +596,14 @@ pub fn audience_of(path: &str) -> Audience {
         // so requiring authentication would be circular.
         || path == "/v1/customer/siws/challenge"
         || path == "/v1/customer/siws/verify"
+        // The three documents the public site reads (design 0008 phase 1).
+        // Each is a published file, never the store, and each is listed by
+        // exact path: a prefix rule on `/v1/public/` is how the next file
+        // somebody drops in that directory becomes world-readable without
+        // anyone deciding it should be.
+        || path == "/v1/public/stats"
+        || path == "/v1/public/leaderboard"
+        || path == "/v1/public/pool"
     {
         return Audience::Public;
     }
@@ -1042,9 +1050,12 @@ mod tests {
     }
 
     #[test]
-    fn only_the_monitor_path_and_the_paid_surface_are_public() {
+    fn the_public_surface_is_the_monitor_the_paid_lane_and_the_sites_three_documents() {
         assert!(is_public("/health"));
         assert!(is_public("/x402/v1/instruments"));
+        assert!(is_public("/v1/public/stats"));
+        assert!(is_public("/v1/public/leaderboard"));
+        assert!(is_public("/v1/public/pool"));
 
         for private in [
             "/",
@@ -1059,6 +1070,12 @@ mod tests {
             "/x402",
             "/x402-internal/secrets",
             "/health/../v1/funnel",
+            // Exact paths, not a prefix: the directory is not public, and
+            // neither is a fourth file nobody classified.
+            "/v1/public",
+            "/v1/public/",
+            "/v1/public/stats/",
+            "/v1/public/replies",
         ] {
             assert!(!is_public(private), "{private} must not be public");
         }
@@ -1078,6 +1095,10 @@ mod tests {
                 "/x402/v1/instruments/creator_track_record",
                 Audience::Public,
             ),
+            // The public site's three documents, each a published file.
+            ("/v1/public/stats", Audience::Public),
+            ("/v1/public/leaderboard", Audience::Public),
+            ("/v1/public/pool", Audience::Public),
             // The product.
             ("/", Audience::Customer),
             ("/assets/index-abc123.js", Audience::Customer),
@@ -1148,6 +1169,7 @@ mod tests {
             "/x402",
             "/x402-internal/secrets",
             "/health/../v1/funnel",
+            "/v1/public/anything-else",
             "",
         ] {
             assert_eq!(

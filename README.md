@@ -107,7 +107,7 @@ again. This needs nothing from any vendor and it is the largest saving available
 | `radar-store` | Append-only, slot-partitioned Parquet event log. Nulls mean "not recoverable", never zero; the watermark reaches onto disk. |
 | `radar-backfill` | Bulk historical extraction from CryptoHouse, decoded by the same decoder the live recorder uses. |
 | `radar-instruments` | The instrument registry. One declaration; internal, HTTP, x402 and MCP surfaces derived from it, and every invocation recorded. |
-| `radar-serve` | Ops page, JSON API, stateless MCP (2026-07-28), and the x402-priced public surface. |
+| `radar-serve` | Ops page, JSON API, stateless MCP (2026-07-28), the x402-priced public surface, and the public site's three documents — stats, leaderboard, pool — served by exact path from published files, never the store. |
 | `radar-sim` | Exit analysis. Structural disqualification from the mint account, then a measured sell curve — never a single liquidity number. |
 | `radar-risk` | The risk kernel. A pure function from a proposal to a verdict — the only thing that can authorise capital. |
 | `radar-strategy` | Deterministic strategies. They emit proposals, which are inert data, and assemble candidates in one place so look-ahead is prevented once rather than per strategy. |

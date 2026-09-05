@@ -41,6 +41,9 @@ pub struct Prices {
     pub post_read: MicroUsd,
     /// Publishing one reply.
     pub reply: MicroUsd,
+    /// Publishing one top-level post: the weekly result, the daily "seven
+    /// days later". A different price from a reply (design 0007 §11).
+    pub post: MicroUsd,
     /// One model call for the voice pass.
     pub model_call: MicroUsd,
 }
@@ -58,6 +61,8 @@ pub enum Cost {
     PostRead,
     /// A published reply.
     Reply,
+    /// A published top-level post.
+    Post,
     /// A voice-pass model call.
     ModelCall,
 }
@@ -82,6 +87,7 @@ impl Prices {
             mention_read: read("RADAR_X_PRICE_MENTION_READ")?,
             post_read: read("RADAR_X_PRICE_POST_READ")?,
             reply: read("RADAR_X_PRICE_REPLY")?,
+            post: read("RADAR_X_PRICE_POST")?,
             model_call: read("RADAR_MODEL_PER_CALL_USD_MICRO")?,
         })
     }
@@ -93,6 +99,7 @@ impl Prices {
             Cost::MentionRead => self.mention_read,
             Cost::PostRead => self.post_read,
             Cost::Reply => self.reply,
+            Cost::Post => self.post,
             Cost::ModelCall => self.model_call,
         }
     }
@@ -205,6 +212,7 @@ mod tests {
             mention_read: MicroUsd(1_000),
             post_read: MicroUsd(5_000),
             reply: MicroUsd(10_000),
+            post: MicroUsd(15_000),
             model_call: MicroUsd(2_000),
         }
     }
@@ -234,6 +242,7 @@ mod tests {
             Cost::MentionRead,
             Cost::PostRead,
             Cost::Reply,
+            Cost::Post,
             Cost::ModelCall,
         ] {
             assert!(
@@ -241,7 +250,7 @@ mod tests {
                 "{cost:?} must be refused with no budget"
             );
         }
-        assert_eq!(spend.refusals(), 4);
+        assert_eq!(spend.refusals(), 5);
     }
 
     #[test]
@@ -373,6 +382,7 @@ mod tests {
                     "RADAR_X_PRICE_MENTION_READ" => "1000",
                     "RADAR_X_PRICE_POST_READ" => "5000",
                     "RADAR_X_PRICE_REPLY" => "10000",
+                    "RADAR_X_PRICE_POST" => "15000",
                     "RADAR_MODEL_PER_CALL_USD_MICRO" => "2000",
                     _ => return None,
                 }
@@ -385,6 +395,7 @@ mod tests {
             "RADAR_X_PRICE_MENTION_READ",
             "RADAR_X_PRICE_POST_READ",
             "RADAR_X_PRICE_REPLY",
+            "RADAR_X_PRICE_POST",
             "RADAR_MODEL_PER_CALL_USD_MICRO",
         ] {
             let partial = |k: &str| if k == missing { None } else { full(k) };

@@ -149,6 +149,12 @@ pub enum Excluded {
         /// The week it won.
         won: Week,
     },
+    /// The platform returned no metrics for the reply at week close -- deleted,
+    /// hidden, or not returned -- so it has no score. Not a score of zero: an
+    /// entry that could not be read is excluded and says so, rather than
+    /// ranked last as if nobody engaged (rule 9). Applied by the week-close
+    /// job before ranking, since the rule here scores what it is given.
+    Unscored,
 }
 
 /// An entry that counts, with its score.

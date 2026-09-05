@@ -35,6 +35,51 @@ pub fn date_from_days(days: i64) -> String {
     format!("{y:04}-{m:02}-{d:02}")
 }
 
+/// Days since 1970-01-01 for a civil date: the inverse of [`date_from_days`].
+///
+/// Hinnant's days-from-civil. Needed because the platform reports when an
+/// account was created as a timestamp, and the contest's age rule is in days.
+#[must_use]
+pub fn days_from_date(year: i64, month: u32, day: u32) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let m = i64::from(month);
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + i64::from(day) - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Seconds since the epoch for a `YYYY-MM-DDTHH:MM:SS[.fff]Z` timestamp, or
+/// `None` when the text is not that shape.
+///
+/// UTC only, `Z` required: a zoned timestamp is refused rather than read as
+/// UTC, because a wrong zone is a wrong age that looks right.
+#[must_use]
+pub fn seconds_from_timestamp(text: &str) -> Option<u64> {
+    let text = text.strip_suffix('Z')?;
+    let (date, time) = text.split_once('T')?;
+    let mut date = date.split('-');
+    let year: i64 = date.next()?.parse().ok()?;
+    let month: u32 = date.next()?.parse().ok()?;
+    let day: u32 = date.next()?.parse().ok()?;
+    if date.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let time = time.split_once('.').map_or(time, |(whole, _)| whole);
+    let mut time = time.split(':');
+    let h: u64 = time.next()?.parse().ok()?;
+    let m: u64 = time.next()?.parse().ok()?;
+    let s: u64 = time.next()?.parse().ok()?;
+    if time.next().is_some() || h > 23 || m > 59 || s > 60 {
+        return None;
+    }
+    let days = days_from_date(year, month, day);
+    let secs = days.checked_mul(i64::try_from(SECONDS_PER_DAY).ok()?)?;
+    u64::try_from(secs).ok()?.checked_add(h * 3600 + m * 60 + s)
+}
+
 /// A `YYYY-MM-DDTHH:MM:SSZ` timestamp from seconds since the epoch.
 ///
 /// UTC, always: every clock in this repository is UTC and a published
@@ -50,6 +95,47 @@ pub fn timestamp_from_seconds(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inverse_round_trips_every_boundary_and_a_timestamp_reads_back() {
+        // Each day the forward direction pins, back through the inverse. A
+        // constant wrong in one direction only would break the round trip.
+        for days in [
+            0i64, 1, 31, 58, 59, 19_781, 19_782, 19_783, -1, -365, 20_697,
+        ] {
+            let text = date_from_days(days);
+            let mut parts = text.split('-');
+            let y: i64 = parts.next().expect("y").parse().expect("y");
+            let m: u32 = parts.next().expect("m").parse().expect("m");
+            let d: u32 = parts.next().expect("d").parse().expect("d");
+            assert_eq!(days_from_date(y, m, d), days, "{text}");
+        }
+        assert_eq!(days_from_date(1970, 1, 1), 0);
+        assert_eq!(days_from_date(2024, 2, 29), 19_782);
+
+        // The platform's shape, with and without milliseconds.
+        assert_eq!(seconds_from_timestamp("1970-01-01T00:00:01Z"), Some(1));
+        assert_eq!(
+            seconds_from_timestamp("2024-02-29T12:34:56.000Z"),
+            Some(19_782 * 86_400 + 12 * 3600 + 34 * 60 + 56)
+        );
+        assert_eq!(
+            timestamp_from_seconds(seconds_from_timestamp("2026-09-05T08:00:00Z").expect("secs")),
+            "2026-09-05T08:00:00Z"
+        );
+        // Refused, not guessed: a zone, a missing Z, a month out of range,
+        // and a date before the epoch (an account cannot predate it).
+        for bad in [
+            "2024-02-29T12:34:56+01:00",
+            "2024-02-29T12:34:56",
+            "2024-13-01T00:00:00Z",
+            "2024-02-29",
+            "1969-12-31T23:59:59Z",
+            "",
+        ] {
+            assert_eq!(seconds_from_timestamp(bad), None, "{bad:?}");
+        }
+    }
 
     #[test]
     fn the_calendar_is_right_at_every_boundary_the_algorithm_has() {

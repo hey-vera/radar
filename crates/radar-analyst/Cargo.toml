@@ -17,6 +17,9 @@ authors.workspace = true
 # hundred replies from is not the version that posts them.
 radar-onchain.workspace = true
 radar-roast.workspace = true
+# The contest's types and rule: the week-close job reads the reply log and
+# writes a week record, and the metrics reader speaks in the crate's `Metrics`.
+radar-contest.workspace = true
 radar-model.workspace = true
 # The spend meter. Pure policy -- no clock, no network, no filesystem -- so this
 # crate decides what "today" means and where the ledger lives, which is exactly

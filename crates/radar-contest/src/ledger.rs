@@ -202,6 +202,32 @@ impl Record {
     }
 }
 
+/// Every week record in a directory, in no particular order.
+///
+/// A record is a file named `<week>.json` where `<week>` is the week number;
+/// both halves of the name are required, so a backup copy, a notes file or a
+/// numbered file with no extension is not a record. A file that does not parse
+/// is skipped rather than failing the read: a torn write is not evidence, and
+/// the weeks either side of it still are.
+///
+/// The one place this crate touches a disk, and only to read what it wrote.
+#[must_use]
+pub fn records_in(dir: &std::path::Path) -> Vec<Record> {
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    listing
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".json") && name.trim_end_matches(".json").parse::<u64>().is_ok()
+        })
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|text| Record::from_json(&text).ok())
+        .collect()
+}
+
 impl Payout {
     /// Whether paying `lamports` to `recipient` for this week is permitted.
     ///

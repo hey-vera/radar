@@ -1280,6 +1280,7 @@ version = "0.0.1"
 dependencies = [
  "base64",
  "hmac",
+ "radar-contest",
  "radar-model",
  "radar-onchain",
  "radar-provider",

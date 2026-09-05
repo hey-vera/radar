@@ -46,7 +46,9 @@
 
 pub mod admission;
 pub mod answer;
+pub mod contest;
 pub mod daemon;
+pub mod daily;
 pub mod log;
 pub mod mention;
 pub mod oauth;
@@ -54,6 +56,7 @@ pub mod poll;
 pub mod publish;
 pub mod spend;
 pub mod telegram;
+pub mod weekly;
 pub mod x;
 
 pub use admission::{Admitted, Gate, Limits, Refused};

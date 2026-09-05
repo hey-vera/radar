@@ -181,6 +181,7 @@ fn prices() -> Prices {
         mention_read: MicroUsd(1_000),
         post_read: MicroUsd(5_000),
         reply: MicroUsd(10_000),
+        post: MicroUsd(15_000),
         model_call: MicroUsd(2_000),
     }
 }
@@ -303,6 +304,9 @@ impl radar_analyst::publish::Publisher for Posts {
         _text: &str,
     ) -> Result<String, radar_analyst::publish::Undeliverable> {
         Ok(format!("posted-{in_reply_to}"))
+    }
+    fn post(&self, _text: &str) -> Result<String, radar_analyst::publish::Undeliverable> {
+        Ok("posted-top-level".to_owned())
     }
 }
 

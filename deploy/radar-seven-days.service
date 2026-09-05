@@ -1,0 +1,34 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-seven-days.service. Started by the timer.
+#
+# The one join the analyst is not allowed to make itself: replies from its log,
+# outcomes from the store. Runs as the same user, reads the store read-only, and
+# may write only the analyst's daily directory.
+[Unit]
+Description=Radar seven days later — what the chain did to last week's coins
+Documentation=https://github.com/hey-vera/radar
+
+[Service]
+Type=oneshot
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+ExecStart=/home/guardian/bin/radar seven-days-later \
+    --store /home/guardian/radar/data/store \
+    --analyst-dir /home/guardian/radar/data/analyst
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/data/analyst
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+MemoryMax=1500M
+TasksMax=32

@@ -290,19 +290,10 @@ fn counts_in(entries: &[Entry], week: Week) -> (usize, usize) {
 /// A file that does not parse is skipped rather than failing the page: a torn
 /// write is not evidence, and the weeks either side of it still are.
 fn records(dir: &str) -> Vec<Record> {
-    let Ok(listing) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    listing
-        .flatten()
-        .filter(|entry| {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            name.ends_with(".json") && name.trim_end_matches(".json").parse::<u64>().is_ok()
-        })
-        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-        .filter_map(|text| Record::from_json(&text).ok())
-        .collect()
+    // One definition, in the crate that writes them: the week-close job reads
+    // previous records for the cooldown rule, and two readers of one ledger
+    // would be two filename rules.
+    radar_contest::records_in(std::path::Path::new(dir))
 }
 
 /// The most recently closed week's record, if any.

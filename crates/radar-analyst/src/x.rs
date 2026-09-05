@@ -30,7 +30,10 @@
 //! limit keyed on one is a limit that can be shed by renaming. The id cannot be
 //! changed and cannot be transferred.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
+
+use radar_contest::Metrics;
 
 use crate::log::Entry;
 use crate::publish::{Publisher, Undeliverable};
@@ -484,6 +487,168 @@ pub fn reply_body(in_reply_to: &str, text: &str) -> String {
     .to_string()
 }
 
+/// The body of a top-level post.
+#[must_use]
+pub fn post_body(text: &str) -> String {
+    serde_json::json!({ "text": text }).to_string()
+}
+
+/// Most ids one lookup may carry. The platform's own limit on both endpoints.
+const LOOKUP: usize = 100;
+
+impl X {
+    /// The account's own id: the contest's operator, who never wins.
+    #[must_use]
+    pub fn user_id(&self) -> &str {
+        &self.user_id
+    }
+
+    /// The URL that reads the public metrics of the account's own replies.
+    ///
+    /// Pure. Only ids, only digits: an id came from the platform and is read
+    /// back out of a log file, and this is the one place it becomes a query.
+    #[must_use]
+    pub fn metrics_url(&self, ids: &[String]) -> String {
+        format!(
+            "{}/2/tweets?ids={}&tweet.fields=public_metrics",
+            self.base,
+            digits_joined(ids)
+        )
+    }
+
+    /// The URL that reads when the entrants' accounts were created.
+    #[must_use]
+    pub fn accounts_url(&self, ids: &[String]) -> String {
+        format!(
+            "{}/2/users?ids={}&user.fields=created_at",
+            self.base,
+            digits_joined(ids)
+        )
+    }
+
+    /// The public metrics of the given replies, keyed by reply id.
+    ///
+    /// Read at week close (design 0007 C2), a hundred ids to the call. A reply
+    /// the platform did not return -- deleted, hidden -- is simply absent, and
+    /// the caller treats absent as unscored rather than as zero.
+    ///
+    /// # Errors
+    ///
+    /// [`Unreachable`] on the first page that fails; nothing partial is kept.
+    pub fn metrics(&self, ids: &[String]) -> Result<BTreeMap<String, Metrics>, Unreachable> {
+        let mut out = BTreeMap::new();
+        for page in ids.chunks(LOOKUP) {
+            let body = self.get(&self.metrics_url(page))?;
+            out.extend(parse_metrics(&body)?);
+        }
+        Ok(out)
+    }
+
+    /// When each account was created, as seconds since the epoch, keyed by id.
+    ///
+    /// The contest's age rule needs it (design 0007 §6.2). An account the
+    /// platform did not return is absent, and the caller treats that as an age
+    /// it could not read -- excluded as unknown, never as old enough.
+    ///
+    /// # Errors
+    ///
+    /// [`Unreachable`] on the first page that fails.
+    pub fn accounts(&self, ids: &[String]) -> Result<BTreeMap<String, u64>, Unreachable> {
+        let mut out = BTreeMap::new();
+        for page in ids.chunks(LOOKUP) {
+            let body = self.get(&self.accounts_url(page))?;
+            out.extend(parse_created_at(&body)?);
+        }
+        Ok(out)
+    }
+}
+
+fn digits_joined(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| id.chars().filter(char::is_ascii_digit).collect::<String>())
+        .filter(|id| !id.is_empty())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+/// Reads a tweet-lookup response into metrics by id.
+///
+/// Missing metrics are a missing entry, not zeroes: a reply the platform
+/// returned without `public_metrics` is one it would not let us score.
+///
+/// # Errors
+///
+/// [`Unreachable::Unreadable`] when the body is not JSON or reports an error
+/// with no data.
+pub fn parse_metrics(body: &str) -> Result<BTreeMap<String, Metrics>, Unreachable> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| Unreachable::Unreadable(format!("not json: {e}")))?;
+    let mut out = BTreeMap::new();
+    let Some(items) = value.get("data").and_then(serde_json::Value::as_array) else {
+        if let Some(errors) = value.get("errors") {
+            return Err(Unreachable::Unreadable(format!("errors: {errors}")));
+        }
+        return Ok(out);
+    };
+    for item in items {
+        let (Some(id), Some(pm)) = (
+            item.get("id").and_then(serde_json::Value::as_str),
+            item.get("public_metrics"),
+        ) else {
+            continue;
+        };
+        let n = |key: &str| pm.get(key).and_then(serde_json::Value::as_u64);
+        let (Some(reposts), Some(quotes), Some(likes), Some(replies)) = (
+            n("retweet_count"),
+            n("quote_count"),
+            n("like_count"),
+            n("reply_count"),
+        ) else {
+            continue;
+        };
+        out.insert(
+            id.to_owned(),
+            Metrics {
+                reposts,
+                quotes,
+                likes,
+                replies,
+            },
+        );
+    }
+    Ok(out)
+}
+
+/// Reads a user-lookup response into creation times by id.
+///
+/// # Errors
+///
+/// [`Unreachable::Unreadable`] when the body is not JSON or reports an error
+/// with no data.
+pub fn parse_created_at(body: &str) -> Result<BTreeMap<String, u64>, Unreachable> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| Unreachable::Unreadable(format!("not json: {e}")))?;
+    let mut out = BTreeMap::new();
+    let Some(items) = value.get("data").and_then(serde_json::Value::as_array) else {
+        if let Some(errors) = value.get("errors") {
+            return Err(Unreachable::Unreadable(format!("errors: {errors}")));
+        }
+        return Ok(out);
+    };
+    for item in items {
+        let (Some(id), Some(created)) = (
+            item.get("id").and_then(serde_json::Value::as_str),
+            item.get("created_at")
+                .and_then(serde_json::Value::as_str)
+                .and_then(radar_types::civil::seconds_from_timestamp),
+        ) else {
+            continue;
+        };
+        out.insert(id.to_owned(), created);
+    }
+    Ok(out)
+}
+
 impl Publisher for X {
     fn name(&self) -> &'static str {
         "x"
@@ -493,6 +658,14 @@ impl Publisher for X {
         let url = format!("{}/2/tweets", self.base);
         let body = self
             .post(&url, &reply_body(in_reply_to, text))
+            .map_err(|e| Undeliverable::Failed(e.to_string()))?;
+        parse_posted_id(&body).map_err(|e| Undeliverable::Failed(e.to_string()))
+    }
+
+    fn post(&self, text: &str) -> Result<String, Undeliverable> {
+        let url = format!("{}/2/tweets", self.base);
+        let body = self
+            .post(&url, &post_body(text))
             .map_err(|e| Undeliverable::Failed(e.to_string()))?;
         parse_posted_id(&body).map_err(|e| Undeliverable::Failed(e.to_string()))
     }
@@ -532,6 +705,25 @@ mod tests {
       ],
       "meta": {"result_count": 2, "newest_id": "2"}
     }"#;
+
+    #[test]
+    fn the_lookup_urls_carry_only_digit_ids_and_the_operator_is_the_configured_user() {
+        // CI's mutants: `user_id` replaced by "" or "xyzzy" -- the contest's
+        // operator becomes nobody, and the account could win its own contest;
+        // and the `!` dropped in `digits_joined`, which keeps an id with no
+        // digits as an empty entry and puts a stray comma in the query.
+        let x = X::at("https://api.test", "bearer", "u42");
+        assert_eq!(x.user_id(), "u42");
+        let ids = vec!["123".to_owned(), "abc".to_owned(), "4x5".to_owned()];
+        assert_eq!(
+            x.metrics_url(&ids),
+            "https://api.test/2/tweets?ids=123,45&tweet.fields=public_metrics"
+        );
+        assert_eq!(
+            x.accounts_url(&ids),
+            "https://api.test/2/users?ids=123,45&user.fields=created_at"
+        );
+    }
 
     #[test]
     fn a_page_reads_into_mentions_with_the_parent_kept() {

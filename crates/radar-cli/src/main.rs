@@ -24,6 +24,7 @@ mod replay;
 mod roast;
 mod route;
 mod selection;
+mod seven_days;
 mod study;
 
 use radar_sim::{JupiterQuoter, RpcClient};
@@ -710,6 +711,7 @@ fn main() -> ExitCode {
         "replay" => replay_lane(&args),
         "study" => event_study(&args),
         "creator-index" => creator_index(&args),
+        "seven-days-later" => seven_days::run(&args),
         "dossier" => dossier::run(&args),
         "roast" => roast::run(&args),
         "analyst" => analyst::run(&args),

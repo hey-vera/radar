@@ -106,10 +106,23 @@ time.
       address is answered into `telegram.jsonl` and never `replies.jsonl`, a
       sticker is skipped and still acknowledged, the offset advances, and
       with no token nothing is read. Re-applied bugs in the commit
-- [ ] 6. **The weekly post (0007 B6, 0009 M2) and the daily "seven days later"
+- [x] 6. **The weekly post (0007 B6, 0009 M2) and the daily "seven days later"
       post (M4)**, as code that runs in dry run and says "nothing yet" when the
       log is younger than seven days. The week-close job writes item 1's ledger.
       gate: both posts pass the fidelity and forbidden checks on real log lines
+      done: 2026-09-05, `feat/weekly-and-daily-posts`. Three modules in
+      `radar-analyst`: `contest.rs` closes the week — public metrics and
+      account ages read from X, refusals from a new `refusals.jsonl` the gate
+      now writes, the cooldown from earlier records, the rule applied, the
+      record and the hunter tally written atomically; `weekly.rs` renders the
+      result under 280 characters with every numeral authorised and the
+      winner's coin torn down as the reply; `daily.rs` renders and posts the
+      rows `radar seven-days-later` (new, in `radar-cli`, on
+      `deploy/radar-seven-days.timer`) writes from the store — the join the
+      analyst may not make. `Publisher::post` on every publisher, priced as
+      `RADAR_X_PRICE_POST`. Both posts pass the two checks in tests that
+      re-apply a dropped authorisation; a post that fails is recorded and not
+      sent, and the thread stops. Nothing has been posted: no credential
 - [ ] 7. **C4 `radar-payout` and C5 the manual fallback**: the three policy
       refusals — wrong recipient, second payout for a week, amount above
       collected — each proven by re-applying the bug; its own unit and user; no
@@ -145,12 +158,12 @@ time.
 
 ## Handback
 
-Stopped at: items 1–5 and 9 done, stacked in that order: PR #147
+Stopped at: items 1–6 and 9 done, stacked in that order: PR #147
 (`feat/contest-crate`), #148 (`feat/public-endpoints`), #149
 (`research/0028-the-fee-after-graduation`), #150 (`feat/refusal-signals`),
-then `feat/telegram-lane`. All wait on merge permission.
-Next action: item 6, the weekly post and the daily "seven days later" post,
-with the week-close job that writes item 1's ledger from the X log. Then 7.
+#151 (`feat/telegram-lane`), then `feat/weekly-and-daily-posts`. All wait on
+merge permission.
+Next action: item 7, `radar-payout` and the manual fallback. Then 8.
 The box needs the new `radar` binary before `population.json` exists there;
 until then `/v1/public/stats` answers 404 and the site shows its dated
 fixture, which is the designed behaviour.

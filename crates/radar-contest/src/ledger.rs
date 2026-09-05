@@ -202,6 +202,32 @@ impl Record {
     }
 }
 
+/// Every week record in a directory, in no particular order.
+///
+/// A record is a file named `<week>.json` where `<week>` is the week number;
+/// both halves of the name are required, so a backup copy, a notes file or a
+/// numbered file with no extension is not a record. A file that does not parse
+/// is skipped rather than failing the read: a torn write is not evidence, and
+/// the weeks either side of it still are.
+///
+/// The one place this crate touches a disk, and only to read what it wrote.
+#[must_use]
+pub fn records_in(dir: &std::path::Path) -> Vec<Record> {
+    let Ok(listing) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    listing
+        .flatten()
+        .filter(|entry| {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            name.ends_with(".json") && name.trim_end_matches(".json").parse::<u64>().is_ok()
+        })
+        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
+        .filter_map(|text| Record::from_json(&text).ok())
+        .collect()
+}
+
 impl Payout {
     /// Whether paying `lamports` to `recipient` for this week is permitted.
     ///
@@ -245,6 +271,35 @@ mod tests {
     use crate::score::{Entry, Metrics, Ranked};
 
     const WEEK: Week = Week(2958);
+
+    #[test]
+    fn only_a_numbered_json_file_in_the_directory_is_a_record() {
+        // Both halves of the name rule. CI's mutants turned the `&&` into `||`
+        // and a numbered file with no extension, holding a valid record,
+        // became a week; the leaderboard would have shown it.
+        let dir = std::env::temp_dir().join(format!("radar-ledger-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let write = |name: &str, week: Week| {
+            std::fs::write(
+                dir.join(name),
+                Record::close(week, Ranking::default())
+                    .to_json()
+                    .expect("json"),
+            )
+            .expect("write");
+        };
+        write("2957.json", Week(2957));
+        write("2958", Week(2958));
+        write("2959.json.bak", Week(2959));
+        std::fs::write(dir.join("notes.json"), "{}").expect("write");
+        let weeks: Vec<u64> = records_in(&dir).into_iter().map(|r| r.week.0).collect();
+        assert_eq!(weeks, [2957]);
+        assert!(
+            records_in(&dir.join("nowhere")).is_empty(),
+            "a missing directory is no records"
+        );
+    }
 
     fn ranking_with_winner() -> Ranking {
         Ranking {

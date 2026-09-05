@@ -352,6 +352,25 @@ top-level post (`RADAR_X_PRICE_POST`, the fifth required price), and to a
 Telegram channel when one is configured. **Nothing has been posted**, for the
 same reason nothing has been replied to.
 
+**The payout exists and has paid nothing, as of 2026-09-05** (design 0007 C3,
+C4, C5; ADR 0013; plan 0006 item 7). `crates/radar-payout` is its own binary,
+unit, user and key: it reads a week's record, reads the creator vault, plans
+one transaction — `collect_creator_fee` then a system transfer of everything
+above the vault's rent reserve to the claimed address — under
+`Payout::permitted`'s three refusals, signs with the creator key, sends over
+direct RPC, **reads the transaction back** and records the payout only when
+the chain confirms exactly the planned transfer. The manual fallback (`radar
+contest pay --dry-run`, `radar contest record-payout`) prints the unsigned
+transaction and records a hand-made one through the same read-back. A winner's
+claim is a reply naming an address inside the seven-day window, written into
+the record by the analyst's loop and not answered as a summons. Three things
+are stated rather than proven: the `collect_creator_fee` account order comes
+from the program's on-chain IDL and not yet from a mainnet capture; the vault's
+rent reserve is the runtime's zero-data minimum and not yet a measured
+post-collect balance; and no key, wallet or token exists, so nothing here has
+run against a chain. The devnet week design 0007 §6.3 requires is where all
+three become captures.
+
 **The self-mint rule is built, as of 2026-09-05** (ADR 0013 constraint 5,
 design 0007 C8). Every fact on the sheet carries an `About` tag, and the sheet
 builder drops every `About::Price` fact for the mint in `RADAR_SELF_MINT` before

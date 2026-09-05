@@ -1,0 +1,56 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-payout.service. Started by the timer.
+#
+# The payout: pays each claimed, unpaid week from the creator vault to the
+# claimed address, under the contest's three refusals, and reads the
+# transaction back before the ledger says paid (design 0007 C4, ADR 0013).
+#
+# Its own user, its own key, its own unit -- modelled on radar-signer@.service
+# and for the same reason. This is NOT the trading signer: it cannot sign a
+# trade, and the trading signer cannot sign this. The key file is readable by
+# radar-payout and nobody else; it never appears in the environment, only its
+# path. The blast radius of this key is one week of creator fees.
+#
+# Network: RPC only, and only what pays a transaction. It reads no store, holds
+# no tokens (ADR 0013 constraint 2), and writes only the contest directory --
+# the week's record with its payout, and the pool reading the site serves.
+#
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin radar-payout
+#   sudo install -m 0400 -o radar-payout -g radar-payout <keypair.json> /etc/radar/payout.json
+#   sudo install -m 0640 -o root -g radar-payout deploy/payout.env.example /etc/radar/payout.env
+#   sudo setfacl -m u:radar-payout:rwx /home/guardian/radar/data/contest
+[Unit]
+Description=Radar payout — pays the week's prize under three refusals
+Documentation=https://github.com/hey-vera/radar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=radar-payout
+Group=radar-payout
+WorkingDirectory=/home/guardian/radar
+ExecStart=/usr/local/bin/radar-payout --due
+Environment=RADAR_PAYOUT_KEY=/etc/radar/payout.json
+Environment=RADAR_CONTEST_DIR=/home/guardian/radar/data/contest
+EnvironmentFile=/etc/radar/payout.env
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/data/contest
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+CapabilityBoundingSet=
+MemoryMax=256M
+TasksMax=16

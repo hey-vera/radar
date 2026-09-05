@@ -96,4 +96,22 @@ describe("the prize pool before a token exists", () => {
     expect(screen.getByText(/operator holds zero tokens/i)).toBeTruthy();
     expect(screen.getByText(/No dev buy/i)).toBeTruthy();
   });
+
+  it("does the arithmetic on the fee it states", async () => {
+    // 30 bps is 0.30%, so $10,000 of weekly volume is $30 and $100,000 is
+    // $300. The page said $3 and $30 until 2026-09-05, having read the rate as
+    // 0.03%, and three documents said the same. A page that understates the
+    // token's own economics by 10x is wrong in the flattering-to-nobody
+    // direction, and nothing here noticed until somebody multiplied.
+    //
+    // Re-apply the bug by putting `$3` back and the first assertion fails.
+    const { container } = render(<Pool />);
+    await waitFor(() => {
+      expect(screen.getByText(/30 basis points of volume/i)).toBeTruthy();
+    });
+    const text = container.textContent ?? "";
+    expect(text).toMatch(/\$30;/);
+    expect(text).toMatch(/\$300\./);
+    expect(text).not.toMatch(/\$3;/);
+  });
 });

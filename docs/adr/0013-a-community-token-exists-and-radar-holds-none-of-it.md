@@ -83,8 +83,12 @@ promotion in this jurisdiction, and what entity and terms sit behind it. Design
 it**, and accepting this ADR is not accepting that it has been cleared.
 
 **The prize is small until volume is not.** At $10k of weekly volume the prize
-is roughly $3; at $1M it is roughly $300. The page says so. A token that
-oversells its own economics is the thing the analyst exists to expose.
+is roughly **$30**; at $1M it is roughly **$3,000**. This paragraph said $3
+and $300 until 2026-09-05 — 30 bps read as 0.03% rather than 0.30%, wrong by
+10× in the direction that understates; corrected by
+[design 0009](../design/0009-three-loops-and-no-formula.md) §1, and the pool
+page carries the same correction in a follow-up. A token that oversells its
+own economics is the thing the analyst exists to expose.
 
 ## What this commits to
 

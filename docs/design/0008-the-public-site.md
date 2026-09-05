@@ -185,7 +185,10 @@ Real today, top to bottom. No empty states.
 - Past winners, each with the transaction signature, once there are any.
 - The economics stated plainly, per ADR 0013: the only cash flow is pump.fun's
   30 bps creator fee, 100% of it is the prize, the operator holds zero tokens,
-  and at $10k of weekly volume the prize is about $3. A memecoin that lies about
+  and at $10k of weekly volume the prize is about $30 — **not the $3 this line
+  and `site/src/Pool.tsx` said until 2026-09-05**; 30 bps is 0.30%, and
+  [design 0009](0009-three-loops-and-no-formula.md) §1 records the 10×
+  correction. The page is fixed in a follow-up. A memecoin that lies about
   its economics is the thing this bot exists to expose.
 
 ---

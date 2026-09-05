@@ -12,6 +12,11 @@ being built. Two differences worth reading before quoting anything below:
   holding, and ADR 0013's constraint 2 is that the operator holds zero tokens.
 - The **treasury** in section 3 is not a treasury. The creator fee is paid out
   in full each week as the prize; nothing accumulates to be spent later.
+- The **holder-weighted nominations** in section 2 are **dropped** by
+  [design 0009](0009-three-loops-and-no-formula.md) L3, 2026-09-05. A summon
+  is a nomination, and weighting by holding would give the token a
+  governance-shaped use. The Deep Hunt post survives as what the weekly
+  winner gets.
 
 Everything else here — the record as the thing that compounds, holders
 pointing rather than deciding, the appointment, the self-audit being recurring

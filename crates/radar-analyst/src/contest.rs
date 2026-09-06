@@ -340,6 +340,10 @@ pub fn close(inputs: &Inputs<'_>) -> Record {
         let entry = |metrics| ContestEntry {
             reply_id: reply_id.clone(),
             summoner: e.summoner.clone(),
+            // Carried from the log so the claim prompt has a post X is
+            // guaranteed to accept a reply to. Empty is treated as absent: a
+            // log line written before mention ids were recorded has one.
+            mention_id: Some(e.mention_id.clone()).filter(|m| !m.is_empty()),
             // Absent when the account lookup did not return this entrant, and
             // absent is rendered as the id-based link rather than as a blank
             // name.
@@ -423,7 +427,12 @@ pub fn sightings(log: &[Entry], week: Week) -> Vec<Sighting> {
 /// window is a summons like any other, and is answered as one -- which is a
 /// visible "no record" rather than a silent second claim.
 #[must_use]
-pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week> {
+pub fn try_claim(
+    mention: &Mention,
+    contest_dir: &str,
+    now: u64,
+    owner_of: impl FnOnce(&radar_types::Address) -> Result<Option<String>, String>,
+) -> Option<Week> {
     // A claim is a reply to the account's own claim prompt. Nothing else is a
     // claim, however it is worded and whatever address it contains.
     //
@@ -450,9 +459,9 @@ pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week>
     let crate::mention::Asked::Mint(address) = crate::mention::read(&mention.text) else {
         return None;
     };
-    if address.parse::<radar_types::Address>().is_err() {
+    let Ok(parsed) = address.parse::<radar_types::Address>() else {
         return None;
-    }
+    };
     let mut record = radar_contest::records_in(std::path::Path::new(contest_dir))
         .into_iter()
         .find(|r| {
@@ -477,8 +486,38 @@ pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week>
                     .as_ref()
                     .is_some_and(|w| w.summoner == mention.author)
         })?;
+    // The address is a wallet, or this is not a claim.
+    //
+    // Asked of the chain, because base58 cannot tell a wallet from a mint and
+    // the winner is writing prose: "for <mint>, pay me at <wallet>" holds two
+    // such strings and `mention::read` takes the first. Refused rather than
+    // recorded, so the winner can reply again inside their window; a refusal at
+    // payout instead would be a week they spent believing they had claimed.
+    //
+    // An unreadable owner refuses too. Rule 9: unknown is not safe, and what is
+    // on the other side of this check is a public payout.
+    match owner_of(&parsed) {
+        Ok(owner) if is_wallet(owner.as_deref()) => {}
+        Ok(owner) => {
+            eprintln!(
+                "radar-analyst: week {} claim named {address}, owned by {}; not a wallet and not recorded",
+                record.week.0,
+                owner.unwrap_or_else(|| "an unknown program".to_owned())
+            );
+            return None;
+        }
+        Err(e) => {
+            eprintln!(
+                "radar-analyst: week {} claim named {address} and its owner could not be read ({e}); not recorded, the winner can try again",
+                record.week.0
+            );
+            return None;
+        }
+    }
+
     record.claim = Some(radar_contest::Claim {
         address,
+
         reply_id: mention.id.clone(),
         at: now,
     });
@@ -634,6 +673,36 @@ pub fn close_if_due(
     Ok(Some(record))
 }
 
+/// The system program, which owns every ordinary wallet.
+pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+
+/// Whether an address is a wallet the prize can safely be sent to.
+///
+/// Pure, so the rule can be read without a chain. `owner` is what
+/// [`radar_onchain::RpcClient::owner_of`] returned.
+///
+/// # Why this exists at claim time and not only at payout
+///
+/// A Solana address is 32 bytes of base58, and **a coin's mint looks exactly
+/// like a wallet**. A winner writing "for <mint>, pay me at <wallet>" has two
+/// such strings in one sentence, and `mention::read` takes the first. Without
+/// this the prize would be recorded against the coin they were asking about.
+///
+/// The payout has its own copy of this refusal (`radar_payout`), and that is
+/// deliberate defence in depth -- but a refusal at payout is a week the winner
+/// spent believing they had claimed. Here they are told immediately and can
+/// reply again.
+#[must_use]
+pub fn is_wallet(owner: Option<&str>) -> bool {
+    match owner {
+        // Nothing on chain: a keypair that has never received lamports, which
+        // is exactly what somebody generates for a public payout. A wallet.
+        None => true,
+        // The system program owns ordinary accounts.
+        Some(o) => o == SYSTEM_PROGRAM,
+    }
+}
+
 /// Marks a week as voided, or says why it cannot be.
 ///
 /// # Errors
@@ -714,6 +783,19 @@ fn write_atomically(path: &str, text: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// An owner lookup that says every address is an ordinary wallet.
+    ///
+    /// The default for tests about the claim RULE rather than about the
+    /// address: they are asking whether a reply is a claim, and the chain read
+    /// is a separate question with its own tests below.
+    #[expect(
+        clippy::unnecessary_wraps,
+        reason = "it stands in for a chain read, whose signature is fallible"
+    )]
+    fn a_wallet(_: &radar_types::Address) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// An account of a given age at `closes_at`.
     fn aged(days: u64, at: u64) -> crate::x::Account {
         crate::x::Account {
@@ -735,6 +817,7 @@ mod tests {
             entry: ContestEntry {
                 reply_id: reply_id.to_owned(),
                 summoner: format!("s{reply_id}"),
+                mention_id: None,
                 handle: None,
                 mint: "M".to_owned(),
                 at: WEEK.opens_at() + 10,
@@ -1389,6 +1472,136 @@ mod tests {
     }
 
     #[test]
+    fn a_claim_naming_a_coins_mint_is_refused_rather_than_recorded() {
+        // Research 0029, S19. A Solana address is 32 bytes of base58 and a
+        // mint looks exactly like a wallet. A winner writing "for <mint>, pay
+        // me at <wallet>" has two of them in one sentence and `mention::read`
+        // takes the first -- so without this the prize is recorded against the
+        // coin they were asking about, and `Payout::permitted` approves it,
+        // because the recipient really does equal the claim.
+        //
+        // Re-apply by accepting any owner: the token-program address is
+        // recorded as the payout address.
+        let dir = std::env::temp_dir().join(format!("radar-mint-claim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = dir.to_string_lossy().into_owned();
+
+        let address = "So11111111111111111111111111111111111111112";
+        let rules = Rules::published(["radar"]);
+        let mut record = Record::close(WEEK, radar_contest::Ranking::default(), &rules);
+        record.winner = Some(radar_contest::Winner {
+            summoner: "alice".to_owned(),
+            reply_id: "r1".to_owned(),
+            score: 9,
+            handle: None,
+        });
+        record.claim_prompt = Some("prompt-1".to_owned());
+        write_record(&dir, &record).expect("write");
+
+        let claim = Mention {
+            id: "m1".to_owned(),
+            author: "alice".to_owned(),
+            text: format!("pay me {address}"),
+            parent: Some("prompt-1".to_owned()),
+        };
+        let inside = WEEK.closes_at() + 3_600;
+
+        // Owned by the token program: a mint, not a wallet.
+        assert_eq!(
+            try_claim(&claim, &dir, inside, |_| Ok(Some(
+                "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_owned()
+            ))),
+            None,
+            "a mint must not be recorded as a payout address"
+        );
+        assert!(
+            radar_contest::records_in(std::path::Path::new(&dir))[0]
+                .claim
+                .is_none(),
+            "and nothing is written, so the winner can reply again"
+        );
+
+        // An owner that could not be read is refused too. Rule 9: unknown is
+        // not safe, and a public payout is on the other side of it.
+        assert_eq!(
+            try_claim(&claim, &dir, inside, |_| Err("node unreachable".to_owned())),
+            None
+        );
+
+        // The system program owns ordinary wallets, and an address with no
+        // account at all is a fresh keypair -- which is exactly what somebody
+        // generates for a public payout. Both are claims.
+        assert_eq!(
+            try_claim(&claim, &dir, inside, |_| Ok(Some(
+                SYSTEM_PROGRAM.to_owned()
+            ))),
+            Some(WEEK)
+        );
+    }
+
+    #[test]
+    fn an_address_with_no_account_is_a_wallet_and_a_program_owned_one_is_not() {
+        // The rule alone, without a chain or a record. `None` is the case
+        // worth stating: refusing it would refuse a winner who generated a
+        // fresh address for the prize, which is the sensible thing to do with
+        // a payout that will be published.
+        assert!(is_wallet(None), "a keypair with no account yet is a wallet");
+        assert!(is_wallet(Some(SYSTEM_PROGRAM)));
+        for program in [
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+            "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+        ] {
+            assert!(!is_wallet(Some(program)), "{program} is not a wallet");
+        }
+    }
+
+    #[test]
+    fn the_claim_prompt_goes_under_the_winners_own_summons() {
+        // Since 2026-02-23 X accepts an API reply only when the author of the
+        // post being replied to mentioned or quoted the bot. A summons did
+        // that by definition; the bot's own reply relies on an exemption
+        // reported by a blog and documented nowhere. If that exemption is not
+        // real, the winner is never told they won.
+        //
+        // Re-apply by dropping `mention_id` from the entry: the prompt falls
+        // back to the winning reply and this fails.
+        let log = vec![Entry {
+            at: WEEK.opens_at() + 10,
+            mention_id: "the-summons".to_owned(),
+            summoner: "alice".to_owned(),
+            mint: Some("M".to_owned()),
+            read_at_slot: None,
+            fact_sheet: String::new(),
+            reply: String::new(),
+            fellback: None,
+            reply_id: Some("r1".to_owned()),
+            signals: None,
+        }];
+        let metrics: BTreeMap<String, Metrics> = [("r1".to_owned(), Metrics::default())]
+            .into_iter()
+            .collect();
+        let accounts: BTreeMap<String, crate::x::Account> =
+            [("alice".to_owned(), account(100))].into_iter().collect();
+        let rules = Rules::published(["radar"]);
+        let record = close(&Inputs {
+            week: WEEK,
+            log: &log,
+            refusals: &[],
+            previous: &[],
+            metrics: &metrics,
+            accounts: &accounts,
+            rules: &rules,
+        });
+        assert_eq!(
+            record.ranking.ranked[0].entry.mention_id.as_deref(),
+            Some("the-summons"),
+            "the close carries the summons through, and the prompt replies to it"
+        );
+    }
+
+    #[test]
     fn only_the_refusal_the_entrant_caused_costs_them_the_week() {
         // Research 0029, S17. The rule excluded every refusal there was, so an
         // honest entrant asking about a coin somebody else asked about an hour
@@ -1570,6 +1783,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one table of every shape a claim can arrive in; splitting it would hide that they are one rule"
+    )]
     fn a_reply_to_the_claim_prompt_is_a_claim_and_everything_else_is_a_summons() {
         // The winner replies to the account's claim prompt with an address:
         // written into the record, and the mention is not answered. Everything
@@ -1616,13 +1833,19 @@ mod tests {
             try_claim(
                 &under("bob", &format!("pay me {address}"), Some("prompt-1")),
                 &dir,
-                inside
+                inside,
+                a_wallet,
             ),
             None
         );
         // The winner, replying to the prompt with no address in it.
         assert_eq!(
-            try_claim(&under("alice", "thanks!", Some("prompt-1")), &dir, inside),
+            try_claim(
+                &under("alice", "thanks!", Some("prompt-1")),
+                &dir,
+                inside,
+                a_wallet,
+            ),
             None
         );
         // The winner, too late.
@@ -1630,7 +1853,8 @@ mod tests {
             try_claim(
                 &under("alice", &format!("here {address}"), Some("prompt-1")),
                 &dir,
-                late
+                late,
+                a_wallet,
             ),
             None
         );
@@ -1641,7 +1865,7 @@ mod tests {
         // can. This is a top-level mention with no parent at all.
         let a_summons_naming_a_mint = under("alice", "@radar what is HWvHqvfF...pump", None);
         assert_eq!(
-            try_claim(&a_summons_naming_a_mint, &dir, inside),
+            try_claim(&a_summons_naming_a_mint, &dir, inside, a_wallet),
             None,
             "a summons is not a claim, whatever address it happens to contain"
         );
@@ -1655,7 +1879,8 @@ mod tests {
                     Some("some-other-post")
                 ),
                 &dir,
-                inside
+                inside,
+                a_wallet,
             ),
             None,
             "a reply to anything but the claim prompt is not a claim"
@@ -1666,7 +1891,8 @@ mod tests {
             try_claim(
                 &under("alice", &format!("here {address}"), Some("prompt-1")),
                 &dir,
-                inside
+                inside,
+                a_wallet,
             ),
             Some(WEEK)
         );
@@ -1679,7 +1905,12 @@ mod tests {
         // A second address from the winner is a summons: the first claim stands.
         let other = radar_types::Address::new([6u8; 32]).to_string();
         assert_eq!(
-            try_claim(&under("alice", &other, Some("prompt-1")), &dir, inside + 1),
+            try_claim(
+                &under("alice", &other, Some("prompt-1")),
+                &dir,
+                inside + 1,
+                a_wallet,
+            ),
             None
         );
         assert_eq!(
@@ -1793,7 +2024,11 @@ mod tests {
                 text: format!("here {address}"),
                 parent: parent.map(str::to_owned),
             };
-            assert_eq!(try_claim(&mention, &dir, inside), None, "parent {parent:?}");
+            assert_eq!(
+                try_claim(&mention, &dir, inside, a_wallet),
+                None,
+                "parent {parent:?}"
+            );
         }
     }
 

@@ -16,6 +16,7 @@
 
 use std::time::Duration;
 
+use radar_onchain::Budget as CallBudget;
 use radar_provider::Budget;
 use radar_roast::{BaseRates, Billed};
 use radar_types::{Address, MicroUsd};
@@ -711,6 +712,30 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
         return;
     };
 
+    // **Under the winner's own summons, not under the bot's winning reply.**
+    //
+    // Since 2026-02-23 X accepts an API reply only when the author of the post
+    // being replied to mentioned or quoted the bot in that post. A summons did
+    // exactly that by definition, so this is the one reply the platform
+    // guarantees. Replying under the account's own post relies instead on an
+    // exemption reported by a blog and a developer forum and documented
+    // nowhere -- and if it is not real, the winner is never told they won and
+    // finds out when the pool rolls over unclaimed.
+    //
+    // It also lands where they will see it: the summons is their own post, so
+    // the prompt reaches their notifications rather than a thread they left.
+    //
+    // The winning reply is the fallback, for weeks closed before mention ids
+    // were recorded. Those are the weeks the exemption has to hold for, and
+    // there is exactly one of them.
+    let under = record
+        .ranking
+        .ranked
+        .iter()
+        .find(|r| r.entry.reply_id == winner.reply_id)
+        .and_then(|r| r.entry.mention_id.clone())
+        .unwrap_or_else(|| winner.reply_id.clone());
+
     let Ok(reservation) = spend.authorize(Cost::Reply, day_of(at)) else {
         eprintln!(
             "radar-analyst: budget spent; week {} claim prompt not posted, retrying next tick",
@@ -722,7 +747,7 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
         publisher,
         &paths.posts,
         &format!("claim:{}", record.week.0),
-        Some(&winner.reply_id),
+        Some(&under),
         std::slice::from_ref(&post),
         at,
     ) {
@@ -859,7 +884,13 @@ pub fn tick(
         // summoning. Checked first, and at the cost of a directory listing
         // only: the claim is written into the record and the mention is not
         // answered, because a wallet is not a coin.
-        if let Some(week) = crate::contest::try_claim(mention, &paths.contest_dir, at) {
+        if let Some(week) = crate::contest::try_claim(mention, &paths.contest_dir, at, |a| {
+            // One `getAccountInfo`, on its own budget: a claim is one mention
+            // and must not spend the dossier allowance of the summons behind
+            // it in the queue.
+            let mut budget = CallBudget::default();
+            client.owner_of(&mut budget, a).map_err(|e| e.to_string())
+        }) {
             eprintln!(
                 "radar-analyst: {} -> claim recorded for week {}",
                 mention.id, week.0

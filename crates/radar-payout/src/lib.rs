@@ -267,6 +267,19 @@ pub trait Chain {
     ///
     /// The transport's or the node's reason, including a rejected transaction.
     fn send(&self, signed_base64: &str) -> Result<String, String>;
+    /// Which program owns an address, or `None` when nothing is there.
+    ///
+    /// A wallet is owned by the system program or does not exist yet; a mint,
+    /// a token account and a PDA are owned by something else. `None` is a
+    /// wallet: a keypair that has never received lamports has no account, and
+    /// that is exactly what somebody generates for a public payout.
+    ///
+    /// # Errors
+    ///
+    /// The transport's or the node's reason. **Never read an error as "it is
+    /// a wallet"** -- the caller refuses, because an unreadable owner is an
+    /// unknown one.
+    fn owner_of(&self, address: &Address) -> Result<Option<String>, String>;
     /// The system transfers a confirmed transaction made, or `None` when the
     /// transaction is not (yet) found.
     ///
@@ -374,13 +387,25 @@ pub enum Outcome {
     Paid(Payout),
 }
 
+/// The system program, which owns every ordinary wallet.
+pub const SYSTEM_PROGRAM: &str = "11111111111111111111111111111111";
+
+/// Whether an address is one the prize can safely be sent to.
+///
+/// `None` -- no account on chain -- is a wallet: a keypair that has never
+/// received lamports, which is what somebody generates for a public payout.
+#[must_use]
+pub fn is_wallet(owner: Option<&str>) -> bool {
+    owner.is_none_or(|o| o == SYSTEM_PROGRAM)
+}
+
 /// Pays a week, or plans it.
 ///
 /// Reads the record and the vault, writes the pool reading either way, plans,
-/// and -- unless `dry_run` -- signs, sends, verifies and records. The record is
-/// written only after verification: a signature the chain does not confirm as
-/// the planned transfer is printed and not recorded, and the next run refuses
-/// nothing it should pay.
+/// checks the claimed address is a wallet, and -- unless `dry_run` -- signs,
+/// sends, verifies and records. The record is written only after verification:
+/// a signature the chain does not confirm as the planned transfer is printed
+/// and not recorded, and the next run refuses nothing it should pay.
 ///
 /// # Errors
 ///
@@ -408,6 +433,25 @@ pub fn pay(
     )?;
     let blockhash = chain.latest_blockhash().map_err(PayError::Chain)?;
     let planned = plan(&record, &creator, vault_lamports, &blockhash)?;
+
+    // The claimed address is a wallet, or nothing is signed.
+    //
+    // `try_claim` already refused a non-wallet at claim time, where the winner
+    // could act on it. This is the second check and it is deliberate
+    // duplication: a mint and a wallet are the same shape, the claim file can
+    // be edited by hand, and what is on the other side of this line is a
+    // signature. AGENTS.md rule 9 -- an owner that will not read is unknown,
+    // and unknown refuses.
+    //
+    // Before the dry run returns, so `--dry-run` reports the refusal the real
+    // run would hit rather than printing a transaction that would be refused.
+    let owner = chain
+        .owner_of(&planned.recipient)
+        .map_err(PayError::Chain)?;
+    if !is_wallet(owner.as_deref()) {
+        return Err(PayError::Refused(Refusal::NotAWallet { owner }));
+    }
+
     if dry_run {
         return Ok(Outcome::Planned(planned));
     }
@@ -534,6 +578,18 @@ impl Rpc {
 }
 
 impl Chain for Rpc {
+    fn owner_of(&self, address: &Address) -> Result<Option<String>, String> {
+        let result = self.call(
+            "getAccountInfo",
+            &serde_json::json!([address.to_string(), { "encoding": "base64" }]),
+        )?;
+        Ok(result
+            .get("value")
+            .and_then(|v| v.get("owner"))
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned))
+    }
+
     fn balance(&self, address: &Address) -> Result<u64, String> {
         let result = self.call("getBalance", &serde_json::json!([address.to_string()]))?;
         result
@@ -650,6 +706,7 @@ mod tests {
             entry: Entry {
                 reply_id: "r1".to_owned(),
                 summoner: "alice".to_owned(),
+                mention_id: None,
                 handle: None,
                 mint: "M".to_owned(),
                 at: WEEK.opens_at() + 10,
@@ -679,10 +736,20 @@ mod tests {
         sent: RefCell<Vec<String>>,
         /// What `transfers_in` answers, or `None` for "not on chain".
         confirms: Option<Vec<Transfer>>,
+        /// What owns the claimed address. `None` is an unfunded wallet.
+        owner: Option<String>,
+        /// Whether the owner lookup fails, so "unknown refuses" can be tested.
+        owner_errors: bool,
         confirm_as_planned: bool,
     }
 
     impl Chain for Fake {
+        fn owner_of(&self, _: &Address) -> Result<Option<String>, String> {
+            if self.owner_errors {
+                return Err("node unreachable".to_owned());
+            }
+            Ok(self.owner.clone())
+        }
         fn balance(&self, _: &Address) -> Result<u64, String> {
             Ok(self.vault)
         }
@@ -872,6 +939,67 @@ mod tests {
             verify(&chain(None), "S", &p),
             Err(PayError::Verify(_))
         ));
+    }
+
+    #[test]
+    fn a_prize_is_never_signed_to_something_that_is_not_a_wallet() {
+        // Defence in depth, and the depth is the point. `try_claim` already
+        // refuses a non-wallet where the winner can act on it; this is the last
+        // check before a signature, because a mint and a wallet are the same
+        // shape and the claim file can be edited by hand.
+        //
+        // Re-apply by deleting the check: the token program's own address is
+        // paid the week's prize.
+        let d = dir("not-a-wallet");
+        write_record(&d, &record(true)).expect("record");
+        let mint_owned = Fake {
+            vault: VAULT_RENT_RESERVE + 2_000,
+            confirm_as_planned: true,
+            owner: Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_owned()),
+            ..Fake::default()
+        };
+        match pay(&mint_owned, &d, WEEK, &key(), 1_788_000_000, false) {
+            Err(PayError::Refused(Refusal::NotAWallet { owner })) => assert_eq!(
+                owner.as_deref(),
+                Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
+            ),
+            other => panic!("expected NotAWallet, got {other:?}"),
+        }
+        assert!(
+            mint_owned.sent.borrow().is_empty(),
+            "and nothing was sent, which is the whole point"
+        );
+
+        // The dry run reports the same refusal rather than printing a
+        // transaction the real run would refuse.
+        assert!(matches!(
+            pay(&mint_owned, &d, WEEK, &key(), 1_788_000_000, true),
+            Err(PayError::Refused(Refusal::NotAWallet { .. }))
+        ));
+
+        // An owner that will not read is unknown, and unknown refuses.
+        let unreadable = Fake {
+            vault: VAULT_RENT_RESERVE + 2_000,
+            owner_errors: true,
+            ..Fake::default()
+        };
+        assert!(matches!(
+            pay(&unreadable, &d, WEEK, &key(), 1_788_000_000, false),
+            Err(PayError::Chain(_))
+        ));
+    }
+
+    #[test]
+    fn an_unfunded_address_is_a_wallet_and_is_paid() {
+        // The case a stricter rule gets wrong. A keypair that has never
+        // received lamports has no account on chain, and that is exactly what a
+        // winner generates for a payout that will be published. Refusing it
+        // would refuse the careful winner and pay only the careless one.
+        assert!(is_wallet(None));
+        assert!(is_wallet(Some(SYSTEM_PROGRAM)));
+        assert!(!is_wallet(Some(
+            "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        )));
     }
 
     #[test]

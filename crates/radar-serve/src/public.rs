@@ -482,6 +482,7 @@ mod tests {
                     entry: ContestEntry {
                         reply_id: "r1".to_owned(),
                         summoner: "alice".to_owned(),
+                        mention_id: None,
                         handle: Some("alice_h".to_owned()),
                         mint: "M".to_owned(),
                         at: week.opens_at() + 10,
@@ -798,6 +799,7 @@ mod tests {
             ContestEntry {
                 reply_id: "r2".to_owned(),
                 summoner: "999000111".to_owned(),
+                mention_id: None,
                 handle: Some("newbie".to_owned()),
                 mint: "M2".to_owned(),
                 at: WEEK.opens_at() + 20,
@@ -809,6 +811,7 @@ mod tests {
             ContestEntry {
                 reply_id: "r3".to_owned(),
                 summoner: "999000222".to_owned(),
+                mention_id: None,
                 handle: None,
                 mint: "M3".to_owned(),
                 at: WEEK.opens_at() + 30,
@@ -820,6 +823,7 @@ mod tests {
             ContestEntry {
                 reply_id: "r4".to_owned(),
                 summoner: "999000333".to_owned(),
+                mention_id: None,
                 handle: None,
                 mint: "M4".to_owned(),
                 at: WEEK.opens_at() + 40,

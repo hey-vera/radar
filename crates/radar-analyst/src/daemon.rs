@@ -435,7 +435,17 @@ pub fn run() -> ! {
         );
         // The week closes on the tick after Monday 00:00 UTC, once. The
         // record is written first; the posts are written from the record.
-        let rules = radar_contest::Rules::published(x.as_ref().map_or("radar", X::user_id));
+        // Every account the operator controls, not just the bot's own.
+        //
+        // The bot posts as itself and is managed from a person's own account.
+        // Only the bot's id was excluded before 2026-09-06, so the managing
+        // account could have entered its own contest and won -- the operator
+        // paying themselves out of a pool the public is told is theirs.
+        //
+        // `RADAR_CONTEST_OPERATORS` is a comma-separated list of numeric ids;
+        // the bot's own id is always in the set whether or not it is listed, so
+        // forgetting the variable cannot make the bot eligible.
+        let rules = radar_contest::Rules::published(operator_ids(x.as_ref()));
         match crate::contest::close_if_due(
             x.as_ref(),
             &paths,
@@ -682,6 +692,33 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
             eprintln!("radar-analyst: cannot write {}: {e}", paths.posts);
         }
     }
+}
+
+/// Every account the operator controls, for the contest's exclusion rule.
+///
+/// The bot's own id is always included, so an unset or mistyped
+/// `RADAR_CONTEST_OPERATORS` can never make the bot itself eligible -- the
+/// failure this ordering exists to prevent. Everything else is additive.
+///
+/// Ids only: anything that is not a run of digits is dropped, because an X
+/// account id is a number and a handle pasted here would silently never match
+/// the `summoner` field, which carries an id.
+fn operator_ids(x: Option<&X>) -> Vec<String> {
+    let mut ids = vec![x.map_or_else(|| "radar".to_owned(), |x| x.user_id().to_owned())];
+    if let Ok(listed) = std::env::var("RADAR_CONTEST_OPERATORS") {
+        ids.extend(
+            listed
+                .split(',')
+                .map(|id| {
+                    id.trim()
+                        .chars()
+                        .filter(char::is_ascii_digit)
+                        .collect::<String>()
+                })
+                .filter(|id| !id.is_empty()),
+        );
+    }
+    ids
 }
 
 /// Sleeps rather than exiting, so a misconfigured unit is visible as a running

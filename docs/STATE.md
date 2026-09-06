@@ -127,6 +127,16 @@ purged and embargoed by twenty-four hours, and a stratum is `Found` only if it
 clears the bar on **both** remaining folds with at least a hundred rows each and
 a Wilson lower bound above a half.
 
+**The trades table is empty, and that halves the table.** Read on the box on
+2026-09-06: `~/radar/data/store/trades` was created on 2026-08-23 and has never
+been written to. Twelve of the twenty-three features are trade-derived, and they
+are **absent** rather than zero — decided from the trades table's own partition
+coverage, so they become measurements again the day the recorder writes one,
+with no code change. Nine features remain: the creator's record, the launch
+metadata, the dev buy, and what the decision lane recorded. Getting the recorder
+to write trades is the highest-value repair available to this work and it is not
+part of it.
+
 **No result exists.** Neither command has been run against the production
 store — that needs a Linux binary on the box, and this workstation has no store
 to run them against. So the honest state of the number is unchanged: research

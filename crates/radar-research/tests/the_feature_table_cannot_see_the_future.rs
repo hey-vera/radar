@@ -741,3 +741,69 @@ fn an_exit_measured_before_t_is_not_a_return() {
     // which is also the entry -- a later reading than the entry, so a return.
     assert_eq!(table.rows[0].gross_6h_bps, Some(0.0));
 }
+
+#[test]
+fn a_store_that_records_no_trades_reports_no_trade_features() {
+    // Found on the production box on 2026-09-05: the trades directory was
+    // created on 2026-08-23 and never written to. Without this the table would
+    // have carried twelve confident zeros about half a million launches --
+    // zero traders in the launch block, zero trades to thirty SOL -- and every
+    // one of them would have been a statement nobody measured.
+    //
+    // The dev buy is the exception and stays: it is read off the launch row.
+    let table = table_over(vec![launch(1, 100, 1_000)], vec![]);
+
+    for feature in [
+        "launch_traders",
+        "launch_transactions",
+        "launch_contiguity",
+        "trades_25",
+        "traders_25",
+        "trades_300",
+        "traders_300",
+        "trades_6000",
+        "traders_6000",
+        "trades_to_10_sol",
+        "trades_to_20_sol",
+        "trades_to_30_sol",
+    ] {
+        assert_eq!(
+            value(&table, 1, feature),
+            None,
+            "{feature} is not zero when nothing recorded it"
+        );
+    }
+    assert_eq!(
+        value(&table, 1, "dev_buy_lamports"),
+        Some(500_000_000.0),
+        "the dev buy is on the launch row, not in the trades table"
+    );
+    assert_eq!(
+        value(&table, 1, "creator_prior_launches"),
+        Some(0.0),
+        "a creator's first launch is a measured zero, not an absence"
+    );
+}
+
+#[test]
+fn a_quiet_launch_in_a_store_that_does_record_trades_reads_zero() {
+    // The other side, and the reason the test above is not satisfied by a
+    // function that returns absent for everything. Once the store holds trades
+    // covering the window, a launch nobody traded is a measured zero -- which
+    // is a real and interesting fact about that launch.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![
+            launch(1, 100, at),
+            // A second mint traded in the same partition, so the table covers
+            // the window even though mint 1 saw nothing.
+            launch(2, 101, at + 1),
+            buy(2, 10, at + 1, 0, 1),
+        ],
+        vec![],
+    );
+
+    assert_eq!(value(&table, 1, "launch_traders"), Some(0.0));
+    assert_eq!(value(&table, 1, "trades_6000"), Some(0.0));
+    assert_eq!(value(&table, 2, "launch_traders"), Some(1.0));
+}

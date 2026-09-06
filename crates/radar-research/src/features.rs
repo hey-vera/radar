@@ -257,6 +257,7 @@ pub fn build(
         .collect();
 
     let trades = trades_to_t(reader, as_of, &by_mint, &considered)?;
+    let coverage = trade_coverage(reader)?;
 
     // Outcomes per mint, ascending by measurement. The row builder walks this
     // twice — once bounded by T for the creator's record, once unbounded for
@@ -320,6 +321,11 @@ pub fn build(
         rows.push(build_row(&Inputs {
             launch,
             trades: trades.get(mint).map_or(&[][..], Vec::as_slice),
+            trades_recorded: covered(
+                &coverage,
+                launch.envelope.slot,
+                launch.envelope.slot + SlotDelta(ENTRY_OFFSET_SLOTS),
+            ),
             per_mint: &per_mint,
             by_creator: &by_creator,
             names: &names,
@@ -335,6 +341,41 @@ pub fn build(
         entry_offset: ENTRY_OFFSET_SLOTS,
         rows,
     })
+}
+
+/// The partitions the trades table actually holds, by partition index.
+///
+/// # Why a trade feature is not a measurement everywhere
+///
+/// A launch with no recorded trades reads as zero traders, zero transactions
+/// and a contiguity of zero — and that is a measurement **only if the store
+/// records trades for that window**. On 2026-09-05 the production store's
+/// trades directory was empty: created 2026-08-23 and never written to. Every
+/// trade-derived feature would have been a confident zero about 520,000
+/// launches, which is rule 9's exact failure and the one this module exists to
+/// refuse.
+///
+/// So coverage is read from the table's own partition files. A launch whose
+/// window is not wholly inside the partitions the store holds gets **absent**
+/// trade features, and a stratum naming one drops the row rather than reading
+/// the absence as a quiet market.
+fn trade_coverage(reader: &Reader) -> Result<BTreeSet<u64>, StoreError> {
+    Ok(reader
+        .files(Table::Trades)?
+        .iter()
+        .filter_map(|path| Reader::partition_range(path))
+        .map(|(start, _)| radar_store::partition_of(start))
+        .collect())
+}
+
+/// Whether the trades table covers every partition from `from` to `to`.
+///
+/// The whole window or none of it. A window half-covered would produce a count
+/// that is right about one half and silent about the other, which is worse than
+/// absent because it looks like a number.
+fn covered(coverage: &BTreeSet<u64>, from: Slot, to: Slot) -> bool {
+    (radar_store::partition_of(from)..=radar_store::partition_of(to))
+        .all(|partition| coverage.contains(&partition))
 }
 
 /// The trades of every considered mint, from its launch to its T, in order.
@@ -433,6 +474,9 @@ fn first_from<'a>(series: &[&'a Outcome], bound: Slot) -> Option<&'a Outcome> {
 struct Inputs<'a> {
     launch: &'a radar_store::Launch,
     trades: &'a [Trade],
+    /// Whether the trades table covers this launch's whole window. When it does
+    /// not, every trade-derived feature is absent rather than zero.
+    trades_recorded: bool,
     per_mint: &'a BTreeMap<Address, Vec<&'a Outcome>>,
     by_creator: &'a BTreeMap<Address, Vec<(Slot, Address)>>,
     names: &'a BTreeMap<String, Vec<Slot>>,
@@ -496,6 +540,19 @@ fn build_row(inputs: &Inputs<'_>) -> Result<Row, BuildError> {
 fn launch_block_features(builder: &mut RowBuilder, inputs: &Inputs<'_>) -> Result<(), BuildError> {
     let mint = inputs.launch.mint;
     let at = inputs.launch_slot();
+    if !inputs.trades_recorded {
+        // The dev buy comes off the launch row rather than the trades table, so
+        // it survives; the rest of this function is about trades.
+        if let Some(lamports) = inputs.launch.dev_buy_lamports {
+            set(
+                builder,
+                mint,
+                "dev_buy_lamports",
+                Observed::new(lamports_as_f64(lamports), at),
+            )?;
+        }
+        return Ok(());
+    }
     let in_block: Vec<&Trade> = inputs
         .trades
         .iter()
@@ -613,6 +670,9 @@ fn creator_record_features(
 
 /// How much happened, at three widths.
 fn activity_features(builder: &mut RowBuilder, inputs: &Inputs<'_>) -> Result<(), BuildError> {
+    if !inputs.trades_recorded {
+        return Ok(());
+    }
     let mint = inputs.launch.mint;
     for (width, trades_name, traders_name) in [
         (25u64, "trades_25", "traders_25"),
@@ -651,6 +711,9 @@ fn activity_features(builder: &mut RowBuilder, inputs: &Inputs<'_>) -> Result<()
 /// Buys only, and only those whose moved lamports the decoder recovered. A sell
 /// is not inflow, and a buy with no realised figure is not a buy of zero.
 fn velocity_features(builder: &mut RowBuilder, inputs: &Inputs<'_>) -> Result<(), BuildError> {
+    if !inputs.trades_recorded {
+        return Ok(());
+    }
     let mint = inputs.launch.mint;
     let mut cumulative = 0u128;
     let mut taken = 0u64;

@@ -184,6 +184,24 @@ fact the bot later wants to state has the pass it must go through first.
   gets tested**, and without them the harness could not see an edge it was
   looking straight at.
 
+- Q4 (2026-09-05), **not a question, a finding**: the production store's
+  **trades table is empty**. `~/radar/data/store/trades` was created on
+  2026-08-23 and has never been written to; the recorder records launches,
+  graduations, outcomes and decisions and no trades. Read on the box at
+  2026-09-06 00:16 UTC.
+
+  Twelve of the twenty-three features are trade-derived, and without this they
+  would have been twelve confident zeros about half a million launches. They are
+  absent now, decided from the trades table's own partition coverage rather than
+  from a flag, so the day the recorder starts writing trades they become
+  measurements again with no code change. Both sides are tested.
+
+  What it costs: the first run measures the creator's record, the launch
+  metadata, the dev buy and the decision lane's readings — nine features, not
+  twenty-three. Liquidity velocity, the launch block's shape and contiguity, the
+  three activity widths: all of them wait for the recorder. **That is the single
+  highest-value thing to fix next**, and it is not in this plan.
+
 ## Handback
 
 Stopped at: items 1 and 2 done and green on

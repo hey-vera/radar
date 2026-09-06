@@ -62,6 +62,24 @@ pub fn run(reader: &Reader, args: &[String]) -> Result<(), String> {
     // hundred rows for every purpose that matters.
     println!("labelled 6h  : {with_6h}");
     println!("labelled 24h : {with_24h}");
+
+    // A store that records no trades produces no trade features, and says so
+    // rather than filling twelve columns with zeros. Printed because the
+    // difference between "nobody traded" and "nothing recorded trades" is
+    // invisible in the file and decides what the protocol can be asked.
+    let traders = features::feature_index("launch_traders").expect("a known feature");
+    let with_trades = table
+        .rows
+        .iter()
+        .filter(|r| r.value(traders).is_some())
+        .count();
+    println!("trade features: {with_trades} of {} rows", table.rows.len());
+    if with_trades == 0 && !table.rows.is_empty() {
+        println!(
+            "               the trades table covers none of these windows, so the
+                            twelve trade-derived features are absent rather than zero"
+        );
+    }
     println!("written to   : {out}");
 
     if table.rows.is_empty() {

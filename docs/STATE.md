@@ -432,7 +432,19 @@ refusals from `refusals.jsonl` — which the gate now writes — and earlier
 records for the cooldown, applies the published rule, and writes
 `data/contest/<week>.json` and the hunter tally beside it, atomically. A reply
 the platform returned no metrics for is excluded as unscored, never scored
-zero. Then `weekly.rs` posts the result under 280 characters — counts, the top
+zero.
+
+**Which refusal costs the week changed on 2026-09-06.** Until then *any* refusal
+excluded the summoner, and the gate writes five kinds. So an honest entrant who
+asked about a coin somebody else had asked about an hour ago was out for the
+week, and anybody could spend the global cap early on Monday and put every later
+summoner out until Sunday. Design 0007 §6.2 meant the burst, which is
+`SummonerDaily` and nothing else, and that is now the only kind that excludes.
+Each refusal line carries a `RefusalKind`; a line written before they were
+recorded has none and is counted the old way, and there are no such lines on the
+box. The gate's ignore list also held the literal `radar` rather than the bot's
+numeric id — a value no `author_id` can equal, so the one entry it exists for
+was never in it. Then `weekly.rs` posts the result under 280 characters — counts, the top
 reply's score and URL, the pool in SOL, never a price, never a handle — with
 the winning coin's fact sheet as the reply, every numeral on an authorised
 list the same fidelity and forbidden checks read. Daily at 12:00 UTC,

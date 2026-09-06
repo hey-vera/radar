@@ -28,6 +28,7 @@ use crate::admission::{Admitted, Gate, Refused};
 use crate::log::Entry;
 use crate::mention::Asked;
 use crate::x::Mention;
+use radar_roast::Billed;
 
 /// Everything answering a mention needs that does not change between mentions.
 pub struct Answering<'a> {
@@ -67,7 +68,12 @@ pub struct Answering<'a> {
 #[derive(Debug)]
 pub enum Answered {
     /// A reply was built. The entry is not yet published.
-    Reply(Box<Entry>),
+    Reply {
+        /// The reply and its evidence, ready to publish.
+        entry: Box<Entry>,
+        /// What the voice pass owes the meter that reserved it.
+        billed: Billed,
+    },
     /// The mention named a symbol, which identifies nothing.
     ///
     /// Carries the reply that says so — the honest answer, and the best content
@@ -82,6 +88,27 @@ pub enum Answered {
     NotAnAddress,
     /// The chain could not be read within the call budget.
     Unreadable(String),
+}
+
+impl Answered {
+    /// What the meter should do with the model reservation made before this.
+    ///
+    /// Every outcome but a reply stopped at the parser, the gate or an
+    /// unreadable chain and never reached the provider, so the reservation is
+    /// given back. Answered here rather than at each call site because the X
+    /// loop and the Telegram lane must not answer it differently, and matched
+    /// exhaustively so a sixth outcome has to say which side it is on.
+    #[must_use]
+    pub const fn billed(&self) -> Billed {
+        match self {
+            Self::Reply { billed, .. } => *billed,
+            Self::Ticker(_)
+            | Self::Nothing
+            | Self::Refused(_)
+            | Self::NotAnAddress
+            | Self::Unreadable(_) => Billed::NoCall,
+        }
+    }
 }
 
 /// Answers one mention.
@@ -133,23 +160,28 @@ pub fn answer(mention: &Mention, gate: &mut Gate, ctx: &Answering<'_>) -> Answer
         ctx.self_mint,
     );
 
-    Answered::Reply(Box::new(Entry {
-        at: ctx.now,
-        mention_id: mention.id.clone(),
-        summoner: mention.author.clone(),
-        mint: Some(mint_text),
-        read_at_slot: dossier.read_at.map(|s| s.0),
-        // The evidence, not only the words. A log of replies without fact
-        // sheets records what Radar said and not whether it was entitled to say
-        // it, and the second is the half that settles an argument.
-        fact_sheet: sheet.render(),
-        reply: reply.text,
-        fellback: reply.fellback.as_ref().map(|f| format!("{f:?}")),
-        reply_id: None,
-        // Counted where the sheet was built, carried here so the week-close
-        // job scores from the record and never re-reads the chain.
-        signals: Some(sheet.signals),
-    }))
+    Answered::Reply {
+        // Read before `reply.text` is moved below. `Billed` is `Copy`, so this
+        // is not a borrow that has to outlive anything.
+        billed: reply.billed,
+        entry: Box::new(Entry {
+            at: ctx.now,
+            mention_id: mention.id.clone(),
+            summoner: mention.author.clone(),
+            mint: Some(mint_text),
+            read_at_slot: dossier.read_at.map(|s| s.0),
+            // The evidence, not only the words. A log of replies without fact
+            // sheets records what Radar said and not whether it was entitled to say
+            // it, and the second is the half that settles an argument.
+            fact_sheet: sheet.render(),
+            reply: reply.text,
+            fellback: reply.fellback.as_ref().map(|f| format!("{f:?}")),
+            reply_id: None,
+            // Counted where the sheet was built, carried here so the week-close
+            // job scores from the record and never re-reads the chain.
+            signals: Some(sheet.signals),
+        }),
+    }
 }
 
 /// A refusal, in words worth telling somebody.

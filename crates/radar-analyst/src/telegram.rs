@@ -46,7 +46,9 @@
 use crate::admission::{Gate, Limits};
 use crate::answer::{Answered, Answering};
 use crate::publish::{DryRun, Publisher, Undeliverable};
+use crate::spend::{Cost, Spend};
 use crate::x::{Mention, Unreachable};
+use radar_roast::Billed;
 
 /// Where the Bot API lives.
 pub const API: &str = "https://api.telegram.org";
@@ -404,9 +406,14 @@ pub fn limits_from(get: &impl Fn(&str) -> Option<String>) -> Limits {
 ///
 /// The same sequence as the X loop -- admit before the chain is read, record
 /// before anything is said, tell the gate only what was actually sent -- and
-/// none of the X costs, because the platform bills nothing. The one thing it
-/// spends is the model call inside the reply, which the X loop does not meter
-/// separately either.
+/// none of the X costs, because the platform bills nothing.
+///
+/// **It is not free, though, and it shares the X lane's meter.** The model call
+/// inside a reply is the same money whichever platform asked for it, so this
+/// takes the same [`Spend`] and charges [`Cost::ModelCall`] against the same
+/// day. A separate budget here would be a second ceiling that neither one
+/// enforces: a free Telegram room is exactly where somebody would spend the
+/// account's model budget for nothing.
 ///
 /// The offset is written whenever the page named one, answered or not: an
 /// unacknowledged update is re-sent on every poll, so a refused message that
@@ -417,6 +424,7 @@ pub fn tick(
     telegram: Option<&Telegram>,
     publisher: &dyn Publisher,
     gate: &mut Gate,
+    spend: &mut Spend,
     client: &radar_onchain::RpcClient,
     rates: Option<&radar_roast::BaseRates>,
     creators: Option<&radar_roast::CreatorIndex>,
@@ -428,6 +436,7 @@ pub fn tick(
         return 0;
     };
     let at = crate::daemon::now();
+    let today = crate::daemon::day_of(at);
     let cursor = crate::poll::read_cursor(&paths.telegram_cursor);
     let page = match bot.updates(cursor.as_deref()) {
         Ok(page) => page,
@@ -437,18 +446,46 @@ pub fn tick(
         }
     };
 
-    let ctx = Answering {
-        client,
-        rates,
-        creators,
-        provider,
-        self_mint,
-        now: at,
-    };
     let mut answered = 0;
     for mention in &page.mentions {
-        match crate::answer::answer(mention, gate, &ctx) {
-            Answered::Reply(entry) => {
+        // Reserved before `answer`, for the reason the X loop reserves there:
+        // the call happens inside it, and a ceiling checked afterwards is not
+        // one. A refusal ships the template rather than refusing the message.
+        let reserved = provider.and_then(|_| {
+            spend
+                .authorize(Cost::ModelCall, today)
+                .inspect_err(|_| {
+                    eprintln!(
+                        "radar-analyst: model budget spent; telegram {} answered by the template",
+                        mention.id
+                    );
+                })
+                .ok()
+        });
+        let ctx = Answering {
+            client,
+            rates,
+            creators,
+            provider: if reserved.is_some() { provider } else { None },
+            self_mint,
+            now: at,
+        };
+
+        let outcome = crate::answer::answer(mention, gate, &ctx);
+        if let Some(commitment) = reserved {
+            match outcome.billed() {
+                Billed::NoCall => spend.release(commitment),
+                Billed::Reported(actual) => spend.settle(commitment, actual),
+                // Rule 9: what was reserved, never zero.
+                Billed::Unreported => {
+                    let charged = commitment.reserved();
+                    spend.settle(commitment, charged);
+                }
+            }
+        }
+
+        match outcome {
+            Answered::Reply { entry, .. } => {
                 let mint = entry.mint.clone().unwrap_or_default();
                 match crate::publish::publish(publisher, &paths.telegram_log, *entry) {
                     Ok(written) => {
@@ -471,6 +508,13 @@ pub fn tick(
         && let Err(e) = crate::poll::write_cursor(&paths.telegram_cursor, &next)
     {
         eprintln!("radar-analyst: cannot save the telegram cursor: {e}");
+    }
+    // Saved here as well as in the X tick. This lane runs after that one, so
+    // its model spend would otherwise sit only in memory until the next X poll
+    // saved it -- and a restart in between would hand back an allowance that
+    // was already spent, which is the failure `Spend::save` exists for.
+    if let Err(e) = spend.save() {
+        eprintln!("radar-analyst: cannot save the ledger: {e}");
     }
     answered
 }

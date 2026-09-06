@@ -31,18 +31,10 @@ use core::time::Duration;
 use radar_types::MicroUsd;
 use serde_json::{Value, json};
 
-use crate::{Answer, Provider, Request, Unreachable, non_empty};
-
-/// Tokens assumed to go in, for the reservation made before the call.
-///
-/// An estimate, not a ceiling — the ceiling is the budget. Deliberately
-/// generous: an over-estimate costs a little headroom for the length of one
-/// call, and an under-estimate is a limit that can be passed between the check
-/// and the charge.
-const ESTIMATED_INPUT_TOKENS: u64 = 20_000;
-
-/// Tokens assumed to come back.
-const ESTIMATED_OUTPUT_TOKENS: u64 = 2_000;
+use crate::{
+    Answer, ESTIMATED_INPUT_TOKENS, ESTIMATED_OUTPUT_TOKENS, Provider, Request, Unreachable,
+    kind_of, non_empty,
+};
 
 /// A metered provider speaking the Messages API shape.
 #[derive(Clone, PartialEq, Eq)]
@@ -242,20 +234,6 @@ impl Provider for ApiKey {
             .map_err(|e| Unreachable::Unreadable(kind_of(&e)))?;
         self.read(&body)
     }
-}
-
-/// The shape of a failure, without whatever it was carrying.
-///
-/// HTTP client errors are famously willing to render the request that caused
-/// them, headers included. This keeps the sentence and drops anything that
-/// looks like a key.
-fn kind_of(error: &impl core::fmt::Display) -> String {
-    let rendered = error.to_string();
-    rendered
-        .split_whitespace()
-        .filter(|word| !word.starts_with("sk-") && !word.contains("api-key"))
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

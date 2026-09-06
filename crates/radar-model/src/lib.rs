@@ -43,13 +43,48 @@
 
 pub mod api_key;
 pub mod codex;
+pub mod openai;
 pub mod request;
 
 use radar_types::MicroUsd;
 
 pub use api_key::ApiKey;
 pub use codex::Codex;
+pub use openai::OpenAi;
 pub use request::Request;
+
+/// Tokens assumed to go in, for the reservation made before a call.
+///
+/// An estimate, not a ceiling — the ceiling is the budget. Deliberately
+/// generous: an over-estimate costs a little headroom for the length of one
+/// call, and an under-estimate is a limit that can be passed between the check
+/// and the charge. Shared by both metered providers, because it is a claim
+/// about the prompt this repository sends rather than about a vendor.
+pub(crate) const ESTIMATED_INPUT_TOKENS: u64 = 20_000;
+
+/// Tokens assumed to come back, and the ceiling asked of the provider.
+pub(crate) const ESTIMATED_OUTPUT_TOKENS: u64 = 2_000;
+
+/// The shape of a failure, without whatever it was carrying.
+///
+/// HTTP client errors are famously willing to render the request that caused
+/// them, headers included. This keeps the sentence and drops anything that
+/// looks like a credential — both vendors spell a key `sk-`, and the header it
+/// travels in is `x-api-key` on one and `authorization: Bearer` on the other.
+pub(crate) fn kind_of(error: &impl core::fmt::Display) -> String {
+    let rendered = error.to_string();
+    rendered
+        .split_whitespace()
+        .filter(|word| {
+            let lower = word.to_ascii_lowercase();
+            !lower.starts_with("sk-")
+                && !lower.contains("api-key")
+                && !lower.contains("authorization")
+                && !lower.starts_with("bearer")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 /// Why a provider could not answer.
 ///
@@ -136,12 +171,26 @@ pub enum Selection {
     /// Nothing is configured. The agent routes are not mounted.
     #[error("no model provider is configured")]
     None,
-    /// Both are configured, which is a contradiction rather than a choice.
-    #[error("both RADAR_MODEL_CODEX and RADAR_MODEL_API_KEY are set; unset one")]
-    Ambiguous,
+    /// More than one is configured, which is a contradiction rather than a
+    /// choice.
+    ///
+    /// Carries the variables it found. With three providers the message can no
+    /// longer name them in advance, and "more than one is set" sends an
+    /// operator to read a file they have only just edited.
+    #[error("more than one model provider is configured ({0}); unset all but one")]
+    Ambiguous(String),
     /// One is named but incompletely configured.
     #[error("{0}")]
     Incomplete(String),
+}
+
+/// One provider behind the trait object the binary holds.
+///
+/// A free function rather than a closure because each arm below hands it a
+/// different concrete type, and a closure is monomorphic over the first one it
+/// sees.
+fn boxed(provider: impl Provider + 'static) -> Box<dyn Provider> {
+    Box::new(provider)
 }
 
 /// Builds the configured provider, or says why there is not one.
@@ -153,17 +202,33 @@ pub enum Selection {
 /// tier, or to the other path.
 pub fn from_vars(get: &impl Fn(&str) -> Option<String>) -> Result<Box<dyn Provider>, Selection> {
     let codex = non_empty(get, "RADAR_MODEL_CODEX");
-    let key = non_empty(get, "RADAR_MODEL_API_KEY");
+    let anthropic = non_empty(get, "RADAR_MODEL_API_KEY");
+    let openai = non_empty(get, "RADAR_MODEL_OPENAI_KEY");
 
-    match (codex, key) {
-        (Some(_), Some(_)) => Err(Selection::Ambiguous),
-        (Some(command), None) => Codex::from_vars(&command, get)
-            .map(|p| Box::new(p) as Box<dyn Provider>)
+    // Named rather than counted, so the refusal can say which ones it found.
+    let set: Vec<&str> = [
+        codex.as_ref().map(|_| "RADAR_MODEL_CODEX"),
+        anthropic.as_ref().map(|_| "RADAR_MODEL_API_KEY"),
+        openai.as_ref().map(|_| "RADAR_MODEL_OPENAI_KEY"),
+    ]
+    .into_iter()
+    .flatten()
+    .collect();
+    if set.len() > 1 {
+        return Err(Selection::Ambiguous(set.join(" and ")));
+    }
+
+    match (codex, anthropic, openai) {
+        (Some(command), _, _) => Codex::from_vars(&command, get)
+            .map(boxed)
             .map_err(Selection::Incomplete),
-        (None, Some(key)) => ApiKey::from_vars(key, get)
-            .map(|p| Box::new(p) as Box<dyn Provider>)
+        (_, Some(key), _) => ApiKey::from_vars(key, get)
+            .map(boxed)
             .map_err(Selection::Incomplete),
-        (None, None) => Err(Selection::None),
+        (_, _, Some(key)) => OpenAi::from_vars(key, get)
+            .map(boxed)
+            .map_err(Selection::Incomplete),
+        (None, None, None) => Err(Selection::None),
     }
 }
 
@@ -270,7 +335,22 @@ mod tests {
         // the subscription -- and nothing tells them, because it works.
         let mut pairs = full_key();
         pairs.push(("RADAR_MODEL_CODEX", "codex"));
-        assert_eq!(from_vars(&vars(&pairs)).err(), Some(Selection::Ambiguous));
+        let Some(Selection::Ambiguous(named)) = from_vars(&vars(&pairs)).err() else {
+            panic!("two providers is a contradiction, not a preference");
+        };
+        assert!(named.contains("RADAR_MODEL_CODEX"), "{named}");
+        assert!(named.contains("RADAR_MODEL_API_KEY"), "{named}");
+
+        // And the pair this repository is actually about to have on the box:
+        // an OpenAI key today, an Anthropic one the day the model changes, and
+        // the failure mode of leaving both set is paying two vendors while
+        // believing you moved.
+        let mut both_keys = full_key();
+        both_keys.push(("RADAR_MODEL_OPENAI_KEY", "sk-proj-not-a-real-key"));
+        let Some(Selection::Ambiguous(named)) = from_vars(&vars(&both_keys)).err() else {
+            panic!("two metered keys is a contradiction too");
+        };
+        assert!(named.contains("RADAR_MODEL_OPENAI_KEY"), "{named}");
     }
 
     #[test]
@@ -280,7 +360,11 @@ mod tests {
         // authorization header -- which fails as a 401 at the worst possible
         // moment rather than as a refusal at startup.
         for blank in ["", "   ", "\t\n"] {
-            let pairs = [("RADAR_MODEL_API_KEY", blank), ("RADAR_MODEL_CODEX", blank)];
+            let pairs = [
+                ("RADAR_MODEL_API_KEY", blank),
+                ("RADAR_MODEL_CODEX", blank),
+                ("RADAR_MODEL_OPENAI_KEY", blank),
+            ];
             assert_eq!(
                 from_vars(&vars(&pairs)).err(),
                 Some(Selection::None),
@@ -312,6 +396,23 @@ mod tests {
         assert!(
             key.estimate().get() > 0,
             "an estimate of zero reserves nothing, and a reservation of nothing is not a ceiling"
+        );
+
+        // The OpenAI path reads the same four shared variables, so switching
+        // between the two metered providers is the key and the endpoint and
+        // nothing else. A third variable set here would mean an operator
+        // moving to Anthropic had to find it.
+        let mut openai: Vec<(&str, &str)> = full_key()
+            .into_iter()
+            .filter(|(k, _)| *k != "RADAR_MODEL_API_KEY")
+            .collect();
+        openai.push(("RADAR_MODEL_OPENAI_KEY", "sk-proj-not-a-real-key"));
+        let built = from_vars(&vars(&openai)).expect("fully configured");
+        assert_eq!(built.name(), "openai");
+        assert!(built.estimate().get() > 0);
+        assert!(
+            !format!("{built:?}").contains("sk-proj-not-a-real-key"),
+            "the key must not reach a log on this path either"
         );
     }
 

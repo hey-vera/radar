@@ -1235,6 +1235,18 @@ mod tests {
         });
         let report = run(&table, &rates, &Options::default()).expect("runs");
 
+        // The folds partition the labelled rows, so their counts cannot add up
+        // to more than there are. As an `or` rather than an `and` every window
+        // reports every fitting row and the three of them alone exceed the
+        // table -- which comparing a window against their own sum could never
+        // show, because the sum inflates with them.
+        let counted: usize = report.folds.iter().map(|f| f.rows).sum();
+        assert!(
+            counted <= report.labelled_rows,
+            "the folds counted {counted} of {} labelled rows: {:?}",
+            report.labelled_rows,
+            report.folds
+        );
         let fitting: usize = report.folds[..FIT_FOLDS].iter().map(|f| f.rows).sum();
         for fold in &report.folds[..FIT_FOLDS] {
             assert!(

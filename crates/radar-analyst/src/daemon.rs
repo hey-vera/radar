@@ -458,6 +458,8 @@ pub fn run() -> ! {
             Ok(None) => {}
             Err(e) => eprintln!("radar-analyst: cannot write the week's record: {e}"),
         }
+        // Every tick, not only at close: see the function's note.
+        prompt_claim_if_due(publisher.as_ref(), &mut spend, &paths);
         // The daily post, from the rows the timer job wrote, once past the
         // hour. Priced as one top-level post when it goes out on X.
         announce_day(
@@ -614,6 +616,71 @@ fn announce_week(
         at,
     ) {
         eprintln!("radar-analyst: cannot write {}: {e}", paths.telegram_log);
+    }
+}
+
+/// Posts the claim prompt for any week whose winner has not been told yet.
+///
+/// Runs on every tick, not only at close. `try_claim` requires a claim to be a
+/// reply to this post, so a week with no prompt on its record accepts no claim
+/// at all -- and a prompt that failed to post once would otherwise cost the
+/// winner the whole seven days. Retrying is bounded by the claim window.
+///
+/// The prompt goes under the account's own winning reply, so it arrives in the
+/// thread the winner is already in. Its id is written back into the record;
+/// until that write happens no claim is possible, which is the safe direction.
+///
+/// In a dry run the post is recorded and not published, no id comes back,
+/// `claim_prompt` stays `None`, and no claim can land -- correct, because no
+/// winning reply was published for anyone to have seen either.
+fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Paths) {
+    let at = now();
+    let Some(record) = crate::contest::prompt_due(&paths.contest_dir, at) else {
+        return;
+    };
+    let Some(winner) = record.winner.as_ref() else {
+        return;
+    };
+    let Some(post) = crate::weekly::claim_prompt(&record) else {
+        return;
+    };
+
+    let Ok(reservation) = spend.authorize(Cost::Reply, day_of(at)) else {
+        eprintln!(
+            "radar-analyst: budget spent; week {} claim prompt not posted, retrying next tick",
+            record.week.0
+        );
+        return;
+    };
+    match crate::weekly::publish_under(
+        publisher,
+        &paths.posts,
+        &format!("claim:{}", record.week.0),
+        Some(&winner.reply_id),
+        std::slice::from_ref(&post),
+        at,
+    ) {
+        Ok((sent, first)) => {
+            settle_if_sent(spend, reservation, sent);
+            if let Some(id) = first {
+                let mut updated = record;
+                updated.claim_prompt = Some(id);
+                if let Err(e) = crate::contest::write_record(&paths.contest_dir, &updated) {
+                    // The post went out and the record does not know it. The
+                    // next tick posts a second prompt, which is noisy and
+                    // recoverable; a claim replying to either one is refused
+                    // until a write succeeds, which is the safe failure.
+                    eprintln!(
+                        "radar-analyst: week {} claim prompt posted but not recorded: {e}",
+                        updated.week.0
+                    );
+                }
+            }
+        }
+        Err(e) => {
+            spend.release(reservation);
+            eprintln!("radar-analyst: cannot write {}: {e}", paths.posts);
+        }
     }
 }
 

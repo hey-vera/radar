@@ -385,6 +385,34 @@ pub fn close_if_due(
     Ok(Some(record))
 }
 
+/// Writes one week's record back, atomically.
+///
+/// Used after the record has already been written once and something was
+/// learned since -- today only the claim prompt's id, which cannot be known
+/// until the post lands.
+///
+/// # Errors
+///
+/// The underlying I/O error, or a record that will not serialise.
+pub fn write_record(contest_dir: &str, record: &Record) -> std::io::Result<()> {
+    let text = record.to_json().map_err(std::io::Error::other)?;
+    write_atomically(&record_path(contest_dir, record.week), &text)
+}
+
+/// The first week whose winner still has no claim prompt posted.
+///
+/// Retried on every tick rather than only at close, and that matters because
+/// [`try_claim`] is strict: with no prompt on the record, no claim can be made
+/// at all. A prompt that failed to post once -- a refusal, a 5xx, a budget
+/// spent -- would otherwise lock the winner out for the whole window. The
+/// window itself bounds the retrying.
+#[must_use]
+pub fn prompt_due(contest_dir: &str, now: u64) -> Option<Record> {
+    radar_contest::records_in(std::path::Path::new(contest_dir))
+        .into_iter()
+        .find(|r| r.winner.is_some() && r.claim_prompt.is_none() && r.accepts_claim_at(now))
+}
+
 /// Writes via a sibling and a rename, so a reader never sees half a record.
 fn write_atomically(path: &str, text: &str) -> std::io::Result<()> {
     let tmp = format!("{path}.tmp");

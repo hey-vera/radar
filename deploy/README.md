@@ -893,6 +893,39 @@ No file, no post. No replies seven days ago, no post and a line in the journal.
 A `<date>.posted` marker stops a day being posted twice. With
 `RADAR_TELEGRAM_CHANNEL` set, both posts also go to that chat.
 
+### The claim: a reply to one specific post
+
+Design 0007 §6.2, built 2026-09-06. After the week closes the account posts a
+**claim prompt** as a reply under its own winning reply, so it lands in the
+thread the winner is already in — the summary names the winner by reply URL,
+which reaches nobody's notifications. The prompt's id is written back into the
+week's record as `claim_prompt`.
+
+**A claim is a reply to that post and nothing else is a claim.** Before this,
+any mention by the winner inside the claim window that contained a base58
+address was read as their claim — and a coin's mint address is such an address,
+so a winner who summoned the bot about a coin during their own claim week would
+have had that mint recorded as their payout address, and the payout would have
+approved it.
+
+What to check on the box:
+
+```bash
+# The prompt's id, once it has posted. `null` means it has not.
+grep -o '"claim_prompt":[^,]*' ~/radar/data/contest/<week>.json
+# The prompt in the post log, whether or not it was published.
+grep '"mention_id":"claim:' ~/radar/data/analyst/posts.jsonl
+```
+
+`claim_prompt: null` means **no claim can be made yet**, deliberately. The
+daemon retries the prompt on every tick while the claim window is open, so a
+post refused by the budget or by a 5xx costs a delay rather than the week. In a
+dry run it is never published, stays `null`, and no claim can land — correct,
+since no winning reply was published either.
+
+An unclaimed week rolls into the next one. That is recoverable; a prize paid to
+a mint account is not, which is why the strict reading is the one that shipped.
+
 ### The payout: its own key, unit and user
 
 Design 0007 C4 and ADR 0013. `radar-payout` pays each claimed, unpaid week
@@ -960,10 +993,12 @@ step 6 is Josh's; everything after it is a command that already exists.
    read, `????` when the reading is missing or more than two days old. Both
    alarm on absence only once `RADAR_CONTEST_DIR` says a contest runs here.
 9. **The first week.** The record is written on the first tick after Monday
-   00:00 UTC; the summary and the teardown post; the winner claims by replying
-   with an address within seven days; the payout timer pays the next morning
-   and reads the transaction back. Read `data/contest/<week>.json` after each
-   step — it is the evidence, and the leaderboard is built from it.
+   00:00 UTC; the summary and the teardown post; the account then posts a
+   **claim prompt** under its own winning reply, and the winner claims by
+   replying **to that post** with an address within seven days; the payout timer
+   pays the next morning and reads the transaction back. Read
+   `data/contest/<week>.json` after each step — it is the evidence, and the
+   leaderboard is built from it.
 
 ### Two credentials, because the platform needs two
 

@@ -61,6 +61,49 @@ fn authorise_date(authorised: &mut Vec<f64>, date: &str) {
     authorised.extend(date.split('-').filter_map(|p| p.parse::<f64>().ok()));
 }
 
+/// The post that tells the winner they won and how to claim.
+///
+/// Design 0007 §6.2 specifies this and it was never built, which had two
+/// consequences. The winner was never told: the summary names them by reply
+/// URL and nothing arrives in their notifications. And, worse, `try_claim` had
+/// nothing to require a claim to be a reply *to*, so it accepted any
+/// mint-shaped string in any mention by the winner -- see that function.
+///
+/// Posted as a reply under the account's own winning reply, so it lands in the
+/// thread the winner is already in.
+///
+/// Every numeral is authorised: the date's three parts, the score, and the two
+/// zeros in "00:00 UTC".
+#[must_use]
+#[allow(clippy::cast_precision_loss, reason = "a score, far below 2^53")]
+pub fn claim_prompt(record: &Record) -> Option<Post> {
+    let winner = record.winner.as_ref()?;
+    let mut authorised = Vec::new();
+    let monday = date_from_days(i64::try_from(record.opened_at / 86_400).unwrap_or(i64::MAX));
+    authorise_date(&mut authorised, &monday);
+    let until =
+        date_from_days(i64::try_from(record.claim_window_closes_at() / 86_400).unwrap_or(i64::MAX));
+    authorise_date(&mut authorised, &until);
+    authorised.push(winner.score as f64);
+
+    // Trimmed to fit, and the first draft did not: at 281 characters it was one
+    // over a standard account's limit, caught by the test below rather than by
+    // the platform. What went was " 00:00 UTC" after the date -- the window has
+    // always closed at midnight UTC and the date alone says enough -- and one
+    // "and". Nothing about what the winner has to do was shortened.
+    let text = format!(
+        "This reply won the week of {monday}: {} points under the published rule.
+         To claim the pool, reply to THIS post with a Solana wallet address, from this          account, before {until}.
+         Nothing to connect, nothing to sign. The reply is the proof.",
+        winner.score
+    );
+    Some(Post {
+        text,
+        authorised,
+        source: record.to_json().unwrap_or_default(),
+    })
+}
+
 /// The week's result, as the top-level post.
 #[must_use]
 #[allow(
@@ -195,8 +238,31 @@ pub fn publish(
     posts: &[Post],
     now: u64,
 ) -> std::io::Result<usize> {
+    publish_under(publisher, posts_log, label, None, posts, now).map(|(sent, _)| sent)
+}
+
+/// The same, but starting the thread as a reply to `under` rather than as a
+/// top-level post, and returning the id of the first post that landed.
+///
+/// The claim prompt needs both halves: it belongs under the account's own
+/// winning reply so it reaches the winner's thread, and its id has to be
+/// written back into the record, because that id is what a claim must reply to.
+///
+/// # Errors
+///
+/// Only the log's I/O. A post the platform refuses is recorded and stops the
+/// thread; it is not an error here.
+pub fn publish_under(
+    publisher: &dyn Publisher,
+    posts_log: &str,
+    label: &str,
+    under: Option<&str>,
+    posts: &[Post],
+    now: u64,
+) -> std::io::Result<(usize, Option<String>)> {
     let mut sent = 0;
-    let mut parent: Option<String> = None;
+    let mut first: Option<String> = None;
+    let mut parent: Option<String> = under.map(str::to_owned);
     for (n, post) in posts.iter().enumerate() {
         let mut entry = Entry {
             at: now,
@@ -226,6 +292,9 @@ pub fn publish(
         };
         match result {
             Ok(id) => {
+                if first.is_none() {
+                    first = Some(id.clone());
+                }
                 parent = Some(id.clone());
                 entry.reply_id = Some(id);
                 sent += 1;
@@ -245,7 +314,7 @@ pub fn publish(
         }
         crate::log::append(posts_log, &entry)?;
     }
-    Ok(sent)
+    Ok((sent, first))
 }
 
 #[cfg(test)]
@@ -294,6 +363,45 @@ mod tests {
             lamports: 1_234_567_890,
             measured_at: WEEK.closes_at() + 60,
         }
+    }
+
+    #[test]
+    fn the_claim_prompt_tells_the_winner_how_to_claim_and_passes_both_checks() {
+        // The post design 0007 section 6.2 asked for and nothing built. Two
+        // jobs: it tells the winner they won -- the summary names them only by
+        // URL, which reaches nobody's notifications -- and its id becomes the
+        // post a claim must reply to, which is what stops a coin's mint being
+        // read as a payout address.
+        let post = claim_prompt(&record(true)).expect("a week with a winner has a prompt");
+        assert!(
+            post.text.contains("won the week of 2026-08-31"),
+            "{}",
+            post.text
+        );
+        assert!(post.text.contains("15 points"), "{}", post.text);
+        // The instruction has to be unmistakable: THIS post, not the summary,
+        // not the winning reply, not a fresh mention.
+        assert!(post.text.contains("reply to THIS post"), "{}", post.text);
+        assert!(post.text.contains("Solana wallet address"), "{}", post.text);
+        // Week 2957 closes 2026-09-07, so the seven-day window ends 2026-09-14.
+        assert!(post.text.contains("before 2026-09-14"), "{}", post.text);
+
+        // Every numeral on the sheet, and nothing the forbidden list refuses.
+        // The same two checks every other post goes through.
+        assert_eq!(check(&post), Ok(()), "{}", post.text);
+        assert!(
+            post.text.chars().count() <= 280,
+            "{} chars: {}",
+            post.text.chars().count(),
+            post.text
+        );
+    }
+
+    #[test]
+    fn a_week_nobody_won_has_no_claim_prompt_to_post() {
+        // Not an empty post and not a post saying nobody won -- the summary
+        // already says that. There is simply nothing to reply under.
+        assert_eq!(claim_prompt(&record(false)), None);
     }
 
     #[test]

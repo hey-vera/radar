@@ -95,12 +95,15 @@ and the claim is a reply to *that* — and it was never built.
       and the counts are published as counts.
       next: after item 2
 
-- [ ] 4. **A voice with teeth.** `voice.rs`'s rule 6 currently says to lead with
+- [x] 4. **A voice with teeth.** `voice.rs`'s rule 6 currently says to lead with
       the cost line and `verdict.rs` demoted that line on 2026-09-05 for being
       the same 456 bps in every reply; the prompt and the template disagree and
       the prompt is the one that is wrong. A deterministic `headline` gives the
       model an anchor already on the sheet. `SYSTEM` carries no ASCII digit.
-      next: independent
+      done: `just ci` green -- 1,848 tests, clippy and fmt clean. `headline` is
+      `None` on a sheet with no creator record and no launch block, and the
+      launch-block fallback was caught by its own test matching a label the
+      sheet does not emit. `SYSTEM` carries no digit outside its rule numbers.
 
 - [ ] 5. **The public surface, reviewed.**
       `new:docs/research/0029-the-public-surface-reviewed.md` — fifteen

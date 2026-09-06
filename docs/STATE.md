@@ -369,6 +369,30 @@ research 0024's lesson made mechanical. The reply log entry carries them as
 and not zero. The tally in `radar-contest` sums them; the job that feeds it the
 log is plan 0006 item 6.
 
+**The prompt and the template stopped disagreeing, as of 2026-09-06** (plan 0008
+item 4). `verdict::template` was changed on 2026-09-05 to put the round trip
+**last**, because it is the same 456 bps in every reply and three real launches
+had produced three identical replies. `voice::SYSTEM` rule 6 still said *"lead
+with the cost line"*. Both shipped, they contradicted each other, and the prompt
+was the wrong one: it now says to lead with the fact that is about *this* coin —
+the creator's record, or the launch block — and to put the round trip last or
+not at all.
+
+`verdict::headline` is the new anchor: one sentence under a hundred characters,
+built only from the sheet, so it passes `fidelity::check` and `forbidden::check`
+by construction. The template prints it as its second line and the request
+offers it to the model as "what Radar prints if you say nothing". It is `None`
+when the sheet has neither a creator record nor a launch block — rule 9, since
+an unknown creator is not a creator with zero launches, and *"0 launches by this
+creator"* would be a damning sentence invented out of an absence.
+
+**`SYSTEM` now carries no figures at all**, enforced by a test that strips the
+rule numbers and asserts no digit remains. A number in the system prompt is on
+no fact sheet and is in front of the model for every coin, so an example figure
+is one the model can echo into a reply about a token it does not describe —
+where `fidelity::check` would then bin an otherwise good reply. "Under a hundred
+characters" is spelled out in words for exactly that reason.
+
 **The Telegram lane exists, as of 2026-09-05** (design 0009 L5, M5; plan 0006
 item 5). `crates/radar-analyst/src/telegram.rs`: `getUpdates` polled in the same
 loop as X, each text message through the same parser, an admission gate of the

@@ -130,6 +130,65 @@ const LEAD: &[&str] = &[
 /// coin and the next.
 const MAX_FACTS: usize = 5;
 
+/// The one sentence Radar prints if the model says nothing useful.
+///
+/// Built from the sheet's own facts and nothing else, so it passes
+/// [`crate::fidelity::check`] against `sheet.authorised()` by construction --
+/// which is what lets it be handed to the model as a starting line rather than
+/// as a suggestion the checks would later refuse.
+///
+/// It exists because three real launches on 2026-09-04 produced three
+/// **identical** replies. The cost line is a constant and most launches sit in
+/// the same recipient band, so the model had no anchor that was about the coin
+/// in front of it. This is that anchor, and it is chosen the same way [`LEAD`]
+/// orders facts: the creator's record if there is one, otherwise the launch
+/// block.
+///
+/// `None` when the sheet has neither. **An unknown creator is not a creator
+/// with zero launches** -- rule 9 -- so there is nothing to lead with and the
+/// model is given no headline rather than a misleading one.
+///
+/// Under a hundred characters, because the first sentence is what gets
+/// screenshotted without the rest.
+#[must_use]
+pub fn headline(sheet: &FactSheet) -> Option<String> {
+    let rendered = |wanted: &str| -> Option<&str> {
+        sheet
+            .facts
+            .iter()
+            .find(|f| f.label.contains(wanted) && !f.rendered.is_empty())
+            .map(|f| f.rendered.as_str())
+    };
+
+    // The creator's record: a count beside the count it should be weighed
+    // against, which is the whole shape the voice is asked for.
+    if let (Some(launched), Some(filled)) = (
+        rendered("tokens this creator has launched"),
+        rendered("how many reached an AMM by filling over time"),
+    ) {
+        let line = format!("{launched} launches by this creator. {filled} ever filled a curve.");
+        if line.chars().count() <= 100 {
+            return Some(line);
+        }
+    }
+
+    // Otherwise the launch block, which is about this coin even when the
+    // creator is new.
+    // Matched on the label `sheet.rs` actually emits -- "distinct token accounts
+    // receiving the token in its own launch block (token accounts, NOT owners,
+    // NOT people)". A first version matched a phrase that appears in `short`'s
+    // rendering rather than in the label, so this branch silently never fired
+    // and the fallback test caught it.
+    if let Some(recipients) = rendered("receiving the token in its own launch block") {
+        let line = format!("{recipients} token accounts were paid in the launch block.");
+        if line.chars().count() <= 100 {
+            return Some(line);
+        }
+    }
+
+    None
+}
+
 /// The reply that ships when a model reply cannot be trusted or cannot be had.
 ///
 /// Contains only figures from the sheet, so it passes
@@ -140,6 +199,12 @@ const MAX_FACTS: usize = 5;
 pub fn template(sheet: &FactSheet) -> String {
     let mut out = String::new();
     let _ = writeln!(out, "Radar on {}:", sheet.mint);
+    // The headline, when there is one: the same anchor the model is offered,
+    // so the floor and the voice pass lead on the same fact rather than on
+    // whichever fact happened to sort first.
+    if let Some(headline) = headline(sheet) {
+        let _ = writeln!(out, "{headline}");
+    }
 
     let mut shown = 0;
     for wanted in LEAD {
@@ -298,16 +363,89 @@ mod tests {
     }
 
     #[test]
+    fn the_headline_is_publishable_by_construction() {
+        // It is handed to the model as a starting line and printed by the
+        // floor, so it has to pass the same two checks every reply passes --
+        // and it passes them by being built only out of the sheet, not by
+        // being careful.
+        let sheet = a_real_shaped_sheet();
+        let headline = headline(&sheet).expect("a sheet with a creator record has one");
+        assert!(
+            crate::fidelity::check(&headline, &sheet.authorised()).is_empty(),
+            "{:?}",
+            crate::fidelity::check(&headline, &sheet.authorised())
+        );
+        assert!(
+            crate::forbidden::check(&headline).is_empty(),
+            "{:?}",
+            crate::forbidden::check(&headline)
+        );
+        assert!(
+            headline.chars().count() <= 100,
+            "{} chars: {headline}",
+            headline.chars().count()
+        );
+    }
+
+    #[test]
+    fn an_unknown_creator_gets_no_headline_rather_than_a_zero() {
+        // Rule 9, and the direction that matters. A creator Radar has never
+        // seen has NO record, not a record of zero launches -- and "0 launches
+        // by this creator" would be a damning sentence invented out of an
+        // absence. With no creator record and no launch block there is nothing
+        // about this coin to lead with, so nothing is offered.
+        let mut sheet = a_real_shaped_sheet();
+        sheet.facts.retain(|f| {
+            !f.label.contains("tokens this creator has launched")
+                && !f
+                    .label
+                    .contains("how many reached an AMM by filling over time")
+                && !f
+                    .label
+                    .contains("receiving the token in its own launch block")
+        });
+        assert_eq!(headline(&sheet), None);
+        // And the floor still renders, without an empty line where the
+        // headline would have been.
+        let out = template(&sheet);
+        assert!(
+            !out.contains(
+                "
+
+"
+            ),
+            "a blank line was left behind: {out:?}"
+        );
+    }
+
+    #[test]
+    fn the_headline_falls_back_to_the_launch_block_when_the_creator_is_new() {
+        let mut sheet = a_real_shaped_sheet();
+        sheet.facts.retain(|f| {
+            !f.label.contains("tokens this creator has launched")
+                && !f
+                    .label
+                    .contains("how many reached an AMM by filling over time")
+        });
+        let headline = headline(&sheet).expect("the launch block is still about this coin");
+        assert!(headline.contains("launch block"), "{headline}");
+        assert!(crate::fidelity::check(&headline, &sheet.authorised()).is_empty());
+    }
+
+    #[test]
     fn the_reply_does_not_open_with_the_line_that_is_the_same_every_time() {
         // The defect this ordering fixes. Until 2026-09-05 the round trip led
         // every reply, and it is 456 bps in all of them -- so three different
         // coins opened with the same sentence, which reads as a bot repeating
         // itself rather than as something that looked at the coin.
         let out = template(&a_real_shaped_sheet());
-        let first = out.lines().nth(1).expect("a first fact line");
+        let first = out.lines().nth(1).expect("a first line after the header");
+        // Line 1 is now the headline rather than the first bullet, and it is
+        // still about the creator's record -- which is the property this test
+        // was always about. The shape changed; the claim did not.
         assert!(
-            first.contains("creator has launched"),
-            "the first fact must be about this coin, got: {first}"
+            first.contains("launches by this creator"),
+            "the first line must be about this coin, got: {first}"
         );
         assert!(
             !first.contains("round trip"),

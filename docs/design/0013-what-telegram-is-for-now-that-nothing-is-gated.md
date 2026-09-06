@@ -6,8 +6,9 @@ in section 1 while being walked through wiring the lane up, read section 5, and
 answered "lets turn telegram off". `RADAR_TELEGRAM_BOT_TOKEN` was removed from
 `/etc/radar/analyst.env` the same day, before any restart could switch it on.
 
-Section 6 is **not** decided. Whether an X Community replaces the lane rests on
-one test nobody has run.
+Section 6 is **also decided, and by X rather than by us**: Communities were shut
+down on 2026-05-06. There is no alternative surface. See the note at the head of
+that section.
 
 **Supersedes nothing.** [Design 0009](0009-three-loops-and-no-formula.md) L5
 decided *what* Telegram is; this asks whether that still holds after L2, L3 and
@@ -111,7 +112,24 @@ The weekly teardown and the daily "seven days later" can be cross-posted to a
 Telegram channel later at zero marginal cost — that is broadcast, not a lane,
 and it does not consume a chain read or divert a summon.
 
-## 6. The better alternative Josh raised, and why it is not settled
+## 6. The better alternative Josh raised, and the reason it is gone
+
+**Settled 2026-09-06, and not by the API question below: X shut Communities
+down on 2026-05-06**, extending the migration deadline to 05-30. Josh found this
+by trying to create one. X cited under 0.4% of users against 80% of the
+platform's spam reports, financial scams and malware
+([TechCrunch, 2026-04-23](https://techcrunch.com/2026/04/23/x-is-shutting-down-communities-because-of-low-usage-and-lots-of-spam/),
+[Engadget](https://www.engadget.com/social-media/x-is-shutting-down-its-communities-feature-182843958.html)).
+The replacement X offers is **XChat group chats** -- private, so no public
+metrics, no contest entry, nothing shareable. That is the same flaw as a group
+DM and as Telegram, which section 4 already rejects.
+
+So the free-lane question is Telegram-or-nothing after all, and section 5's
+answer stands unchanged. **The rest of this section is kept as the reasoning
+that would have applied**, because if X ever ships a public group surface again
+this is the argument for using it and the test to run first.
+
+---
 
 Asked immediately after the above: **why Telegram at all, rather than an X
 Community plus an X group DM with the bot in it?**

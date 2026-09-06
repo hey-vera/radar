@@ -240,6 +240,13 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
             json!({
                 "rank": i + 1,
                 "summoner": e.summoner,
+                // Always present, always null here. Handles are read from X at
+                // week close and nothing reads them before, so mid-week there
+                // is no handle to send -- but *omitting* the key gives the two
+                // shapes of this document different fields, and the site has
+                // one type for both. `null` says "not read yet"; an absent key
+                // says nothing and types as `undefined`.
+                "handle": Value::Null,
                 "mint": e.mint,
                 "reply_url": e.reply_id.as_deref().map(reply_url),
                 // Engagement is read at week close and not before. `null`,
@@ -550,6 +557,12 @@ mod tests {
         assert_eq!(entries.len(), 2, "{doc}");
         assert_eq!(entries[0]["rank"], 1);
         assert_eq!(entries[0]["score"], Value::Null);
+        // Present and null, never absent. Handles are read at week close and
+        // nothing reads them before, so an open week has none -- but the site
+        // types both shapes of this document with one interface, and an absent
+        // key types as `undefined` while the type says `string | null`.
+        assert!(entries[0].get("handle").is_some(), "{doc}");
+        assert_eq!(entries[0]["handle"], Value::Null);
         assert_eq!(entries[0]["reply_url"], "https://x.com/i/web/status/r1");
         assert_eq!(
             entries[1]["reply_url"],

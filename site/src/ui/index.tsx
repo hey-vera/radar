@@ -21,7 +21,7 @@
 
 import { useState, type ReactNode } from "react";
 
-import { mintShaped, summonIntent } from "../honesty";
+import { mintShaped, summonIntent, userHref } from "../honesty";
 
 /**
  * A figure, its label, and where it came from.
@@ -365,5 +365,47 @@ export function Summon({ handle }: { handle: string | null }) {
         </span>
       </div>
     </Card>
+  );
+}
+
+/**
+ * An entrant, named the way the record can actually name them.
+ *
+ * **The record holds a numeric id, and a handle only sometimes.** A mention
+ * carries `author_id`, so that is what the week's entry stores; the handle is a
+ * second field the week close reads from X and it can be absent — mid-week
+ * nothing has read one at all. `public.rs` has sent `handle` since #162 and
+ * `api.ts` never declared the field, so every reader saw `@1234567890` on a
+ * live page. Finding S4.
+ *
+ * Two rules, and they pull in opposite directions:
+ *
+ * - **The handle is what a person recognises**, so it is what is shown.
+ * - **The id is what cannot be reassigned**, so it is what is linked. A handle
+ *   freed and taken by somebody else would leave this page pointing an
+ *   accusation, or a prize, at a stranger (S27).
+ *
+ * With no handle the id is shown bare rather than behind an `@`. `@1234567890`
+ * reads as a name somebody chose, and it is not one.
+ */
+export function Summoner({
+  id,
+  handle,
+}: {
+  id: string;
+  handle: string | null;
+}) {
+  const href = userHref(id);
+  const shown = handle ? `@${handle}` : id;
+  if (!href) return <span className="tnum">{shown}</span>;
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`underline decoration-[var(--color-line)] underline-offset-4 hover:decoration-[var(--color-text)] ${handle ? "" : "tnum font-mono text-xs"}`}
+    >
+      {shown}
+    </a>
   );
 }

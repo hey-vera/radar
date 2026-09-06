@@ -55,6 +55,7 @@ quietly absent.
 | [28](#28-a-mutant-that-killed-the-machine-so-the-check-could-not-report) | A mutant that killed the machine, so the check could not report | *habit only* |
 | [29](#29-a-sentence-that-was-false-on-the-day-it-was-written-in-two-documents-at-once) | A sentence that was false on the day it was written, in two documents at once | `repo-conformance`'s `the_documented_dependency_claims_are_true`,… |
 | [30](#30-an-operators-file-that-named-a-variable-its-own-service-does-not-read) | An operator's file that named a variable its own service does not read | *habit only* |
+| [31](#31-a-runbook-that-named-a-real-domain-belonging-to-somebody-else) | A runbook that named a real domain belonging to somebody else | `looks_unsubstituted` |
 
 ---
 
@@ -1460,3 +1461,55 @@ which is real work; the alternative — a hand-written map from example file to
 crate — is a second thing to keep in sync and would fail in the direction that
 reports success. Until it exists, a copied env block is checked by reading the
 crate.
+
+## 31. A runbook that named a real domain belonging to somebody else
+
+`deploy/README.md` told the operator to set
+
+    RADAR_ACCESS_TEAM=heyvera.cloudflareaccess.com
+
+and on the line immediately below it told them to set
+
+    RADAR_ACCESS_AUD=<the Application Audience tag from the Access application>
+
+One was a template. The other was a plausible, correctly-shaped, *real* domain —
+and it is not an account we own. Cloudflare refuses to let us claim it: "this
+authentication domain has already been claimed". The account's actual team is
+`small-art-43c3.cloudflareaccess.com`, the auto-generated name nobody edited.
+
+It was copied onto the box verbatim, and `radar-serve` had been announcing the
+consequence at every startup since:
+
+    access     : verifying heyvera.cloudflareaccess.com tokens
+
+**What that costs.** `RADAR_ACCESS_TEAM` is not a label. It is the origin
+`access.rs` fetches signing keys from — `https://<team>/cdn-cgi/access/certs` —
+and the issuer every operator token must name. Both domains resolve, both serve
+a live JWKS, and the keys are different. So the operator console fails closed,
+which is the safe direction; and the server was configured to accept, as proof
+of operator identity, a token signed by a tenant belonging to a stranger. The
+edge is what kept that theoretical: Cloudflare Access sets the assertion header
+itself on protected paths. A defence held by the layer in front of the one that
+was misconfigured is not a defence anybody chose.
+
+**The shape.** Entry 30 was an operator's file naming a variable its service does
+not read. This is the same file naming a variable its service reads *very*
+carefully — and pointing it somewhere real. A placeholder that looks like a value
+is worse than one that looks like a placeholder, because every check downstream
+is designed to catch the second kind. The AUD line one row down proves the author
+knew the form; the team line simply never got templated, and nothing downstream
+could tell a real domain from the intended one.
+
+It was found by accident, while diagnosing an unrelated 302 on the public
+endpoints, by reading a redirect's `location` header and noticing the team in it
+did not match the team in the config.
+
+**What catches a recurrence:** `looks_unsubstituted` already refuses angle
+brackets and whitespace at startup, and both values in the runbook now carry
+them — so a heredoc pasted with its template intact fails loudly rather than
+running against a stranger's keys. That is the whole fix, and it works only
+because the placeholder is now *shaped* like one. What it still cannot catch is a
+reader who substitutes a wrong-but-well-formed domain, and no startup check can:
+the server has no way to know which tenant it was supposed to belong to. The
+runbook now says how to read the real one out of a login redirect, which is the
+cheapest check that does not depend on remembering.

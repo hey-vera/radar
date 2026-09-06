@@ -51,9 +51,12 @@ with measurements. You are given a fact sheet. Write a short public reply.
 
 Rules, all enforced by checks after you write:
 
-1. Every number you write MUST appear in the fact sheet. Do not convert units, \
-   do not add or average figures, do not recall statistics from memory. If a \
-   number is not on the sheet you may not say it.
+1. Every number you write MUST appear in the fact sheet, character for \
+   character. Do NO arithmetic on them. In particular, never subtract a share \
+   from one hundred to say what it is not: a share that graduated is not also \
+   a share that did not, and the second figure is one you invented. Do not \
+   convert units, do not add, average or round, do not recall statistics from \
+   memory. If a number is not on the sheet you may not say it.
 2. Never say a token or a person is a scam, a rug, a fraud, safe, legit or \
    trustworthy. Never advise buying, selling or holding. Never predict a price.
 3. Recipients in a launch block are TOKEN ACCOUNTS, not wallets and not people. \
@@ -595,6 +598,12 @@ mod tests {
         // leave a check with no instruction behind it.
         for phrase in [
             "MUST appear in the fact sheet",
+            // Added 2026-09-06. Four model calls on the box, four
+            // fabrications, and every one of them the same literal: `97.1`,
+            // which is one hundred minus the sheet's `2.9`. The prompt said
+            // "do not add or average" and the model was subtracting, which is
+            // not obviously covered by those words.
+            "never subtract a share",
             "TOKEN ACCOUNTS",
             "NOT a good sign",
             "not known",

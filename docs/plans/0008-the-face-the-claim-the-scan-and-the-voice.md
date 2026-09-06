@@ -101,7 +101,16 @@ and the claim is a reply to *that* — and it was never built.
       after a claim lands. `Refusal::Unscanned` and `Refusal::NotAWallet` gate
       the payout. No count refuses payment: the gate is "scanned, and a wallet",
       and the counts are published as counts.
-      next: after item 2
+      SUPERSEDED 2026-09-06 by [design 0011](../design/0011-scan-before-declaring-not-before-paying.md).
+      The owner asked whether the scan belongs before the *winner is declared*
+      rather than before they are paid, so a bought account never reaches the
+      leaderboard. It does. 0011 rewrites this item: scan **down the ranking**
+      rather than across it (bounded cost -- 3-9 reads a week, not ~1,800),
+      publish the **measurement** and never a verdict, and **exclude nobody**
+      until a baseline exists, because the account has never posted and there is
+      nothing to calibrate a threshold against. The claim-address check stays at
+      payout; that object does not exist until the claim.
+      next: implement 0011 phase 1
 
 - [x] 4. **A voice with teeth.** `voice.rs`'s rule 6 currently says to lead with
       the cost line and `verdict.rs` demoted that line on 2026-09-05 for being

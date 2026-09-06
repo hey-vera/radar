@@ -121,8 +121,12 @@ fn outcome(
         last_price: price,
         peak_price: price,
         trough_price: price,
-        window_peak_price: None,
-        window_trough_price: None,
+        // A measurement carrying a price is one whose window held fills, so it
+        // carries the window extremes too. That is what makes its price a fresh
+        // quote rather than the last one anybody paid, and the tests about a
+        // stale price clear these deliberately.
+        window_peak_price: price,
+        window_trough_price: price,
         vwap: price,
         fills: 3,
     }
@@ -874,33 +878,33 @@ fn a_second_measurement_after_t_is_a_return() {
     // label. Two distinct readings after T, with a fill between them, are a
     // real move.
     let at = 1_000u64;
-    let mut first = outcome(1, at + T, at, None, Some(100));
-    first.last_transfer_slot = Some(Slot(at + T - 10));
-    let mut second = outcome(1, at + T + 1, at, None, Some(150));
-    second.last_transfer_slot = Some(Slot(at + T));
-
-    let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
+    let table = table_over(
+        vec![launch(1, 100, at)],
+        vec![
+            outcome(1, at + T, at, None, Some(100)),
+            outcome(1, at + T + 1, at, None, Some(150)),
+        ],
+    );
 
     assert_eq!(table.rows[0].gross_6h_bps, Some(5_000.0));
 }
 
 #[test]
-fn two_measurements_of_one_fill_are_not_a_return() {
-    // The second live run found this after the identity above was fixed:
-    // 352,070 labelled rows and every median in every stratum still exactly
-    // 0.0 bps, because 97% of them were this.
+fn a_price_nobody_quoted_is_not_a_return() {
+    // Three live runs found this three times, each one level down. A token that
+    // stops trading reports the same `last_price` -- the price of the last
+    // observed fill -- at every later measurement. Two measurements, one
+    // observation, and a return of exactly zero that is not a price holding
+    // steady but a price nobody quoted, on a position that could not have been
+    // exited at all.
     //
-    // `last_price` is the price of the last observed **fill**. A token that
-    // stops trading reports the identical number at every later measurement --
-    // two distinct measurements, one observation. A return of zero here is not
-    // a price that held steady; it is a price nobody quoted, on a position that
-    // could not have been exited at all.
+    // The exit is stale here: its window held no fills, so its price is the one
+    // from before.
     let at = 1_000u64;
-    let traded_at = Slot(at + 500);
-    let mut first = outcome(1, at + T, at, None, Some(100));
-    first.last_transfer_slot = Some(traded_at);
+    let first = outcome(1, at + T, at, None, Some(100));
     let mut second = outcome(1, at + T + 5_000, at, None, Some(100));
-    second.last_transfer_slot = Some(traded_at);
+    second.window_peak_price = None;
+    second.window_trough_price = None;
 
     let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
 
@@ -909,18 +913,35 @@ fn two_measurements_of_one_fill_are_not_a_return() {
 }
 
 #[test]
-fn a_price_that_traded_back_to_where_it_started_is_a_return_of_zero() {
-    // And the case the rule above must not sweep up with it. A token that
-    // traded after entry and came back to the same price really did return
-    // zero, and that is a measurement -- the point mass research 0017 found is
-    // made of these, and losing them would flatter every median.
+fn a_stale_entry_price_is_not_a_return_either() {
+    // Both ends, and the entry is the one an earlier attempt missed. A quote
+    // nobody could have bought at is not an entry, however live the exit is.
     let at = 1_000u64;
     let mut first = outcome(1, at + T, at, None, Some(100));
-    first.last_transfer_slot = Some(Slot(at + 500));
-    let mut second = outcome(1, at + T + 5_000, at, None, Some(100));
-    second.last_transfer_slot = Some(Slot(at + T + 4_000));
+    first.window_peak_price = None;
+    first.window_trough_price = None;
+    let second = outcome(1, at + T + 5_000, at, None, Some(150));
 
     let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
+
+    assert_eq!(table.rows[0].gross_6h_bps, None);
+}
+
+#[test]
+fn a_price_that_traded_back_to_where_it_started_is_a_return_of_zero() {
+    // And the case the rule above must not sweep up with it. A token that was
+    // trading at both ends and came back to the same price really did return
+    // zero, and that is a measurement -- the point mass research 0017 found is
+    // made of these, and losing them would flatter every median in the opposite
+    // direction.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![launch(1, 100, at)],
+        vec![
+            outcome(1, at + T, at, None, Some(100)),
+            outcome(1, at + T + 5_000, at, None, Some(100)),
+        ],
+    );
 
     assert_eq!(table.rows[0].gross_6h_bps, Some(0.0));
 }

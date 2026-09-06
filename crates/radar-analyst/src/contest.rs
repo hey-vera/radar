@@ -210,7 +210,7 @@ pub fn verified_from(found: &Engagers, closes_at: u64, min_age_days: u32) -> Ver
 /// loudly: a week scored on a partial scan is still scored on a published rule,
 /// and refusing to close would leave the prize unpaid over a transient 500.
 pub fn scan_ranking(
-    x: &X,
+    mut read: impl FnMut(&str) -> Result<Engagers, crate::x::Unreachable>,
     ranked: &[radar_contest::Ranked],
     closes_at: u64,
     min_age_days: u32,
@@ -224,7 +224,7 @@ pub fn scan_ranking(
         if best >= r.entry.metrics.raw_score() && i > 0 {
             break;
         }
-        let engagers = match x.engagers(&r.entry.reply_id) {
+        let engagers = match read(&r.entry.reply_id) {
             Ok(e) => e,
             Err(e) => {
                 eprintln!(
@@ -597,15 +597,20 @@ pub fn close_if_due(
         accounts: &accounts,
         rules,
     });
+    // No `is_empty` guard: `scan_ranking` over an empty ranking already reads
+    // nothing and returns an empty map, so a guard here would be a branch whose
+    // removal changes no behaviour -- which is what CI reported when three
+    // mutants of it survived. The only real condition is whether there is a
+    // client to read with.
     let scanned = match x {
-        Some(x) if !raw.ranking.ranked.is_empty() => scan_ranking(
-            x,
+        Some(x) => scan_ranking(
+            |id| x.engagers(id),
             &raw.ranking.ranked,
             week.closes_at(),
             rules.min_engager_age_days,
             |resources| charge_user_reads(spend, resources, day_of(now)),
         ),
-        _ => BTreeMap::new(),
+        None => BTreeMap::new(),
     };
     let metrics = merge_verified(metrics, &scanned);
 
@@ -674,6 +679,187 @@ mod tests {
         }
     }
 
+    /// One ranked entry with the given raw metrics.
+    fn ranked_with(reply_id: &str, reposts: u64, quotes: u64) -> radar_contest::Ranked {
+        let metrics = Metrics {
+            reposts,
+            quotes,
+            likes: 0,
+            replies: 0,
+            verified: None,
+        };
+        radar_contest::Ranked {
+            entry: ContestEntry {
+                reply_id: reply_id.to_owned(),
+                summoner: format!("s{reply_id}"),
+                handle: None,
+                mint: "M".to_owned(),
+                at: WEEK.opens_at() + 10,
+                metrics,
+            },
+            score: metrics.raw_score(),
+        }
+    }
+
+    /// `n` distinct accounts, all old enough to count.
+    fn old_accounts(n: usize, at: u64) -> BTreeMap<String, crate::x::Account> {
+        (0..n)
+            .map(|i| (format!("acct{i}"), aged(400, at)))
+            .collect()
+    }
+
+    #[test]
+    fn the_walk_stops_as_soon_as_nothing_below_can_win() {
+        // The bound, and the reason the scan is affordable. Entry one has ten
+        // real reposters, so its verified score is 30. Entry two's RAW score is
+        // 3 -- below 30 -- so no scan of it could ever overtake, and paying to
+        // find that out is money spent to learn nothing.
+        //
+        // Re-apply by flipping `>=` to `<`, or `&&` to `||`: the walk either
+        // scans everything or stops before it starts, and this fails both ways.
+        let at = WEEK.closes_at();
+        let ranked = [
+            ranked_with("r1", 10, 0),
+            ranked_with("r2", 1, 0),
+            ranked_with("r3", 0, 0),
+        ];
+        let mut asked: Vec<String> = Vec::new();
+        let found = scan_ranking(
+            |id| {
+                asked.push(id.to_owned());
+                Ok(Engagers {
+                    reposted: old_accounts(10, at),
+                    quoted: BTreeMap::new(),
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, ["r1"], "one read, then the arithmetic settles it");
+        assert_eq!(found.len(), 1);
+        assert!(!found.contains_key("r2"), "unscanned, so scored raw");
+    }
+
+    #[test]
+    fn the_first_entry_is_always_scanned_however_low_it_scores() {
+        // The `i > 0` half. With nothing scanned yet the best verified score is
+        // zero, and zero is `>=` any raw score of zero -- so without it a week
+        // where the top reply has no engagement at all would scan nothing and
+        // silently score the whole week raw, which is the farmable rule.
+        //
+        // Re-apply by deleting `&& i > 0`: nothing is scanned and this fails.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 0)];
+        let mut asked = 0;
+        let found = scan_ranking(
+            |_| {
+                asked += 1;
+                Ok(Engagers::default())
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, 1, "the top entry is read even when it scored zero");
+        assert_eq!(found["r1"], Verified::default());
+    }
+
+    #[test]
+    fn the_walk_keeps_going_while_the_answer_is_still_in_doubt() {
+        // The case worth paying for. Both entries look identical raw, so the
+        // first scan cannot settle it and the second is read -- which is
+        // exactly when the money is worth spending.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut asked: Vec<String> = Vec::new();
+        scan_ranking(
+            |id| {
+                asked.push(id.to_owned());
+                // One prolific quoter: ten quotes, one account, verified 3.
+                let mut quoted = BTreeMap::new();
+                quoted.insert("farm".to_owned(), aged(400, at));
+                Ok(Engagers {
+                    reposted: BTreeMap::new(),
+                    quoted,
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, ["r1", "r2"], "30 raw is not settled by 3 verified");
+    }
+
+    #[test]
+    fn a_failed_read_stops_the_walk_and_keeps_what_it_already_had() {
+        // A transient 500 must not lose the entries already scanned, and must
+        // not refuse to close: a week scored on a partial scan is still a
+        // published rule applied to what was read, and refusing would leave a
+        // real prize unpaid.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut calls = 0;
+        let found = scan_ranking(
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(Engagers {
+                        reposted: old_accounts(1, at),
+                        quoted: BTreeMap::new(),
+                        liked: BTreeMap::new(),
+                    })
+                } else {
+                    Err(crate::x::Unreachable::Unreadable("500".to_owned()))
+                }
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(found.len(), 1, "the first survives the second's failure");
+        assert!(found.contains_key("r1"));
+    }
+
+    #[test]
+    fn a_budget_that_will_not_cover_the_next_entry_stops_the_walk() {
+        // And the entry it could not pay for is NOT recorded as scanned --
+        // charging happens before the result is kept, so a refused charge
+        // leaves that entry scored raw rather than scored on reads nobody paid
+        // for.
+        //
+        // Re-apply by deleting the `!`: the walk stops on a successful charge
+        // and continues on a refused one, so nothing is ever scanned.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut charges = 0;
+        let found = scan_ranking(
+            |_| {
+                Ok(Engagers {
+                    reposted: old_accounts(1, at),
+                    quoted: BTreeMap::new(),
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| {
+                charges += 1;
+                charges == 1
+            },
+        );
+        assert_eq!(found.len(), 1, "only what the budget covered");
+        assert!(found.contains_key("r1"));
+        assert!(!found.contains_key("r2"));
+    }
+
     #[test]
     fn ten_quotes_from_one_account_are_one_quoter() {
         // Research 0029, S16, at the point the count is actually made. The
@@ -709,6 +895,7 @@ mod tests {
         let at = WEEK.closes_at();
         let mut reposted = BTreeMap::new();
         reposted.insert("old".to_owned(), aged(400, at));
+        reposted.insert("older".to_owned(), aged(500, at));
         reposted.insert("new".to_owned(), aged(2, at));
         let found = Engagers {
             reposted,
@@ -716,10 +903,13 @@ mod tests {
             liked: BTreeMap::new(),
         };
         let v = verified_from(&found, at, 30);
-        assert_eq!(v.reposts, 1, "only the old one scores");
-        assert_eq!(v.engagers, 2, "both are counted as engagers");
+        // Two old and one new, so the two counts differ. With one of each they
+        // are both 1, and CI mutated away the `!` in the under-age filter
+        // with nothing failing.
+        assert_eq!(v.reposts, 2, "only the old ones score");
+        assert_eq!(v.engagers, 3, "all three are counted as engagers");
         assert_eq!(v.engagers_under_age, 1, "and the young one is published");
-        assert_eq!(v.score(), 3);
+        assert_eq!(v.score(), 6);
     }
 
     #[test]
@@ -747,7 +937,7 @@ mod tests {
     }
 
     #[test]
-    fn one_account_that_reposted_and_liked_is_one_engager_and_two_billed_reads() {
+    fn an_account_in_two_pages_is_one_engager_and_two_things_billed() {
         // Two numbers that must not be the same one. `engagers` is people, and
         // it is what the page publishes. `billed_resources` is user resources
         // returned, and it is what X charges for -- an account returned by two
@@ -761,16 +951,28 @@ mod tests {
         reposted.insert("both".to_owned(), aged(400, at));
         let mut liked = BTreeMap::new();
         liked.insert("both".to_owned(), aged(400, at));
+        liked.insert("liker".to_owned(), aged(400, at));
+        let mut quoted = BTreeMap::new();
+        quoted.insert("quoter".to_owned(), aged(400, at));
+        quoted.insert("quoter2".to_owned(), aged(400, at));
+        quoted.insert("quoter3".to_owned(), aged(400, at));
         let found = Engagers {
             reposted,
-            quoted: BTreeMap::new(),
+            quoted,
             liked,
         };
-        assert_eq!(found.distinct().len(), 1);
-        assert_eq!(found.billed_resources(), 2);
+        // Three distinct page sizes -- 1, 3, 2 -- so a `+` turned into a `-`
+        // cannot land on the same total. CI mutated one and nothing failed,
+        // because 1 + 0 + 1 and 1 - 0 + 1 are both two.
+        assert_eq!(found.distinct().len(), 5, "`both` is one person, not two");
+        assert_eq!(found.billed_resources(), 6);
         let v = verified_from(&found, at, 30);
-        assert_eq!(v.engagers, 1);
-        assert_eq!(v.score(), 3 + 1, "and it scores in both categories");
+        assert_eq!(v.engagers, 5);
+        assert_eq!(
+            v.score(),
+            3 + 3 * 3 + 2,
+            "one reposter, three quoters, two likers"
+        );
     }
 
     #[test]

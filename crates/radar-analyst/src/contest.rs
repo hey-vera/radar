@@ -792,6 +792,62 @@ mod tests {
     }
 
     #[test]
+    fn a_prompt_is_due_only_for_an_unprompted_winner_inside_the_window() {
+        // All three conditions, each proved by a case that fails without it.
+        // CI reported both `&&` here as surviving mutants -- the function had
+        // no test at all -- and each `||` mutation is caught by exactly one of
+        // the negative cases below.
+        let dir = std::env::temp_dir().join(format!("radar-due-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = dir.to_string_lossy().into_owned();
+        let inside = WEEK.closes_at() + 3_600;
+
+        let write = |record: &Record| {
+            write_atomically(
+                &record_path(&dir, record.week),
+                &record.to_json().expect("json"),
+            )
+            .expect("write");
+        };
+        let with_winner = || {
+            let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+            record.winner = Some(radar_contest::Winner {
+                summoner: "alice".to_owned(),
+                reply_id: "r1".to_owned(),
+                score: 3,
+                handle: None,
+            });
+            record
+        };
+
+        // Nobody won: there is no reply to post the prompt under.
+        write(&Record::close(WEEK, radar_contest::Ranking::default()));
+        assert_eq!(prompt_due(&dir, inside), None, "a week nobody won");
+
+        // A winner, no prompt, inside the window: due.
+        write(&with_winner());
+        assert_eq!(
+            prompt_due(&dir, inside).map(|r| r.week),
+            Some(WEEK),
+            "a winner who has not been told"
+        );
+
+        // Already prompted: posting a second one would give the winner two
+        // posts to reply to and only one of them would be the claim.
+        let mut prompted = with_winner();
+        prompted.claim_prompt = Some("prompt-1".to_owned());
+        write(&prompted);
+        assert_eq!(prompt_due(&dir, inside), None, "already prompted");
+
+        // Past the window: the pool has rolled over, so there is nothing left
+        // to claim and no reason to ask.
+        write(&with_winner());
+        let late = with_winner().claim_window_closes_at();
+        assert_eq!(prompt_due(&dir, late), None, "the window has closed");
+    }
+
+    #[test]
     fn a_week_whose_prompt_never_posted_accepts_no_claim_at_all() {
         // `claim_prompt: None` is a week where the account never managed to
         // post the prompt -- a dry run, or a failed post. No mention can claim

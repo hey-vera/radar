@@ -739,6 +739,39 @@ mod tests {
     }"#;
 
     #[test]
+    fn an_account_without_a_usable_handle_has_none_rather_than_an_empty_one() {
+        // The site builds a link out of this. An empty string would build
+        // `https://x.com/` -- a link to the platform's front page, rendered as
+        // though it were the entrant's profile -- and an absent handle instead
+        // makes the site fall back to the id-based link, which resolves.
+        //
+        // CI reported the `!` in the `is_empty` filter as a surviving mutant:
+        // nothing exercised the empty case.
+        let body = r#"{"data":[
+            {"id":"1","created_at":"2020-01-01T00:00:00.000Z","username":"real"},
+            {"id":"2","created_at":"2020-01-01T00:00:00.000Z","username":""},
+            {"id":"3","created_at":"2020-01-01T00:00:00.000Z"}
+        ]}"#;
+        let accounts = parse_accounts(body).expect("valid");
+        assert_eq!(
+            accounts["1"].username.as_deref(),
+            Some("real"),
+            "a real handle survives"
+        );
+        assert_eq!(
+            accounts["2"].username, None,
+            "an empty handle is absent, not empty -- deleting the `!` fails here"
+        );
+        assert_eq!(accounts["3"].username, None, "a missing handle is absent");
+        // And the age still reads on all three: the handle is a passenger on
+        // this call and must not be able to fail the thing the call is for.
+        assert_eq!(accounts.len(), 3);
+        for id in ["1", "2", "3"] {
+            assert_eq!(accounts[id].created_at, 1_577_836_800, "{id}");
+        }
+    }
+
+    #[test]
     fn the_lookup_urls_carry_only_digit_ids_and_the_operator_is_the_configured_user() {
         // CI's mutants: `user_id` replaced by "" or "xyzzy" -- the contest's
         // operator becomes nobody, and the account could win its own contest;

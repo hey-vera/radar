@@ -183,6 +183,7 @@ fn prices() -> Prices {
         reply: MicroUsd(10_000),
         post: MicroUsd(15_000),
         model_call: MicroUsd(2_000),
+        user_read: MicroUsd(20_000),
     }
 }
 

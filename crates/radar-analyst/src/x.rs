@@ -30,7 +30,7 @@
 //! limit keyed on one is a limit that can be shed by renaming. The id cannot be
 //! changed and cannot be transferred.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use radar_contest::Metrics;
@@ -508,6 +508,58 @@ pub fn post_body(text: &str) -> String {
 /// Most ids one lookup may carry. The platform's own limit on both endpoints.
 const LOOKUP: usize = 100;
 
+/// How many user resources one engager page may return.
+///
+/// **One page per endpoint per entry, and no pagination.** The walk below is
+/// bounded by arithmetic rather than by patience, and X bills these per user
+/// returned at ten times a post read -- so a second page is a second bill for a
+/// reply that a hundred distinct accounts already engaged with, which is not a
+/// reply whose ranking is in doubt. A hundred is the platform's own maximum.
+const ENGAGERS_PER_PAGE: usize = 100;
+
+/// Who engaged with one reply, as distinct accounts with their ages.
+///
+/// Accounts, not counts. That is the whole difference between this and
+/// [`Metrics`]: `quote_count` is ten when one account quotes ten times, and
+/// `quoted` has one entry. Research 0029, S16.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Engagers {
+    /// Accounts that reposted it.
+    pub reposted: BTreeMap<String, Account>,
+    /// Accounts that quoted it, however many times each.
+    pub quoted: BTreeMap<String, Account>,
+    /// Accounts that liked it.
+    pub liked: BTreeMap<String, Account>,
+}
+
+impl Engagers {
+    /// Every distinct account seen across all three reads.
+    ///
+    /// A person who reposted *and* liked is one engager, which is what makes
+    /// this a count of people rather than of actions.
+    #[must_use]
+    pub fn distinct(&self) -> BTreeSet<&str> {
+        self.reposted
+            .keys()
+            .chain(self.quoted.keys())
+            .chain(self.liked.keys())
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// How many user resources these reads billed for.
+    ///
+    /// The sum of the three pages, **not** the distinct count: X charges per
+    /// user returned, and an account that reposted and liked was returned
+    /// twice. Charging the distinct count would under-count the bill by
+    /// exactly the overlap, which is largest on the replies that engaged most
+    /// people.
+    #[must_use]
+    pub fn billed_resources(&self) -> usize {
+        self.reposted.len() + self.quoted.len() + self.liked.len()
+    }
+}
+
 impl X {
     /// The account's own id: the contest's operator, who never wins.
     #[must_use]
@@ -580,6 +632,59 @@ impl X {
         }
         Ok(out)
     }
+
+    /// The three URLs one engager scan reads.
+    ///
+    /// Built here rather than inline so the query can be checked without a
+    /// call, the way `metrics_url` and `accounts_url` are. `created_at` is the
+    /// field the age floor is applied to; without it every engager would be of
+    /// unknown age and rule 9 would exclude the lot.
+    #[must_use]
+    pub fn engager_urls(&self, reply_id: &str) -> [String; 3] {
+        // Digits only, for the reason `metrics_url` gives: the id came off the
+        // network before it came out of our own record.
+        let id: String = reply_id.chars().filter(char::is_ascii_digit).collect();
+        let fields = "user.fields=created_at,username";
+        [
+            format!(
+                "{}/2/tweets/{id}/retweeted_by?{fields}&max_results={ENGAGERS_PER_PAGE}",
+                self.base
+            ),
+            format!(
+                "{}/2/tweets/{id}/liking_users?{fields}&max_results={ENGAGERS_PER_PAGE}",
+                self.base
+            ),
+            // Quotes come back as posts, so the authors arrive under
+            // `includes.users` rather than `data`. That is why this one is
+            // parsed differently below and not because the shape was guessed.
+            format!(
+                "{}/2/tweets/{id}/quote_tweets?expansions=author_id&{fields}&max_results={ENGAGERS_PER_PAGE}",
+                self.base
+            ),
+        ]
+    }
+
+    /// Who engaged with one reply.
+    ///
+    /// Three reads, one page each. Returns accounts rather than counts, which
+    /// is the entire reason the scan exists: `quote_count` is ten when one
+    /// account quotes ten times.
+    ///
+    /// # Errors
+    ///
+    /// [`Unreachable`] from any of the three. All or nothing on purpose -- a
+    /// partial scan would produce a verified score that is missing a category,
+    /// and a reply whose reposters were read but whose likers were not would
+    /// rank below one that was read completely. The caller falls back to the
+    /// raw score for the week rather than ranking on half a measurement.
+    pub fn engagers(&self, reply_id: &str) -> Result<Engagers, Unreachable> {
+        let [reposts, likes, quotes] = self.engager_urls(reply_id);
+        Ok(Engagers {
+            reposted: parse_accounts(&self.get(&reposts)?)?,
+            liked: parse_accounts(&self.get(&likes)?)?,
+            quoted: parse_quote_authors(&self.get(&quotes)?)?,
+        })
+    }
 }
 
 fn digits_joined(ids: &[String]) -> String {
@@ -640,6 +745,44 @@ pub fn parse_metrics(body: &str) -> Result<BTreeMap<String, Metrics>, Unreachabl
         );
     }
     Ok(out)
+}
+
+/// The authors of quote posts, from a `quote_tweets` response.
+///
+/// **The authors, not the posts.** Ten quotes from one account are one entry
+/// here, and that collapse is the fix S16 describes: `quote_count` counts
+/// posts, and posts are unlimited per account.
+///
+/// The users arrive under `includes.users` because the `data` array holds
+/// posts; `expansions=author_id` is what puts them there. A response with
+/// quotes but no expansion is **not** zero quoters -- it is a request that
+/// asked for the wrong thing, and it fails rather than reporting nobody.
+///
+/// # Errors
+///
+/// [`Unreachable::Unreadable`] when the body is not JSON, when the platform
+/// returned errors, or when there are quote posts and no authors to attribute
+/// them to.
+pub fn parse_quote_authors(body: &str) -> Result<BTreeMap<String, Account>, Unreachable> {
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|e| Unreachable::Unreadable(format!("not json: {e}")))?;
+    if let Some(errors) = value.get("errors") {
+        return Err(Unreachable::Unreadable(format!("errors: {errors}")));
+    }
+    let posts = value
+        .get("data")
+        .and_then(serde_json::Value::as_array)
+        .map_or(0, Vec::len);
+    let users = value.get("includes").and_then(|i| i.get("users"));
+    match users {
+        Some(users) => parse_accounts(&serde_json::json!({ "data": users }).to_string()),
+        // No quotes at all is genuinely nobody, and the platform omits
+        // `includes` entirely in that case.
+        None if posts == 0 => Ok(BTreeMap::new()),
+        None => Err(Unreachable::Unreadable(format!(
+            "{posts} quote post(s) and no includes.users to attribute them to"
+        ))),
+    }
 }
 
 /// Reads a user-lookup response into creation times by id.

@@ -507,6 +507,7 @@ pub fn run() -> ! {
             now(),
             &rules,
             limits.per_summoner_daily,
+            &mut spend,
         ) {
             Ok(Some(record)) => announce_week(
                 &record,
@@ -1033,6 +1034,7 @@ mod tests {
             reply: MicroUsd(10_000),
             post: MicroUsd(15_000),
             model_call: MicroUsd(2_000),
+            user_read: MicroUsd(20_000),
         };
         let mut spend = Spend::open(
             Budget {

@@ -43,6 +43,22 @@ pub struct OpenAi {
     price_in: u64,
     /// Micro-dollars per million output tokens.
     price_out: u64,
+    /// What to send as `reasoning_effort`, or `None` to omit the field.
+    ///
+    /// **Every current OpenAI model reasons by default**, and reasoning tokens
+    /// bill at the *output* rate while never appearing in the reply. On a
+    /// three-sentence write from a fixed sheet that is the whole bill and none
+    /// of the product: the model can spend the entire `max_completion_tokens`
+    /// ceiling thinking, return empty `content`, and be charged for a reply
+    /// that then falls back to the template. `"none"` is what turns that off.
+    ///
+    /// Not defaulted, in either direction. Sending it always would 400 on the
+    /// older non-reasoning models, which are the cheapest ones on the list;
+    /// defaulting it to `"none"` would be a decision about answer quality made
+    /// by whoever wrote this file. Unset sends nothing and the vendor decides,
+    /// which is the only honest resting state -- and
+    /// `deploy/analyst.env.example` says loudly which models need it.
+    reasoning_effort: Option<String>,
 }
 
 /// Written by hand, for the reason [`crate::ApiKey`]'s is.
@@ -53,6 +69,7 @@ impl fmt::Debug for OpenAi {
             .field("model", &self.model)
             .field("price_in", &self.price_in)
             .field("price_out", &self.price_out)
+            .field("reasoning_effort", &self.reasoning_effort)
             .field("key", &"<redacted>")
             .finish()
     }
@@ -106,6 +123,9 @@ impl OpenAi {
             model: model.unwrap_or_default(),
             price_in: price_in.unwrap_or_default(),
             price_out: price_out.unwrap_or_default(),
+            // Optional, so it is not in the missing-variable list above: an
+            // instance that never sets it is correctly configured.
+            reasoning_effort: non_empty(get, "RADAR_MODEL_REASONING_EFFORT"),
         })
     }
 
@@ -138,14 +158,20 @@ impl OpenAi {
     /// spans the range of models this endpoint might be pointed at.
     #[must_use]
     pub fn body(&self, request: &Request) -> Value {
-        json!({
+        let mut body = json!({
             "model": self.model,
             "max_completion_tokens": ESTIMATED_OUTPUT_TOKENS,
             "messages": [
                 { "role": "system", "content": request.system() },
                 { "role": "user", "content": request.render() },
             ],
-        })
+        });
+        // Added rather than always present, because the field itself is a 400
+        // on the models that cannot reason.
+        if let Some(effort) = &self.reasoning_effort {
+            body["reasoning_effort"] = json!(effort);
+        }
+        body
     }
 
     /// Reads the answer out of a response body.
@@ -457,5 +483,66 @@ mod tests {
         let provider = provider();
         assert!(provider.estimate() > provider.price(1_000, 100));
         assert_eq!(provider.name(), "openai");
+    }
+
+    #[test]
+    fn the_reasoning_budget_is_sent_only_when_it_is_configured() {
+        // Every current OpenAI model reasons by default, and reasoning tokens
+        // bill at the OUTPUT rate while never appearing in the reply. On a
+        // three-sentence write that is the whole bill and none of the product:
+        // the model can spend the entire `max_completion_tokens` ceiling
+        // thinking, return empty `content`, and be charged for a reply that
+        // then falls back to the template.
+        //
+        // It is absent by default rather than "none", because the field itself
+        // is a 400 on the older non-reasoning models -- which are the cheapest
+        // ones available.
+        let bare = provider().body(&Request::new("s", "q"));
+        assert!(
+            bare.get("reasoning_effort").is_none(),
+            "unset must send nothing: {bare}"
+        );
+
+        let quiet = OpenAi::from_vars(
+            "sk-proj-not-a-real-key".to_owned(),
+            &vars(&[
+                (
+                    "RADAR_MODEL_ENDPOINT",
+                    "https://example.invalid/v1/chat/completions",
+                ),
+                ("RADAR_MODEL_NAME", "a-model"),
+                ("RADAR_MODEL_PRICE_IN", "200000"),
+                ("RADAR_MODEL_PRICE_OUT", "1200000"),
+                ("RADAR_MODEL_REASONING_EFFORT", "none"),
+            ]),
+        )
+        .expect("fully configured");
+        assert_eq!(
+            quiet.body(&Request::new("s", "q"))["reasoning_effort"],
+            "none"
+        );
+
+        // Blank is absence, for the reason every other variable treats it so:
+        // it is what a shell leaves behind when an expansion produced nothing.
+        let blank = OpenAi::from_vars(
+            "sk-proj-not-a-real-key".to_owned(),
+            &vars(&[
+                (
+                    "RADAR_MODEL_ENDPOINT",
+                    "https://example.invalid/v1/chat/completions",
+                ),
+                ("RADAR_MODEL_NAME", "a-model"),
+                ("RADAR_MODEL_PRICE_IN", "200000"),
+                ("RADAR_MODEL_PRICE_OUT", "1200000"),
+                ("RADAR_MODEL_REASONING_EFFORT", "   "),
+            ]),
+        )
+        .expect("fully configured");
+        assert!(
+            blank
+                .body(&Request::new("s", "q"))
+                .get("reasoning_effort")
+                .is_none()
+        );
     }
 }

@@ -725,9 +725,14 @@ fn an_activity_window_ends_where_it_says_it_does() {
 
 #[test]
 fn an_exit_measured_before_t_is_not_a_return() {
-    // The exit has to be a later measurement than the entry, or the "return"
-    // is one reading divided by itself -- which would report zero for every
-    // token whose only measurement predates its own entry.
+    // A measurement before T cannot be an entry, and the one at T is both the
+    // entry and the only later reading -- so there is no exit, and no return.
+    //
+    // **This test asserted `Some(0.0)` until the first live run.** It had the
+    // rule right in its own comment and the assertion wrong, which is how a
+    // test comes to defend a bug: the entry and the exit were the same row, the
+    // "return" was one reading divided by itself, and zero is a number that
+    // looks like a measurement.
     let at = 1_000u64;
     let table = table_over(
         vec![launch(1, 100, at)],
@@ -737,9 +742,7 @@ fn an_exit_measured_before_t_is_not_a_return() {
         ],
     );
 
-    // The six-hour horizon's last measurement at or before it is the one at T,
-    // which is also the entry -- a later reading than the entry, so a return.
-    assert_eq!(table.rows[0].gross_6h_bps, Some(0.0));
+    assert_eq!(table.rows[0].gross_6h_bps, None);
 }
 
 #[test]
@@ -838,4 +841,37 @@ fn a_window_the_trades_table_only_half_covers_is_not_covered() {
         None,
         "half a window is not a measurement"
     );
+}
+
+#[test]
+fn one_measurement_after_t_is_not_a_return() {
+    // The bug the first live run found. A mint measured once after T has that
+    // one reading as both its entry and its exit, and dividing it by itself is
+    // a return of exactly zero -- which is a number, and looks like a
+    // measurement, and is an identity. On the production store this was
+    // 357,077 rows and it made every median in every stratum 0.0 bps.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![launch(1, 100, at)],
+        vec![outcome(1, at + T, at, None, Some(100))],
+    );
+
+    assert_eq!(table.rows[0].gross_6h_bps, None);
+    assert_eq!(table.rows[0].gross_24h_bps, None);
+}
+
+#[test]
+fn a_second_measurement_after_t_is_a_return() {
+    // The other side, so the rule above is not satisfied by refusing every
+    // label. Two distinct readings after T are a real move.
+    let at = 1_000u64;
+    let table = table_over(
+        vec![launch(1, 100, at)],
+        vec![
+            outcome(1, at + T, at, None, Some(100)),
+            outcome(1, at + T + 1, at, None, Some(150)),
+        ],
+    );
+
+    assert_eq!(table.rows[0].gross_6h_bps, Some(5_000.0));
 }

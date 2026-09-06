@@ -843,14 +843,22 @@ fn labels(inputs: &Inputs<'_>) -> (Option<f64>, Option<f64>, Option<GraduationMo
         .cloned()
         .unwrap_or_default();
     let t = inputs.t();
-    let entry = first_from(&series, t).and_then(|o| o.last_price);
+    let entry = first_from(&series, t);
     let gross = |hours: u64| -> Option<f64> {
+        let entry = entry?;
         let horizon = inputs.launch_slot() + SlotDelta(hours * SLOTS_PER_HOUR);
         let exit = latest_by(&series, horizon)?;
-        if exit.measured_at < t {
+        // Strictly later than the entry, not merely at or after T. The first
+        // live run made this exact mistake: most mints in the production store
+        // are measured once after T, so the latest measurement before the
+        // horizon *was* the entry, and the label came back as one reading
+        // divided by itself. That is a return of exactly zero, reported for
+        // 357,077 rows, and every median in every stratum was 0.0 bps -- a null
+        // that looked like a measurement and was an identity.
+        if exit.measured_at <= entry.measured_at {
             return None;
         }
-        bps_between(entry?, exit.last_price?)
+        bps_between(entry.last_price?, exit.last_price?)
     };
     (
         gross(6),

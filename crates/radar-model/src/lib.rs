@@ -42,6 +42,7 @@
 #![forbid(unsafe_code)]
 
 pub mod api_key;
+pub mod catalog;
 pub mod codex;
 pub mod openai;
 pub mod request;
@@ -49,6 +50,7 @@ pub mod request;
 use radar_types::MicroUsd;
 
 pub use api_key::ApiKey;
+pub use catalog::Listed;
 pub use codex::Codex;
 pub use openai::OpenAi;
 pub use request::Request;

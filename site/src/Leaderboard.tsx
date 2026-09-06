@@ -21,7 +21,7 @@ import { useEffect, useState } from "react";
 import { leaderboard as fetchLeaderboard, type Leaderboard as Data } from "./api";
 import { count, measuredAgo, safeHref } from "./honesty";
 import { useTitle } from "./title";
-import { Card, Heading, Measured, Nothing, Section, Steps } from "./ui";
+import { Card, Heading, Measured, Nothing, Section, Steps, Summoner } from "./ui";
 
 /** The scoring rule, published in full because the prize is real money. */
 function TheRule() {
@@ -145,7 +145,9 @@ function Table({ data }: { data: Data }) {
               className="border-b border-[var(--color-line)]"
             >
               <td className="tnum py-3 pr-4 text-[var(--color-faint)]">{e.rank}</td>
-              <td className="py-3 pr-4 text-[var(--color-text)]">@{e.summoner}</td>
+              <td className="py-3 pr-4 text-[var(--color-text)]">
+                <Summoner id={e.summoner} handle={e.handle} />
+              </td>
               <td className="py-3 pr-4 font-mono text-xs text-[var(--color-dim)]">
                 {/* A mint that never resolved is not a blank cell. The bot
                     answers questions it could not tie to a coin, and hiding

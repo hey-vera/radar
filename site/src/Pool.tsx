@@ -33,7 +33,7 @@ import { Link } from "wouter";
 import { pool as fetchPool, sol, type Pool as Data } from "./api";
 import { measuredAgo, solscanTx } from "./honesty";
 import { useTitle } from "./title";
-import { Card, Heading, Measured, Nothing, Section, Steps } from "./ui";
+import { Card, Heading, Measured, Nothing, Section, Steps, Summoner } from "./ui";
 
 function Economics() {
   return (
@@ -123,7 +123,9 @@ function Winners({ data }: { data: Data }) {
             {data.winners.map((w) => (
               <tr key={w.signature} className="border-b border-[var(--color-line)]">
                 <td className="py-3 pr-4 text-[var(--color-dim)]">{w.week}</td>
-                <td className="py-3 pr-4 text-[var(--color-text)]">@{w.summoner}</td>
+                <td className="py-3 pr-4 text-[var(--color-text)]">
+                  <Summoner id={w.summoner} handle={w.handle} />
+                </td>
                 <td className="tnum py-3 pr-4 text-[var(--color-text)]">
                   {sol(w.lamports)} SOL
                 </td>

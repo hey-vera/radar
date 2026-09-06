@@ -53,8 +53,19 @@ export interface Leaderboard {
 /** One entry: somebody summoned the bot, and the bot's reply scored. */
 export interface Entry {
   readonly rank: number;
-  /** The X handle that summoned it. */
+  /**
+   * The summoner's numeric X account id -- what a mention carries, and the
+   * only identifier that cannot be reassigned. Link with `userHref`.
+   */
   readonly summoner: string;
+  /**
+   * The handle, when the week close read one, and `null` otherwise.
+   *
+   * Mid-week nothing has read handles at all, so an open week is all `null`.
+   * This field documented itself as `summoner` until 2026-09-06, and the site
+   * therefore rendered `` at every reader -- finding S4.
+   */
+  readonly handle: string | null;
   /** The mint asked about, when one resolved. */
   readonly mint: string | null;
   /** The bot's reply on the platform, when it was published. */
@@ -81,7 +92,10 @@ export interface Pool {
 /** A past winner, and the transaction that paid them. */
 export interface Winner {
   readonly week: string;
+  /** The numeric X account id. Link with `userHref`. */
   readonly summoner: string;
+  /** The handle read at week close, or `null`. */
+  readonly handle: string | null;
   readonly lamports: number;
   readonly signature: string;
 }

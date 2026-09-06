@@ -256,3 +256,83 @@ describe("the summon box", () => {
     );
   });
 });
+
+describe("a week that ran names its entrants the way the record can", () => {
+  /** A server that answers the leaderboard with one week and two entries. */
+  function withLeaderboard() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        String(url).includes("/leaderboard")
+          ? Promise.resolve({
+              ok: true,
+              json: () =>
+                Promise.resolve({
+                  week: "2957",
+                  opens_at: "2026-08-31T00:00:00Z",
+                  closes_at: "2026-09-07T00:00:00Z",
+                  measured_at: "2026-09-07T00:01:00Z",
+                  answered: 2,
+                  published: 2,
+                  entries: [
+                    {
+                      rank: 1,
+                      summoner: "1889496824328880128",
+                      handle: "somebody",
+                      mint: "So11111111111111111111111111111111111111112",
+                      reply_url: "https://x.com/i/web/status/1",
+                      score: 12,
+                    },
+                    {
+                      rank: 2,
+                      summoner: "2005812292693483520",
+                      handle: null,
+                      mint: null,
+                      reply_url: null,
+                      score: 3,
+                    },
+                  ],
+                }),
+            })
+          : Promise.reject(new Error("no server")),
+      ),
+    );
+  }
+
+  it("shows the handle and links the id, never the other way round", async () => {
+    // Finding S4: `public.rs` has sent `handle` since #162 and `api.ts` never
+    // declared the field, so every reader saw `@1889496824328880128` on a live
+    // page. Re-apply by rendering `@{e.summoner}` again and the first
+    // assertion fails.
+    //
+    // The link is by id on purpose (S27). A handle can be freed and taken by
+    // somebody else, and this page would then point a prize -- or an
+    // accusation -- at a stranger. The id cannot be reassigned.
+    withLeaderboard();
+    render(<Leaderboard />);
+    await waitFor(() => {
+      expect(screen.getByText("@somebody")).toBeTruthy();
+    });
+    expect(screen.queryByText("@1889496824328880128")).toBeNull();
+
+    const named = screen.getByText("@somebody").closest("a");
+    expect(named?.getAttribute("href")).toBe(
+      "https://x.com/i/user/1889496824328880128",
+    );
+  });
+
+  it("shows a bare id when no handle was read, not an @ in front of a number", async () => {
+    // Mid-week nothing has read handles at all, so `null` is the ordinary
+    // case rather than an edge one. `@2005812292693483520` reads as a name
+    // somebody chose and it is not one.
+    withLeaderboard();
+    render(<Leaderboard />);
+    await waitFor(() => {
+      expect(screen.getByText("2005812292693483520")).toBeTruthy();
+    });
+    expect(screen.queryByText("@2005812292693483520")).toBeNull();
+    expect(
+      screen.getByText("2005812292693483520").closest("a")?.getAttribute("href"),
+    ).toBe("https://x.com/i/user/2005812292693483520");
+  });
+});

@@ -46,6 +46,14 @@ pub struct Prices {
     pub post: MicroUsd,
     /// One model call for the voice pass.
     pub model_call: MicroUsd,
+    /// **One user resource returned** by an engager read, not one call.
+    ///
+    /// X prices these per user returned rather than per request, and at ten
+    /// times a post read, so a single page of a hundred engagers is the most
+    /// expensive thing the week-close job does. Priced separately for that
+    /// reason: charging it as a post read would under-count the close by an
+    /// order of magnitude, silently, every week.
+    pub user_read: MicroUsd,
 }
 
 /// What is being paid for.
@@ -65,6 +73,8 @@ pub enum Cost {
     Post,
     /// A voice-pass model call.
     ModelCall,
+    /// One user resource returned by an engager read.
+    UserRead,
 }
 
 impl Prices {
@@ -89,6 +99,7 @@ impl Prices {
             reply: read("RADAR_X_PRICE_REPLY")?,
             post: read("RADAR_X_PRICE_POST")?,
             model_call: read("RADAR_MODEL_PER_CALL_USD_MICRO")?,
+            user_read: read("RADAR_X_PRICE_USER_READ")?,
         })
     }
 
@@ -101,6 +112,7 @@ impl Prices {
             Cost::Reply => self.reply,
             Cost::Post => self.post,
             Cost::ModelCall => self.model_call,
+            Cost::UserRead => self.user_read,
         }
     }
 }
@@ -214,6 +226,7 @@ mod tests {
             reply: MicroUsd(10_000),
             post: MicroUsd(15_000),
             model_call: MicroUsd(2_000),
+            user_read: MicroUsd(20_000),
         }
     }
 
@@ -384,6 +397,7 @@ mod tests {
                     "RADAR_X_PRICE_REPLY" => "10000",
                     "RADAR_X_PRICE_POST" => "15000",
                     "RADAR_MODEL_PER_CALL_USD_MICRO" => "2000",
+                    "RADAR_X_PRICE_USER_READ" => "20000",
                     _ => return None,
                 }
                 .to_owned(),
@@ -397,6 +411,7 @@ mod tests {
             "RADAR_X_PRICE_REPLY",
             "RADAR_X_PRICE_POST",
             "RADAR_MODEL_PER_CALL_USD_MICRO",
+            "RADAR_X_PRICE_USER_READ",
         ] {
             let partial = |k: &str| if k == missing { None } else { full(k) };
             assert_eq!(

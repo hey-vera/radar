@@ -29,14 +29,15 @@ use std::io::Write as _;
 
 use radar_contest::hunter::{Placing, Sighting, tally};
 use radar_contest::{
-    Entry as ContestEntry, Excluded, Metrics, Record, Rules, Standing, Week, rank,
+    Entry as ContestEntry, Excluded, Metrics, Record, Rules, Standing, Verified, Week, rank,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::admission::Refused;
-use crate::daemon::Paths;
+use crate::daemon::{Paths, day_of};
 use crate::log::Entry;
-use crate::x::{Mention, X};
+use crate::spend::{Cost, Spend};
+use crate::x::{Engagers, Mention, X};
 
 /// Which refusal it was.
 ///
@@ -139,6 +140,154 @@ pub fn read_refusals(path: &str) -> Vec<RefusalLine> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// What a scan found, scored against the published floor.
+///
+/// Pure. [`X::engagers`] does the reads; this is what turns them into the three
+/// numbers the rule uses, and it is where the two properties that make the rule
+/// work actually live:
+///
+/// - **Distinctness comes from the maps' keys.** Ten quotes from one account
+///   arrive as one entry, so `quoters` is a count of accounts. That is the
+///   whole fix (research 0029, S16).
+/// - **An engager of unknown age does not count.** Rule 9, and the same
+///   direction the entrant floor already takes: the safe error is a real
+///   supporter uncounted for a week, not a day-old account voting.
+///
+/// `engagers_under_age` is published beside the score as evidence and excludes
+/// nobody by itself. Design 0011 phase 2 turns a cluster measurement into a
+/// rule only by ADR, after four closed weeks.
+#[must_use]
+pub fn verified_from(found: &Engagers, closes_at: u64, min_age_days: u32) -> Verified {
+    let floor = u64::from(min_age_days) * 86_400;
+    let old_enough = |a: &crate::x::Account| closes_at.saturating_sub(a.created_at) >= floor;
+    let count = |m: &std::collections::BTreeMap<String, crate::x::Account>| -> u64 {
+        m.values().filter(|a| old_enough(a)).count() as u64
+    };
+    let distinct = found.distinct();
+    let under = distinct
+        .iter()
+        .filter_map(|id| {
+            found
+                .reposted
+                .get(*id)
+                .or_else(|| found.quoted.get(*id))
+                .or_else(|| found.liked.get(*id))
+        })
+        .filter(|a| !old_enough(a))
+        .count();
+    Verified {
+        reposts: count(&found.reposted),
+        quoters: count(&found.quoted),
+        likes: count(&found.liked),
+        engagers: distinct.len() as u64,
+        engagers_under_age: under as u64,
+    }
+}
+
+/// Scans down a raw ranking until arithmetic says nothing below can win.
+///
+/// # The bound, and why it is not a guess
+///
+/// `Metrics::raw_score` is an upper bound on `Verified::score` -- raw counts
+/// every account and adds replies, verified counts a subset and drops them, and
+/// `a_verified_score_is_never_above_the_raw_one_it_came_from` pins it. So once
+/// the best verified score seen so far is at least the **raw** score of the
+/// next entry down, no unscanned entry can overtake it, and the walk stops.
+///
+/// In an ordinary week that is one to three entries: three reads each, at most
+/// three hundred user resources, about three dollars at X's listed price. In a
+/// week where the top two are close it scans further, which is exactly when the
+/// answer is in doubt and the money is worth spending.
+///
+/// Returns what it scanned, keyed by reply id. Entries it never reached are
+/// absent, which the ranking reads as unscanned rather than as nobody engaged.
+///
+/// # Errors
+///
+/// Never. A read that fails stops the walk and returns what was scanned so far,
+/// loudly: a week scored on a partial scan is still scored on a published rule,
+/// and refusing to close would leave the prize unpaid over a transient 500.
+pub fn scan_ranking(
+    mut read: impl FnMut(&str) -> Result<Engagers, crate::x::Unreachable>,
+    ranked: &[radar_contest::Ranked],
+    closes_at: u64,
+    min_age_days: u32,
+    mut charge: impl FnMut(usize) -> bool,
+) -> BTreeMap<String, Verified> {
+    let mut found: BTreeMap<String, Verified> = BTreeMap::new();
+    let mut best = 0u64;
+    for (i, r) in ranked.iter().enumerate() {
+        // The bound. Checked before the read, so the entry that settles it is
+        // the last one paid for.
+        if best >= r.entry.metrics.raw_score() && i > 0 {
+            break;
+        }
+        let engagers = match read(&r.entry.reply_id) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!(
+                    "radar-analyst: cannot scan {}: {e}; the week is scored on what was read",
+                    r.entry.reply_id
+                );
+                break;
+            }
+        };
+        if !charge(engagers.billed_resources()) {
+            eprintln!(
+                "radar-analyst: the day's budget will not cover scanning {}; \
+                 the week is scored on what was read",
+                r.entry.reply_id
+            );
+            break;
+        }
+        let verified = verified_from(&engagers, closes_at, min_age_days);
+        best = best.max(verified.score());
+        found.insert(r.entry.reply_id.clone(), verified);
+    }
+    found
+}
+
+/// Puts a scan's findings onto the metrics the ranking is built from.
+///
+/// Pure, and separate from the walk so the merge can be tested without a
+/// platform. An entry the walk never reached keeps `verified: None`, which the
+/// rule reads as unscanned and scores raw -- not as nobody engaged.
+#[must_use]
+pub fn merge_verified(
+    mut metrics: BTreeMap<String, Metrics>,
+    scanned: &BTreeMap<String, Verified>,
+) -> BTreeMap<String, Metrics> {
+    for (reply_id, verified) in scanned {
+        if let Some(m) = metrics.get_mut(reply_id) {
+            m.verified = Some(*verified);
+        }
+    }
+    metrics
+}
+
+/// Charges one entry's engager reads, or refuses.
+///
+/// X bills **per user resource returned**, not per request, so the charge is
+/// the page sizes rather than the three calls. Settled immediately at what was
+/// reserved: the reads have already happened by the time this is called -- the
+/// platform does not tell you how many users a page holds until it hands you
+/// the page -- so there is nothing to release and nothing to reconcile.
+///
+/// Returns whether the day's budget covered it. `false` stops the walk, which
+/// leaves the remaining entries unscanned and scored raw. That is the right
+/// failure: a partial scan is still a published rule applied to what was read,
+/// and refusing to close would leave a real prize unpaid over a budget line.
+fn charge_user_reads(spend: &mut Spend, resources: usize, day: u64) -> bool {
+    for _ in 0..resources {
+        let Ok(commitment) = spend.authorize(Cost::UserRead, day) else {
+            return false;
+        };
+        let charged = commitment.reserved();
+        spend.settle(commitment, charged);
+    }
+    true
 }
 
 /// The published X replies posted in `week`, with a mint: the week's entries.
@@ -389,6 +538,7 @@ pub fn close_if_due(
     now: u64,
     rules: &Rules,
     per_summoner_daily: u32,
+    spend: &mut Spend,
 ) -> std::io::Result<Option<Record>> {
     let Some(week) = due(now) else {
         return Ok(None);
@@ -432,6 +582,38 @@ pub fn close_if_due(
 
     let refusals = read_refusals(&paths.refusals);
     let previous = radar_contest::records_in(std::path::Path::new(&paths.contest_dir));
+
+    // Closed once on the raw metrics to get an order to walk, then again on the
+    // enriched ones. `close` is pure, so the first call costs nothing but the
+    // arithmetic -- and doing it this way keeps the scan out of the scoring
+    // rule, which stays a function of its inputs and replayable from the
+    // record.
+    let raw = close(&Inputs {
+        week,
+        log: &log,
+        refusals: &refusals,
+        previous: &previous,
+        metrics: &metrics,
+        accounts: &accounts,
+        rules,
+    });
+    // No `is_empty` guard: `scan_ranking` over an empty ranking already reads
+    // nothing and returns an empty map, so a guard here would be a branch whose
+    // removal changes no behaviour -- which is what CI reported when three
+    // mutants of it survived. The only real condition is whether there is a
+    // client to read with.
+    let scanned = match x {
+        Some(x) => scan_ranking(
+            |id| x.engagers(id),
+            &raw.ranking.ranked,
+            week.closes_at(),
+            rules.min_engager_age_days,
+            |resources| charge_user_reads(spend, resources, day_of(now)),
+        ),
+        None => BTreeMap::new(),
+    };
+    let metrics = merge_verified(metrics, &scanned);
+
     let record = close(&Inputs {
         week,
         log: &log,
@@ -489,6 +671,410 @@ fn write_atomically(path: &str, text: &str) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// An account of a given age at `closes_at`.
+    fn aged(days: u64, at: u64) -> crate::x::Account {
+        crate::x::Account {
+            created_at: at.saturating_sub(days * 86_400),
+            username: None,
+        }
+    }
+
+    /// One ranked entry with the given raw metrics.
+    fn ranked_with(reply_id: &str, reposts: u64, quotes: u64) -> radar_contest::Ranked {
+        let metrics = Metrics {
+            reposts,
+            quotes,
+            likes: 0,
+            replies: 0,
+            verified: None,
+        };
+        radar_contest::Ranked {
+            entry: ContestEntry {
+                reply_id: reply_id.to_owned(),
+                summoner: format!("s{reply_id}"),
+                handle: None,
+                mint: "M".to_owned(),
+                at: WEEK.opens_at() + 10,
+                metrics,
+            },
+            score: metrics.raw_score(),
+        }
+    }
+
+    /// `n` distinct accounts, all old enough to count.
+    fn old_accounts(n: usize, at: u64) -> BTreeMap<String, crate::x::Account> {
+        (0..n)
+            .map(|i| (format!("acct{i}"), aged(400, at)))
+            .collect()
+    }
+
+    #[test]
+    fn the_walk_stops_as_soon_as_nothing_below_can_win() {
+        // The bound, and the reason the scan is affordable. Entry one has ten
+        // real reposters, so its verified score is 30. Entry two's RAW score is
+        // 3 -- below 30 -- so no scan of it could ever overtake, and paying to
+        // find that out is money spent to learn nothing.
+        //
+        // Re-apply by flipping `>=` to `<`, or `&&` to `||`: the walk either
+        // scans everything or stops before it starts, and this fails both ways.
+        let at = WEEK.closes_at();
+        let ranked = [
+            ranked_with("r1", 10, 0),
+            ranked_with("r2", 1, 0),
+            ranked_with("r3", 0, 0),
+        ];
+        let mut asked: Vec<String> = Vec::new();
+        let found = scan_ranking(
+            |id| {
+                asked.push(id.to_owned());
+                Ok(Engagers {
+                    reposted: old_accounts(10, at),
+                    quoted: BTreeMap::new(),
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, ["r1"], "one read, then the arithmetic settles it");
+        assert_eq!(found.len(), 1);
+        assert!(!found.contains_key("r2"), "unscanned, so scored raw");
+    }
+
+    #[test]
+    fn the_first_entry_is_always_scanned_however_low_it_scores() {
+        // The `i > 0` half. With nothing scanned yet the best verified score is
+        // zero, and zero is `>=` any raw score of zero -- so without it a week
+        // where the top reply has no engagement at all would scan nothing and
+        // silently score the whole week raw, which is the farmable rule.
+        //
+        // Re-apply by deleting `&& i > 0`: nothing is scanned and this fails.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 0)];
+        let mut asked = 0;
+        let found = scan_ranking(
+            |_| {
+                asked += 1;
+                Ok(Engagers::default())
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, 1, "the top entry is read even when it scored zero");
+        assert_eq!(found["r1"], Verified::default());
+    }
+
+    #[test]
+    fn the_walk_keeps_going_while_the_answer_is_still_in_doubt() {
+        // The case worth paying for. Both entries look identical raw, so the
+        // first scan cannot settle it and the second is read -- which is
+        // exactly when the money is worth spending.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut asked: Vec<String> = Vec::new();
+        scan_ranking(
+            |id| {
+                asked.push(id.to_owned());
+                // One prolific quoter: ten quotes, one account, verified 3.
+                let mut quoted = BTreeMap::new();
+                quoted.insert("farm".to_owned(), aged(400, at));
+                Ok(Engagers {
+                    reposted: BTreeMap::new(),
+                    quoted,
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(asked, ["r1", "r2"], "30 raw is not settled by 3 verified");
+    }
+
+    #[test]
+    fn a_failed_read_stops_the_walk_and_keeps_what_it_already_had() {
+        // A transient 500 must not lose the entries already scanned, and must
+        // not refuse to close: a week scored on a partial scan is still a
+        // published rule applied to what was read, and refusing would leave a
+        // real prize unpaid.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut calls = 0;
+        let found = scan_ranking(
+            |_| {
+                calls += 1;
+                if calls == 1 {
+                    Ok(Engagers {
+                        reposted: old_accounts(1, at),
+                        quoted: BTreeMap::new(),
+                        liked: BTreeMap::new(),
+                    })
+                } else {
+                    Err(crate::x::Unreachable::Unreadable("500".to_owned()))
+                }
+            },
+            &ranked,
+            at,
+            30,
+            |_| true,
+        );
+        assert_eq!(found.len(), 1, "the first survives the second's failure");
+        assert!(found.contains_key("r1"));
+    }
+
+    #[test]
+    fn a_budget_that_will_not_cover_the_next_entry_stops_the_walk() {
+        // And the entry it could not pay for is NOT recorded as scanned --
+        // charging happens before the result is kept, so a refused charge
+        // leaves that entry scored raw rather than scored on reads nobody paid
+        // for.
+        //
+        // Re-apply by deleting the `!`: the walk stops on a successful charge
+        // and continues on a refused one, so nothing is ever scanned.
+        let at = WEEK.closes_at();
+        let ranked = [ranked_with("r1", 0, 10), ranked_with("r2", 0, 10)];
+        let mut charges = 0;
+        let found = scan_ranking(
+            |_| {
+                Ok(Engagers {
+                    reposted: old_accounts(1, at),
+                    quoted: BTreeMap::new(),
+                    liked: BTreeMap::new(),
+                })
+            },
+            &ranked,
+            at,
+            30,
+            |_| {
+                charges += 1;
+                charges == 1
+            },
+        );
+        assert_eq!(found.len(), 1, "only what the budget covered");
+        assert!(found.contains_key("r1"));
+        assert!(!found.contains_key("r2"));
+    }
+
+    #[test]
+    fn ten_quotes_from_one_account_are_one_quoter() {
+        // Research 0029, S16, at the point the count is actually made. The
+        // platform reports `quote_count: 10`; the scan reads the authors and
+        // there is one of them.
+        //
+        // Re-apply by counting the quote posts instead of their authors: the
+        // farm's verified score triples and it wins.
+        let at = WEEK.closes_at();
+        let mut quoted = BTreeMap::new();
+        quoted.insert("farm".to_owned(), aged(400, at));
+        let found = Engagers {
+            reposted: BTreeMap::new(),
+            quoted,
+            liked: BTreeMap::new(),
+        };
+        let v = verified_from(&found, at, 30);
+        assert_eq!(v.quoters, 1, "however many times it quoted");
+        assert_eq!(v.engagers, 1);
+    }
+
+    #[test]
+    fn an_engager_under_the_floor_is_counted_and_never_scored() {
+        // Two rules pulling opposite ways, and both are deliberate. A new
+        // account does not add to the score -- rule 9, the same direction the
+        // entrant floor takes. But it IS counted in `engagers_under_age`,
+        // because design 0011 says publish the measurement and never the
+        // verdict, and a reader deciding whether a week was bought needs the
+        // number.
+        //
+        // Re-apply by dropping the age filter from `count`: the new account
+        // scores and this fails on the first assertion.
+        let at = WEEK.closes_at();
+        let mut reposted = BTreeMap::new();
+        reposted.insert("old".to_owned(), aged(400, at));
+        reposted.insert("older".to_owned(), aged(500, at));
+        reposted.insert("new".to_owned(), aged(2, at));
+        let found = Engagers {
+            reposted,
+            quoted: BTreeMap::new(),
+            liked: BTreeMap::new(),
+        };
+        let v = verified_from(&found, at, 30);
+        // Two old and one new, so the two counts differ. With one of each they
+        // are both 1, and CI mutated away the `!` in the under-age filter
+        // with nothing failing.
+        assert_eq!(v.reposts, 2, "only the old ones score");
+        assert_eq!(v.engagers, 3, "all three are counted as engagers");
+        assert_eq!(v.engagers_under_age, 1, "and the young one is published");
+        assert_eq!(v.score(), 6);
+    }
+
+    #[test]
+    fn the_floor_is_whole_days_and_the_bar_is_the_published_one() {
+        // Exactly at the floor counts; a second short does not. The same
+        // arithmetic the entrant floor uses, so a reader reading "30 days" on
+        // the site gets one rule rather than two that nearly agree.
+        let at = WEEK.closes_at();
+        for (age_seconds, counts) in [(30 * 86_400 - 1, 0), (30 * 86_400, 1)] {
+            let mut liked = BTreeMap::new();
+            liked.insert(
+                "a".to_owned(),
+                crate::x::Account {
+                    created_at: at - age_seconds,
+                    username: None,
+                },
+            );
+            let found = Engagers {
+                reposted: BTreeMap::new(),
+                quoted: BTreeMap::new(),
+                liked,
+            };
+            assert_eq!(verified_from(&found, at, 30).likes, counts);
+        }
+    }
+
+    #[test]
+    fn an_account_in_two_pages_is_one_engager_and_two_things_billed() {
+        // Two numbers that must not be the same one. `engagers` is people, and
+        // it is what the page publishes. `billed_resources` is user resources
+        // returned, and it is what X charges for -- an account returned by two
+        // endpoints is billed twice, so charging the distinct count would
+        // under-count the close by exactly the overlap.
+        //
+        // Re-apply by billing `distinct().len()`: the meter reads 1 instead
+        // of 2 and every busy week is under-charged.
+        let at = WEEK.closes_at();
+        let mut reposted = BTreeMap::new();
+        reposted.insert("both".to_owned(), aged(400, at));
+        let mut liked = BTreeMap::new();
+        liked.insert("both".to_owned(), aged(400, at));
+        liked.insert("liker".to_owned(), aged(400, at));
+        let mut quoted = BTreeMap::new();
+        quoted.insert("quoter".to_owned(), aged(400, at));
+        quoted.insert("quoter2".to_owned(), aged(400, at));
+        quoted.insert("quoter3".to_owned(), aged(400, at));
+        let found = Engagers {
+            reposted,
+            quoted,
+            liked,
+        };
+        // Three distinct page sizes -- 1, 3, 2 -- so a `+` turned into a `-`
+        // cannot land on the same total. CI mutated one and nothing failed,
+        // because 1 + 0 + 1 and 1 - 0 + 1 are both two.
+        assert_eq!(found.distinct().len(), 5, "`both` is one person, not two");
+        assert_eq!(found.billed_resources(), 6);
+        let v = verified_from(&found, at, 30);
+        assert_eq!(v.engagers, 5);
+        assert_eq!(
+            v.score(),
+            3 + 3 * 3 + 2,
+            "one reposter, three quoters, two likers"
+        );
+    }
+
+    #[test]
+    fn an_unscanned_entry_keeps_its_raw_score_through_the_merge() {
+        // The merge must not invent a scan for an entry the walk never
+        // reached. `None` is what makes the ranking score it raw.
+        let metrics: BTreeMap<String, Metrics> = [
+            (
+                "scanned".to_owned(),
+                Metrics {
+                    likes: 9,
+                    ..Metrics::default()
+                },
+            ),
+            (
+                "not".to_owned(),
+                Metrics {
+                    likes: 4,
+                    ..Metrics::default()
+                },
+            ),
+        ]
+        .into_iter()
+        .collect();
+        let scanned: BTreeMap<String, Verified> = [(
+            "scanned".to_owned(),
+            Verified {
+                likes: 2,
+                engagers: 2,
+                ..Verified::default()
+            },
+        )]
+        .into_iter()
+        .collect();
+
+        let merged = merge_verified(metrics, &scanned);
+        assert_eq!(merged["scanned"].verified.expect("scanned").likes, 2);
+        assert_eq!(
+            merged["not"].verified, None,
+            "never reached, never invented"
+        );
+        assert_eq!(merged["not"].score(), 4, "so it is still scored raw");
+
+        // And a scan for a reply that is not in this week's metrics is
+        // dropped rather than inserted: the ranking is built from the log, and
+        // a stray key would be a row nothing else knows about.
+        let stray: BTreeMap<String, Verified> = [("elsewhere".to_owned(), Verified::default())]
+            .into_iter()
+            .collect();
+        assert!(!merge_verified(BTreeMap::new(), &stray).contains_key("elsewhere"));
+    }
+
+    #[test]
+    fn quote_authors_come_from_the_expansion_and_a_missing_one_is_an_error() {
+        // The shape that would silently report a farm as having no quoters:
+        // quote posts in `data`, no `includes.users` because the request forgot
+        // `expansions=author_id`. Reading that as zero would hand the farm the
+        // week.
+        let with = r#"{"data":[{"id":"1","author_id":"a"},{"id":"2","author_id":"a"}],
+            "includes":{"users":[{"id":"a","created_at":"2020-01-01T00:00:00.000Z"}]}}"#;
+        let authors = crate::x::parse_quote_authors(with).expect("parses");
+        assert_eq!(authors.len(), 1, "two posts, one author");
+
+        let without = r#"{"data":[{"id":"1","author_id":"a"}]}"#;
+        assert!(
+            crate::x::parse_quote_authors(without).is_err(),
+            "quotes with no authors to attribute them to is an error, not zero"
+        );
+
+        // No quotes at all really is nobody, and the platform omits `includes`.
+        assert!(
+            crate::x::parse_quote_authors(r#"{"meta":{"result_count":0}}"#)
+                .expect("parses")
+                .is_empty()
+        );
+    }
+
+    /// A meter with no budget, for the close paths that never scan.
+    ///
+    /// `Budget::CLOSED` refuses every call, which is right here: these tests
+    /// pass no X client, so `scan_ranking` is never reached and the meter is
+    /// present only because the signature requires one. A funded one would
+    /// hide a scan that should not have happened.
+    fn unfunded() -> crate::spend::Spend {
+        crate::spend::Spend::open(
+            radar_provider::Budget::CLOSED,
+            crate::spend::Prices {
+                mention_read: radar_types::MicroUsd(1_000),
+                post_read: radar_types::MicroUsd(5_000),
+                reply: radar_types::MicroUsd(10_000),
+                post: radar_types::MicroUsd(15_000),
+                model_call: radar_types::MicroUsd(2_000),
+                user_read: radar_types::MicroUsd(20_000),
+            },
+            std::env::temp_dir()
+                .join(format!("radar-contest-meter-{}", std::process::id()))
+                .to_string_lossy()
+                .into_owned(),
+            1,
+        )
+    }
+
     use super::*;
 
     const WEEK: Week = Week(2957);
@@ -1097,13 +1683,13 @@ mod tests {
         let rules = Rules::published(["radar"]);
         let now = WEEK.closes_at() + 5;
 
-        let closed = close_if_due(None, &paths, now, &rules, 3).expect("io");
+        let closed = close_if_due(None, &paths, now, &rules, 3, &mut unfunded()).expect("io");
         assert!(closed.is_some_and(|r| r.week == WEEK && r.winner.is_none()));
         assert!(std::path::Path::new(&record_path(&paths.contest_dir, WEEK)).exists());
         assert!(std::path::Path::new(&hunter_path(&paths.contest_dir, WEEK)).exists());
         // Idempotent: the record exists, so the next tick does nothing.
         assert!(
-            close_if_due(None, &paths, now, &rules, 3)
+            close_if_due(None, &paths, now, &rules, 3, &mut unfunded())
                 .expect("io")
                 .is_none()
         );
@@ -1112,7 +1698,15 @@ mod tests {
         let next = Week(WEEK.0 + 1);
         let e = entry("a", "alice", next.opens_at() + 10, Some("ra"), Some(1));
         crate::log::append(&paths.log, &e).expect("append");
-        let closed = close_if_due(None, &paths, next.closes_at() + 5, &rules, 3).expect("io");
+        let closed = close_if_due(
+            None,
+            &paths,
+            next.closes_at() + 5,
+            &rules,
+            3,
+            &mut unfunded(),
+        )
+        .expect("io");
         assert!(closed.is_none());
         assert!(!std::path::Path::new(&record_path(&paths.contest_dir, next)).exists());
     }

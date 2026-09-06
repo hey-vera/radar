@@ -327,6 +327,38 @@ pub fn ignored(x: Option<&X>) -> Vec<String> {
     x.map(|x| vec![x.user_id().to_owned()]).unwrap_or_default()
 }
 
+/// What to say when no model provider was built.
+///
+/// Rule 8's other half. An **unconfigured** provider is a resting state; a
+/// **mis**-configured one is a mistake; and `radar_model::from_vars(&env).ok()`
+/// made the two look identical. A key set with a price missing produced an
+/// account that answered exactly as it had the day before -- `fellback:
+/// NoProvider` on every reply -- with nothing anywhere saying the key had been
+/// read and rejected. `Selection` names every missing variable precisely so
+/// that an operator setting one up, at the point where nothing works yet and
+/// there is no other signal, reads one line instead of guessing; this is what
+/// lets it reach them.
+///
+/// A function rather than an `if` inside [`run`], for the reason
+/// [`unfunded_notice`] is one: `run` never returns, so nothing inside it can be
+/// tested.
+#[must_use]
+pub fn provider_notice(why: &radar_model::Selection) -> String {
+    match why {
+        // Not a fault, and it must not read as one. This is the state the
+        // account has shipped in since it went live, and the template is a
+        // working product rather than a degraded one.
+        radar_model::Selection::None => {
+            "radar-analyst: no model provider, so every reply is the deterministic template."
+                .to_owned()
+        }
+        _ => format!(
+            "radar-analyst: a model provider is configured and UNUSABLE, so every reply is \
+             the template until it is fixed -- {why}"
+        ),
+    }
+}
+
 /// Runs the loop. Never returns.
 #[allow(
     clippy::too_many_lines,
@@ -400,7 +432,13 @@ pub fn run() -> ! {
             "radar-analyst: no creator index; replies will say nothing about who launched              the token. Build one with `radar creator-index`."
         );
     }
-    let provider = radar_model::from_vars(&env).ok();
+    let provider = match radar_model::from_vars(&env) {
+        Ok(provider) => Some(provider),
+        Err(why) => {
+            eprintln!("{}", provider_notice(&why));
+            None
+        }
+    };
 
     // ADR 0013 constraint 5. A value that will not parse idles the instance
     // rather than running with the rule off: `self_mint_from` says why.
@@ -1313,5 +1351,40 @@ mod tests {
         // placeholder here would be a list that matches nobody, which is what
         // the bug was.
         assert!(ignored(None).is_empty());
+    }
+
+    #[test]
+    fn a_misconfigured_provider_says_so_and_an_absent_one_does_not_alarm() {
+        // `radar_model::from_vars(&env).ok()` threw the reason away, so a key
+        // set with a price missing produced an account that answered exactly
+        // as it had the day before -- and nothing said the key had been read
+        // and rejected. `Selection` names every missing variable; this is what
+        // lets it reach anybody.
+        //
+        // Re-apply by collapsing the match back to one arm: the first
+        // assertion passes and every other one fails.
+        let resting = provider_notice(&radar_model::Selection::None);
+        assert!(resting.contains("template"), "{resting}");
+        assert!(
+            !resting.to_lowercase().contains("unusable"),
+            "the resting state must not read as a fault: {resting}"
+        );
+
+        // The one an operator setting up a key actually hits, and it has to
+        // carry the variable name through: "incomplete" on its own tells them
+        // nothing they did not already know.
+        let half = provider_notice(&radar_model::Selection::Incomplete(
+            "RADAR_MODEL_OPENAI_KEY is set but RADAR_MODEL_PRICE_IN is missing".to_owned(),
+        ));
+        assert!(half.contains("UNUSABLE"), "{half}");
+        assert!(half.contains("RADAR_MODEL_PRICE_IN"), "{half}");
+
+        // And the one that fires when a vendor is switched without unsetting
+        // the old key -- the case paying two vendors at once looks like.
+        let both = provider_notice(&radar_model::Selection::Ambiguous(
+            "RADAR_MODEL_API_KEY and RADAR_MODEL_OPENAI_KEY".to_owned(),
+        ));
+        assert!(both.contains("UNUSABLE"), "{both}");
+        assert!(both.contains("RADAR_MODEL_OPENAI_KEY"), "{both}");
     }
 }

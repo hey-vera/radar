@@ -530,7 +530,7 @@ mod tests {
             score: 9,
             handle: None,
         });
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         let record = close(&Inputs {
             week: WEEK,
             log: &log,
@@ -584,7 +584,7 @@ mod tests {
             summoner: "alice".to_owned(),
             why: "cap".to_owned(),
         }];
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         let record = close(&Inputs {
             week: WEEK,
             log: &log,
@@ -618,7 +618,7 @@ mod tests {
             )]
             .into_iter()
             .collect();
-            let rules = Rules::published("radar");
+            let rules = Rules::published(["radar"]);
             let record = close(&Inputs {
                 week: WEEK,
                 log: &log,
@@ -900,7 +900,7 @@ mod tests {
         let analyst = dir.join("analyst");
         std::fs::create_dir_all(&analyst).expect("mkdir");
         let paths = Paths::under(&analyst.to_string_lossy());
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         let now = WEEK.closes_at() + 5;
 
         let closed = close_if_due(None, &paths, now, &rules, 3).expect("io");

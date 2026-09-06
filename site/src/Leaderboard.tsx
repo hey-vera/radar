@@ -41,7 +41,8 @@ function TheRule() {
         <li>· Weeks run Monday 00:00 UTC to Monday 00:00 UTC.</li>
         <li>· Ties go to whoever asked first.</li>
         <li>
-          · Excluded: the operator, accounts under 30 days old, and anyone the
+          · Excluded: every account the operator controls — the bot itself and
+          the account that manages it — accounts under 30 days old, and anyone the
           admission gate refused that week.
         </li>
         <li>

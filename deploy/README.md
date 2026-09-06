@@ -1033,6 +1033,7 @@ have been refused.
 |---|---|---|
 | read mentions | `RADAR_X_BEARER` | Bearer Token |
 | identify the account | `RADAR_X_USER_ID` | the numeric id, not the handle |
+| keep the operator out of their own contest | `RADAR_CONTEST_OPERATORS` | comma-separated numeric ids of **every** account you control, e.g. the one you manage the bot from. `RADAR_X_USER_ID` is always excluded whether or not it is listed, so forgetting this cannot make the bot itself eligible — but it *can* leave your personal account able to enter and win a pool the public is told is theirs. |
 | post a reply | `RADAR_X_API_KEY` + `RADAR_X_API_SECRET` | API Key, API Key Secret |
 | | `RADAR_X_ACCESS_TOKEN` + `RADAR_X_ACCESS_SECRET` | Access Token, Access Token Secret |
 

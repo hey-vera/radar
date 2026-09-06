@@ -26,7 +26,7 @@
 //! the safe error is a real entrant excluded for a week, which the ledger shows
 //! and the next week corrects, not a thirty-minute-old account paid.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -110,8 +110,16 @@ pub struct Standing {
 /// The published exclusions, as parameters so the rule is one function.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rules {
-    /// The operator's own account, which never wins.
-    pub operator: String,
+    /// Every account the operator controls. None of them can win.
+    ///
+    /// A **set**, because the operator is more than one account: the bot posts
+    /// as itself and is managed from a person's own account, and a prize paid
+    /// to either is the operator paying themselves out of a pool the public is
+    /// told is theirs. Both were reachable before 2026-09-06 -- only the bot's
+    /// own id was excluded, so the managing account could have entered and won.
+    ///
+    /// Ordered, so the published rule renders the same way twice.
+    pub operators: BTreeSet<String>,
     /// Accounts younger than this at week close do not count.
     pub min_account_age_days: u32,
     /// A winner cannot win again until this many further weeks have closed.
@@ -127,20 +135,33 @@ impl Rules {
     ///
     /// A function rather than a `Default`, so a caller states that it wants
     /// the published rule and the operator's handle is not invented here.
+    ///
+    /// Takes anything iterable so the caller cannot accidentally pass one id
+    /// where it meant several -- the mistake this signature exists to stop.
     #[must_use]
-    pub fn published(operator: impl Into<String>) -> Self {
+    pub fn published<I, S>(operators: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
         Self {
-            operator: operator.into(),
+            operators: operators.into_iter().map(Into::into).collect(),
             min_account_age_days: 30,
             cooldown_weeks: 3,
         }
+    }
+
+    /// Whether this account is one the operator controls.
+    #[must_use]
+    pub fn is_operator(&self, summoner: &str) -> bool {
+        self.operators.iter().any(|o| o == summoner)
     }
 }
 
 /// Why an entry does not count this week.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Excluded {
-    /// The operator's own account.
+    /// An account the operator controls. The bot's own, or one that manages it.
     Operator,
     /// The account was younger than the rule allows at week close.
     AccountTooNew {
@@ -239,7 +260,7 @@ fn exclusion(
     standing: Option<&Standing>,
     rules: &Rules,
 ) -> Option<Excluded> {
-    if entry.summoner == rules.operator {
+    if rules.is_operator(&entry.summoner) {
         return Some(Excluded::Operator);
     }
     let Some(standing) = standing else {
@@ -367,7 +388,7 @@ mod tests {
             WEEK,
             &entries,
             &standings(&["a", "b", "c"]),
-            &Rules::published("radar"),
+            &Rules::published(["radar"]),
         );
         let order: Vec<&str> = ranking
             .ranked
@@ -402,7 +423,7 @@ mod tests {
             },
         );
         let st = standings(&["x", "y"]);
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         let first = rank(WEEK, &[a.clone(), b.clone()], &st, &rules);
         let second = rank(WEEK, &[b, a], &st, &rules);
         assert_eq!(first, second);
@@ -411,7 +432,7 @@ mod tests {
 
     #[test]
     fn every_published_exclusion_fires_and_says_why() {
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         let mut st = standings(&["fine", "young", "refused", "recent-winner", "old-winner"]);
         st.get_mut("young").expect("young").account_age_days = Some(29);
         st.get_mut("refused").expect("refused").refused_this_week = true;
@@ -477,7 +498,7 @@ mod tests {
         // The winner of week W is excluded in W+1, W+2 and W+3 and eligible
         // in W+4. Both edges pinned: `<=` becoming `<` frees them a week
         // early, and a cooldown counted from the wrong end frees nobody.
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         for (weeks_ago, eligible) in [(1, false), (2, false), (3, false), (4, true)] {
             let mut st = standings(&["w"]);
             st.get_mut("w").expect("w").last_win = Some(Week(WEEK.0 - weeks_ago));
@@ -508,7 +529,7 @@ mod tests {
         // not. Both edges pinned because CI's mutants run on 2026-09-05
         // turned `<` into `<=` and every test still passed -- the rule had
         // moved a day and nothing said so.
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         for (days, eligible) in [(29, false), (30, true), (31, true)] {
             let mut st = standings(&["w"]);
             st.get_mut("w").expect("w").account_age_days = Some(days);
@@ -526,19 +547,55 @@ mod tests {
 
     #[test]
     fn a_week_with_nothing_counted_has_no_winner_rather_than_a_default_one() {
-        let ranking = rank(WEEK, &[], &BTreeMap::new(), &Rules::published("radar"));
+        let ranking = rank(WEEK, &[], &BTreeMap::new(), &Rules::published(["radar"]));
         assert!(ranking.winner().is_none());
         assert!(ranking.ranked.is_empty());
+    }
+
+    #[test]
+    fn every_account_the_operator_controls_is_excluded_not_just_the_bot() {
+        // The bot posts as itself and is managed from a person's own account.
+        // Only the bot's own id was excluded before 2026-09-06, so the managing
+        // account could have entered and won -- the operator paying themselves
+        // out of a pool the public is told is theirs.
+        //
+        // Re-apply the bug by passing only the bot's id and the second
+        // assertion fails.
+        let rules = Rules::published(["1889496824328880128", "2005812292693483520"]);
+        assert!(rules.is_operator("1889496824328880128"), "the bot itself");
+        assert!(
+            rules.is_operator("2005812292693483520"),
+            "the managing account"
+        );
+        assert!(!rules.is_operator("999"), "anybody else still enters");
+
+        // And the rule actually applies it, rather than the helper agreeing
+        // with itself.
+        let entry = entry("r1", "2005812292693483520", 10, Metrics::default());
+        let standings = [(
+            "2005812292693483520".to_owned(),
+            Standing {
+                account_age_days: Some(900),
+                refused_this_week: false,
+                last_win: None,
+            },
+        )]
+        .into_iter()
+        .collect();
+        let ranking = rank(WEEK, &[entry], &standings, &rules);
+        assert!(ranking.ranked.is_empty(), "the managing account cannot win");
+        assert_eq!(ranking.excluded[0].1, Excluded::Operator);
     }
 
     #[test]
     fn the_published_rule_is_what_the_site_prints() {
         // The site says: accounts under 30 days are excluded. A rule that
         // drifted from the page would be a rule nobody agreed to.
-        let rules = Rules::published("radar");
+        let rules = Rules::published(["radar"]);
         assert_eq!(rules.min_account_age_days, 30);
         assert_eq!(rules.cooldown_weeks, 3);
-        assert_eq!(rules.operator, "radar");
+        assert!(rules.is_operator("radar"));
+        assert!(!rules.is_operator("somebody-else"));
         assert_eq!(
             (REPOST_WEIGHT, QUOTE_WEIGHT, LIKE_WEIGHT, REPLY_WEIGHT),
             (3, 3, 1, 1)

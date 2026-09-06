@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::score::Ranking;
+use crate::score::{Ranking, Rules};
 use crate::week::{SECONDS_PER_DAY, Week};
 
 /// How long the winner has to reply with an address before the prize rolls
@@ -181,6 +181,19 @@ pub struct Record {
     pub claim_prompt: Option<String>,
     /// The winner's claim, once made.
     pub claim: Option<Claim>,
+    /// The rule this week was scored under.
+    ///
+    /// **Written into the record rather than looked up**, because the rule
+    /// changes and a closed week has to stay checkable against the rule that
+    /// actually decided it. A reader asking why an entry placed where it did
+    /// gets an answer from this file alone.
+    ///
+    /// `None` on a week closed before 2026-09-06, when nothing recorded it.
+    /// That is unknown rather than "the current rule", and the history page
+    /// says so: rule 9, and the difference matters to somebody disputing a
+    /// placing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rule: Option<Rules>,
     /// The payment, once made.
     pub payout: Option<Payout>,
 }
@@ -188,7 +201,7 @@ pub struct Record {
 impl Record {
     /// A closed week's record from its ranking, unclaimed and unpaid.
     #[must_use]
-    pub fn close(week: Week, ranking: Ranking) -> Self {
+    pub fn close(week: Week, ranking: Ranking, rule: &Rules) -> Self {
         let winner = ranking.winner().map(|r| Winner {
             summoner: r.entry.summoner.clone(),
             reply_id: r.entry.reply_id.clone(),
@@ -203,6 +216,7 @@ impl Record {
             winner,
             claim_prompt: None,
             claim: None,
+            rule: Some(rule.clone()),
             payout: None,
         }
     }
@@ -324,7 +338,7 @@ mod tests {
         let write = |name: &str, week: Week| {
             std::fs::write(
                 dir.join(name),
-                Record::close(week, Ranking::default())
+                Record::close(week, Ranking::default(), &Rules::published(["op"]))
                     .to_json()
                     .expect("json"),
             )
@@ -363,7 +377,7 @@ mod tests {
     }
 
     fn claimed() -> Record {
-        let mut record = Record::close(WEEK, ranking_with_winner());
+        let mut record = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
         record.claim = Some(Claim {
             address: "ADDR".to_owned(),
             reply_id: "r2".to_owned(),
@@ -374,7 +388,7 @@ mod tests {
 
     #[test]
     fn closing_a_week_names_the_winner_and_leaves_it_unclaimed_and_unpaid() {
-        let record = Record::close(WEEK, ranking_with_winner());
+        let record = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
         assert_eq!(
             record.winner,
             Some(Winner {
@@ -392,13 +406,13 @@ mod tests {
         assert!(record.payout.is_none());
 
         // And a week where nothing counted has no winner, not a default one.
-        let empty = Record::close(WEEK, Ranking::default());
+        let empty = Record::close(WEEK, Ranking::default(), &Rules::published(["op"]));
         assert!(empty.winner.is_none());
     }
 
     #[test]
     fn the_claim_window_is_seven_days_from_the_close_and_not_a_second_more() {
-        let record = Record::close(WEEK, ranking_with_winner());
+        let record = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
         assert!(
             !record.accepts_claim_at(record.closed_at - 1),
             "the week is still open"
@@ -450,13 +464,13 @@ mod tests {
 
     #[test]
     fn nothing_is_paid_without_a_winner_or_without_a_claim() {
-        let unclaimed = Record::close(WEEK, ranking_with_winner());
+        let unclaimed = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
         assert_eq!(
             Payout::permitted(&unclaimed, "ADDR", 1, 1),
             Err(Refusal::Unclaimed)
         );
 
-        let nobody = Record::close(WEEK, Ranking::default());
+        let nobody = Record::close(WEEK, Ranking::default(), &Rules::published(["op"]));
         assert_eq!(
             Payout::permitted(&nobody, "ADDR", 1, 1),
             Err(Refusal::NoWinner)

@@ -632,6 +632,10 @@ pub fn parse_metrics(body: &str) -> Result<BTreeMap<String, Metrics>, Unreachabl
                 quotes,
                 likes,
                 replies,
+                // The platform reports counts, never who. The engager scan is
+                // a separate set of reads at week close, and until it runs
+                // this entry is unscanned rather than scanned-and-empty.
+                verified: None,
             },
         );
     }

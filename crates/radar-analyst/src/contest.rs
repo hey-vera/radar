@@ -240,7 +240,7 @@ pub fn close(inputs: &Inputs<'_>) -> Record {
     ranking
         .excluded
         .extend(unscored.into_iter().map(|e| (e, Excluded::Unscored)));
-    Record::close(week, ranking)
+    Record::close(week, ranking, inputs.rules)
 }
 
 /// The week's sightings for the hunter rank: every published X reply whose
@@ -591,7 +591,11 @@ mod tests {
             why: "cap".to_owned(),
             kind: Some(RefusalKind::SummonerDaily),
         }];
-        let mut last_week = Record::close(Week(WEEK.0 - 1), radar_contest::Ranking::default());
+        let mut last_week = Record::close(
+            Week(WEEK.0 - 1),
+            radar_contest::Ranking::default(),
+            &Rules::published(["radar"]),
+        );
         last_week.winner = Some(radar_contest::Winner {
             summoner: "dan".to_owned(),
             reply_id: "old".to_owned(),
@@ -868,7 +872,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let dir = dir.to_string_lossy().into_owned();
-        let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+        let mut record = Record::close(
+            WEEK,
+            radar_contest::Ranking::default(),
+            &Rules::published(["radar"]),
+        );
         record.winner = Some(radar_contest::Winner {
             summoner: "alice".to_owned(),
             reply_id: "r1".to_owned(),
@@ -985,7 +993,11 @@ mod tests {
             .expect("write");
         };
         let with_winner = || {
-            let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+            let mut record = Record::close(
+                WEEK,
+                radar_contest::Ranking::default(),
+                &Rules::published(["radar"]),
+            );
             record.winner = Some(radar_contest::Winner {
                 summoner: "alice".to_owned(),
                 reply_id: "r1".to_owned(),
@@ -996,7 +1008,11 @@ mod tests {
         };
 
         // Nobody won: there is no reply to post the prompt under.
-        write(&Record::close(WEEK, radar_contest::Ranking::default()));
+        write(&Record::close(
+            WEEK,
+            radar_contest::Ranking::default(),
+            &Rules::published(["radar"]),
+        ));
         assert_eq!(prompt_due(&dir, inside), None, "a week nobody won");
 
         // A winner, no prompt, inside the window: due.
@@ -1039,7 +1055,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
         let dir = dir.to_string_lossy().into_owned();
-        let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+        let mut record = Record::close(
+            WEEK,
+            radar_contest::Ranking::default(),
+            &Rules::published(["radar"]),
+        );
         record.winner = Some(radar_contest::Winner {
             summoner: "alice".to_owned(),
             reply_id: "r1".to_owned(),

@@ -685,6 +685,20 @@ Create the project from the GitHub repository, and set:
 | build command | `npm run build` |
 | build output directory | `dist` |
 | root directory | `site` |
+| production branch | `main` |
+
+**The production branch is `main` because `main` is the only branch that has
+passed anything.** Pages runs `npm run build` and nothing else -- no typecheck
+gate, no `npm audit`, no tests. `just site` runs all three and `site` is one of
+the ten checks the `main` ruleset requires, so every commit on `main` has been
+through them and no commit on any other branch has. Pointing production at a
+feature branch would put a page on the internet that the repository's own gate
+never saw.
+
+Preview deployments for other branches are useful and are left on. Know what
+they are: a public URL per branch, for work that has not merged. The content is
+the same honest empty states, so this is a fact to know rather than a risk to
+manage -- but it is a public URL.
 
 **There is no Node version field.** Pages takes it from the environment, and it
 must be said somewhere or the build runs on whatever the platform defaults to

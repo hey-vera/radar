@@ -76,6 +76,14 @@ pub struct CurveFacts {
     /// `None` means **cannot size into this at all**, never "no limit found"
     /// (rule 9). A complete curve is the common reason.
     pub capacity_lamports: Option<u64>,
+    /// Who launched the token, read from the curve account itself.
+    ///
+    /// **The only way to get a creator for a graduated coin.** The launch
+    /// block is the other route, and `oldest_launch` refuses it when the
+    /// signature walk truncates -- which it does for any coin with real
+    /// history, so exactly the coins people ask about. This account carries it
+    /// regardless of age, and the dossier already reads it.
+    pub creator: Address,
     /// The venue fee, read from the on-chain schedule rather than assumed.
     ///
     /// Research 0023 measured it at 125 bps a side and found the program's own
@@ -167,7 +175,19 @@ pub fn build(client: &RpcClient, budget: &mut Budget, mint: &Address) -> Result<
 
     // 2. The curve, and the fee schedule it is priced under.
     match curve_facts(client, budget, mint) {
-        Ok(facts) => dossier.curve = Some(facts),
+        Ok((facts, slot)) => {
+            // The curve read is the *only* slot a graduated coin has, because
+            // its launch block is past the signature-page budget and
+            // `oldest_launch` rightly refuses to guess one. Without this the
+            // coins people actually ask about published every figure with no
+            // slot beside it -- unfalsifiable, which is the one thing this
+            // account may not be. Set only when the launch block did not
+            // already supply one, so the earlier read still wins.
+            if dossier.read_at.is_none() {
+                dossier.read_at = slot;
+            }
+            dossier.curve = Some(facts);
+        }
         Err(why) => dossier.miss("curve", why),
     }
 
@@ -268,13 +288,13 @@ fn curve_facts(
     client: &RpcClient,
     budget: &mut Budget,
     mint: &Address,
-) -> Result<CurveFacts, String> {
+) -> Result<(CurveFacts, Option<Slot>), String> {
     let address = pda::bonding_curve(mint).ok_or_else(|| "no bonding-curve PDA".to_owned())?;
-    let data = client
+    let read = client
         .account(budget, &address)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "no bonding-curve account: this is not a pump.fun token".to_owned())?;
-    let curve = BondingCurve::parse(&data).map_err(|e| format!("{e:?}"))?;
+    let curve = BondingCurve::parse(&read.data).map_err(|e| format!("{e:?}"))?;
 
     // A complete curve has no reserves. Asking it for capacity produces either a
     // division by zero or, worse, a plausible number out of stale fields -- so
@@ -285,12 +305,16 @@ fn curve_facts(
         None
     };
 
-    Ok(CurveFacts {
-        complete: curve.complete,
-        real_sol_reserves: curve.real_sol_reserves,
-        capacity_lamports: capacity,
-        fees: fee_schedule(client, budget, &curve),
-    })
+    Ok((
+        CurveFacts {
+            complete: curve.complete,
+            real_sol_reserves: curve.real_sol_reserves,
+            capacity_lamports: capacity,
+            creator: curve.creator,
+            fees: fee_schedule(client, budget, &curve),
+        },
+        read.slot,
+    ))
 }
 
 /// Reads the fee schedule off the chain.
@@ -301,7 +325,7 @@ fn curve_facts(
 /// the chain was not asked for.
 fn fee_schedule(client: &RpcClient, budget: &mut Budget, curve: &BondingCurve) -> Option<Fees> {
     let address = pda::fee_config()?;
-    let data = client.account(budget, &address).ok()??;
+    let data = client.account(budget, &address).ok()??.data;
     let config = radar_pumpfun::FeeConfig::parse(&data).ok()?;
     fees_for(&config, curve)
 }

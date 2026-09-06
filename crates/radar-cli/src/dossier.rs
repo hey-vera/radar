@@ -129,6 +129,18 @@ curve
         if curve.complete { "yes" } else { "no" }
     );
     let _ = writeln!(out, "  reserves    : {} SOL", sol(curve.real_sol_reserves));
+    // Both remaining lines are false about a graduated coin: its capacity is
+    // not zero, it is on an AMM Radar does not price, and the curve's fee
+    // schedule is not the fee it pays. Printing "cannot size into this" for a
+    // coin that trades fine is rule 9 read backwards.
+    if curve.complete {
+        out.push_str(
+            "  capacity    : graduated off the curve -- it trades on the AMM, which Radar does not price
+                (this is NOT zero and NOT 'cannot size into this')
+",
+        );
+        return;
+    }
     match curve.capacity_lamports {
         Some(l) => {
             let _ = writeln!(
@@ -335,6 +347,7 @@ mod tests {
         render_curve(
             &mut out,
             &radar_onchain::CurveFacts {
+                creator: radar_types::Address::new([9u8; 32]),
                 complete: false,
                 real_sol_reserves: 6_186_150_833,
                 capacity_lamports: Some(303_000_000),
@@ -349,13 +362,18 @@ mod tests {
     }
 
     #[test]
-    fn a_graduated_curve_reports_no_capacity_rather_than_zero() {
-        // Rule 9 at the rendering layer: "cannot size into this" and "capacity
-        // is zero" read very differently to somebody deciding what to do.
+    fn a_graduated_curve_says_where_it_trades_rather_than_that_it_cannot() {
+        // Rule 9 at the rendering layer, and the version of this test that ran
+        // until 2026-09-06 asserted the wrong half of it: it demanded "cannot
+        // size into this" for a *graduated* coin, which is the same absent-read-
+        // as-zero mistake one step further along. The curve is empty because the
+        // coin left it. Re-apply by deleting the `curve.complete` early return
+        // in `render_curve`.
         let mut out = String::new();
         render_curve(
             &mut out,
             &radar_onchain::CurveFacts {
+                creator: radar_types::Address::new([9u8; 32]),
                 complete: true,
                 real_sol_reserves: 0,
                 capacity_lamports: None,
@@ -363,8 +381,12 @@ mod tests {
             },
         );
         assert!(out.contains("graduated   : yes"), "{out}");
-        assert!(out.contains("cannot size into this"), "{out}");
+        assert!(out.contains("trades on the AMM"), "{out}");
         assert!(!out.contains("0.0000 SOL at"), "{out}");
+        // The two lines that are false about a graduated coin. The fee line is
+        // the curve's schedule, which is not what this coin pays any more.
+        assert!(!out.contains("none -- cannot size into this"), "{out}");
+        assert!(!out.contains("venue fee"), "{out}");
     }
 
     #[test]

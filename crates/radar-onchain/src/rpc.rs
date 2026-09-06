@@ -138,11 +138,38 @@ struct NodeError {
 #[derive(Deserialize)]
 struct AccountEnvelope {
     value: Option<AccountValue>,
+    /// The node's own statement of when it read this.
+    ///
+    /// Optional because a node that omits it must not turn a good read into an
+    /// error -- the slot is carried forward as `None`, which is rule 9: the
+    /// caller then knows it has no slot rather than being handed a wrong one.
+    context: Option<AccountContext>,
+}
+
+#[derive(Deserialize)]
+struct AccountContext {
+    slot: u64,
 }
 
 #[derive(Deserialize)]
 struct AccountValue {
     data: Vec<String>,
+}
+
+/// One account read, with the slot the node read it at.
+///
+/// The two travel together **by construction**. Every figure this account
+/// publishes has to carry the slot it was read at or it cannot be checked on an
+/// explorer, and returning the bytes alone made dropping the slot the path of
+/// least resistance -- which is what happened: `Dossier::read_at` came only
+/// from the launch block, and the launch block is unreadable for any coin with
+/// enough history to be worth asking about.
+#[derive(Clone, Debug)]
+pub struct AccountRead {
+    /// The account's raw data.
+    pub data: Vec<u8>,
+    /// The slot the node served it at, when the node said.
+    pub slot: Option<Slot>,
 }
 
 /// How a JSON-RPC body gets to a node and back.
@@ -320,12 +347,13 @@ impl RpcClient {
         &self,
         budget: &mut Budget,
         address: &Address,
-    ) -> Result<Option<Vec<u8>>, RpcError> {
+    ) -> Result<Option<AccountRead>, RpcError> {
         let result: AccountEnvelope = self.call(
             budget,
             "getAccountInfo",
             &serde_json::json!([address.to_string(), { "encoding": "base64" }]),
         )?;
+        let slot = result.context.map(|c| Slot(c.slot));
 
         let Some(account) = result.value else {
             return Ok(None);
@@ -334,9 +362,9 @@ impl RpcClient {
             .data
             .first()
             .ok_or_else(|| RpcError::Malformed("account data was empty".to_owned()))?;
-        decode_base64(encoded)
-            .ok_or_else(|| RpcError::Malformed("account data was not base64".to_owned()))
-            .map(Some)
+        let data = decode_base64(encoded)
+            .ok_or_else(|| RpcError::Malformed("account data was not base64".to_owned()))?;
+        Ok(Some(AccountRead { data, slot }))
     }
 
     /// Walks back through an address's signatures to the oldest one.
@@ -776,12 +804,31 @@ mod tests {
         // `account` -> Ok(None) / Ok(Some(vec![])) all survived, because
         // nothing without an endpoint could see the difference. "QUJD" is
         // base64 for "ABC".
+        let c = client(&[
+            r#"{"jsonrpc":"2.0","id":1,"result":{"context":{"slot":42},"value":{"data":["QUJD","base64"]}}}"#,
+        ]);
+        let got = c
+            .account(&mut budget(), &Address::new([1u8; 32]))
+            .expect("a read")
+            .expect("an account");
+        assert_eq!(got.data, b"ABC".to_vec());
+        // The slot travels with the bytes. For a graduated coin this is the
+        // only slot the dossier gets -- its launch block is past the page
+        // budget -- so dropping it here publishes numbers nobody can check.
+        assert_eq!(got.slot, Some(radar_types::Slot(42)));
+    }
+
+    #[test]
+    fn a_node_that_omits_the_context_gives_no_slot_rather_than_a_wrong_one() {
+        // Rule 9 at the transport. Defaulting to slot 0 would be worse than
+        // having none: a checkable-looking number that checks out as nothing.
         let c =
             client(&[r#"{"jsonrpc":"2.0","id":1,"result":{"value":{"data":["QUJD","base64"]}}}"#]);
         let got = c
             .account(&mut budget(), &Address::new([1u8; 32]))
-            .expect("a read");
-        assert_eq!(got.as_deref(), Some(&b"ABC"[..]));
+            .expect("a read")
+            .expect("an account");
+        assert_eq!(got.slot, None);
     }
 
     #[test]
@@ -793,7 +840,7 @@ mod tests {
         let got = c
             .account(&mut budget(), &Address::new([1u8; 32]))
             .expect("a read");
-        assert_eq!(got, None);
+        assert!(got.is_none());
     }
 
     #[test]

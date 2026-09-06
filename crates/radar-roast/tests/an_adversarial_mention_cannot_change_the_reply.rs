@@ -63,6 +63,7 @@ fn dossier_named(name: &str, symbol: &str) -> Dossier {
             },
         }),
         curve: Some(CurveFacts {
+            creator: Address::new([9u8; 32]),
             complete: false,
             real_sol_reserves: 6_186_150_833,
             capacity_lamports: Some(303_000_000),

@@ -235,7 +235,7 @@ describe("the summon box", () => {
     // another devDependency, and the component reads `e.target.value` either
     // way. The comment in ui/index.tsx about not installing a library before a
     // component needs one applies to test libraries too.
-    render(<Summon handle="CabalHunter" />);
+    render(<Summon handle="thecabalhunter" />);
     const box = screen.getByPlaceholderText(/mint address/i);
 
     // Nothing typed: no link, so the button is absent rather than dead.
@@ -252,7 +252,7 @@ describe("the summon box", () => {
     fireEvent.change(box, { target: { value: mint } });
     const link = screen.getByRole("link");
     expect(link.getAttribute("href")).toBe(
-      `https://x.com/intent/post?text=%40CabalHunter%20${mint}`,
+      `https://x.com/intent/post?text=%40thecabalhunter%20${mint}`,
     );
   });
 });

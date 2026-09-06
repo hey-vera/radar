@@ -1027,7 +1027,7 @@ The numeric user id, which `/2/users/me` will not give you from a bearer:
 
 ```bash
 curl -s -H "Authorization: Bearer $RADAR_X_BEARER" \
-  "https://api.x.com/2/users/by/username/CabalHunter"
+  "https://api.x.com/2/users/by/username/thecabalhunter"
 ```
 
 ```bash

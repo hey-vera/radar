@@ -293,19 +293,24 @@ export function summonIntent(handle: string, mint: string): string | null {
 /**
  * The account's handle, from the build environment, or `null`.
  *
- * **The site does not know this and must not guess it.** `deploy/README.md`
- * uses `CabalHunter` in a `curl` example for looking up the numeric id; no file
- * in this repository records the handle as a fact, the analyst identifies the
- * account by `RADAR_X_USER_ID` rather than by name, and on 2026-09-06 the
- * production analyst's own post log said `no publisher configured: this
- * instance cannot post` — so the account may not be posting under any handle
- * yet.
+ * **The handle is `thecabalhunter`** — confirmed by the operator on 2026-09-06.
+ * It is deliberately *not* hard-coded here anyway, and that is the point of
+ * this function rather than an omission.
  *
- * A guessed handle on this page is a link sending strangers to somebody else's
- * profile, which is the one link on the site that cannot be walked back. So it
- * is operator configuration, it is validated on the way in, and everything that
- * needs it renders an honest alternative when it is absent. AGENTS.md rule 8:
- * deny by default when config is missing.
+ * Nothing on the Rust side needs a handle: the analyst identifies the account
+ * by `RADAR_X_USER_ID`, and `radar-serve` builds reply links as
+ * `x.com/i/web/status/<id>` precisely so it never has to know one. This site is
+ * the only surface that wants a name, and a name is the one thing about the
+ * account that can change without anything breaking loudly. Hard-coding it
+ * would mean a rename becomes a code change and a deploy, and in the meantime
+ * every link on the page points at whoever took the old handle — the one link
+ * here that cannot be walked back.
+ *
+ * So it is build configuration, validated on the way in against X's own rule,
+ * and everything that needs it renders an honest alternative when it is
+ * absent. AGENTS.md rule 8: deny by default when config is missing. Set
+ * `VITE_X_HANDLE` in the Cloudflare Pages environment; it is inlined at build
+ * time, so it takes a redeploy rather than a restart.
  */
 export function account(): string | null {
   const configured = import.meta.env["VITE_X_HANDLE"];

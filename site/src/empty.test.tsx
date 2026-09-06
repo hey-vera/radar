@@ -46,7 +46,11 @@ describe("the leaderboard before any week has run", () => {
     await waitFor(() => {
       expect(screen.getByText(/No week has run yet/i)).toBeTruthy();
     });
-    expect(screen.getByText(/has not answered anyone/i)).toBeTruthy();
+    // The account went live 2026-09-06 and the page said it was not live for
+    // the rest of that day. An empty leaderboard is now "no week has closed",
+    // which is a different fact and the true one.
+    expect(screen.getByText(/live and answering/i)).toBeTruthy();
+    expect(screen.queryByText(/is not live/i)).toBeNull();
   });
 
   it("renders no table at all rather than an empty one", async () => {
@@ -63,12 +67,18 @@ describe("the leaderboard before any week has run", () => {
   it("still publishes the rule, so the contest is legible before it starts", async () => {
     render(<Leaderboard />);
     await waitFor(() => {
-      expect(screen.getByText(/3 × reposts/)).toBeTruthy();
+      expect(screen.getByText(/3 × reposters/)).toBeTruthy();
     });
     // `getAllBy`, because the page says this twice on purpose: once in the
     // introduction and once in the rule. Somebody who skims one should still
     // meet it.
     expect(screen.getAllByText(/Entry is free/i).length).toBeGreaterThan(0);
+    // The sentence the rule turns on. Quoters, not quotes -- one account can
+    // quote without limit, and a reader has to be told that to check the
+    // published numbers against each other.
+    expect(screen.getByText(/Accounts, not actions/i)).toBeTruthy();
+    // And the honest limit, stated rather than implied.
+    expect(screen.getByText(/does not make buying impossible/i)).toBeTruthy();
   });
 });
 
@@ -334,5 +344,112 @@ describe("a week that ran names its entrants the way the record can", () => {
     expect(
       screen.getByText("2005812292693483520").closest("a")?.getAttribute("href"),
     ).toBe("https://x.com/i/user/2005812292693483520");
+  });
+});
+
+describe("a closed week publishes the evidence, not a verdict", () => {
+  /** A week where one account quoted thirty times and ten people reposted. */
+  function withFarmedWeek() {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        String(url).includes("/leaderboard")
+          ? Promise.resolve({
+              ok: true,
+              json: () =>
+                Promise.resolve({
+                  week: "2957",
+                  measured_at: "2026-09-07T00:01:00Z",
+                  answered: 2,
+                  published: 2,
+                  rule: {
+                    min_account_age_days: 30,
+                    min_engager_age_days: 30,
+                    cooldown_weeks: 3,
+                  },
+                  voided: null,
+                  entries: [
+                    {
+                      rank: 1,
+                      summoner: "111",
+                      handle: "real",
+                      mint: "So11111111111111111111111111111111111111112",
+                      reply_url: "https://x.com/i/web/status/1",
+                      score: 30,
+                      raw: { reposts: 10, quotes: 0, likes: 0, replies: 0, score: 30 },
+                      verified: {
+                        reposts: 10,
+                        quoters: 0,
+                        likes: 0,
+                        engagers: 10,
+                        engagers_under_age: 0,
+                      },
+                    },
+                    {
+                      rank: 2,
+                      summoner: "222",
+                      handle: "farm",
+                      mint: null,
+                      reply_url: null,
+                      score: 3,
+                      raw: { reposts: 0, quotes: 30, likes: 0, replies: 30, score: 120 },
+                      verified: {
+                        reposts: 0,
+                        quoters: 1,
+                        likes: 0,
+                        engagers: 1,
+                        engagers_under_age: 1,
+                      },
+                    },
+                  ],
+                  excluded: { count: 0, reasons: {} },
+                }),
+            })
+          : Promise.reject(new Error("no server")),
+      ),
+    );
+  }
+
+  it("shows what was counted beside what was reported", async () => {
+    // The gap between the two IS the farming, and a reader who cannot see both
+    // numbers is being asked to trust the operator rather than check them.
+    // Design 0011: publish the measurement, never the verdict.
+    //
+    // Re-apply by dropping the raw column: the farm's 120 vanishes and the
+    // page shows a rank nobody can argue with.
+    withFarmedWeek();
+    render(<Leaderboard />);
+    await waitFor(() => {
+      expect(screen.getByText("@real")).toBeTruthy();
+    });
+
+    // The farm reported 30 quotes and scored 3, because thirty quotes came
+    // from one account. Both numbers are on the page.
+    expect(screen.getByTitle("0 reposts / 30 quotes / 0 likes")).toBeTruthy();
+    expect(screen.getByTitle("0 reposts / 1 quotes / 0 likes")).toBeTruthy();
+    // Ten real reposters outrank it, which is the whole point of the rule.
+    // `getAllBy`, because for an honest entry the two columns agree -- and
+    // that agreement is itself the thing a reader is checking for.
+    expect(screen.getAllByTitle("10 reposts / 0 quotes / 0 likes")).toHaveLength(2);
+  });
+
+  it("counts new accounts without calling anybody a bot", async () => {
+    // A count a reader weighs, never a threshold that excludes. Design 0011
+    // phase 2 turns a cluster measurement into a rule only by ADR, after four
+    // closed weeks -- until then the page states numbers and stops.
+    withFarmedWeek();
+    const { container } = render(<Leaderboard />);
+    await waitFor(() => {
+      expect(screen.getByText("@real")).toBeTruthy();
+    });
+    expect(screen.getByTitle("1 were under the age floor")).toBeTruthy();
+    // Scoped to the table, not the page. The rule text above it legitimately
+    // says "the pool cannot be farmed by one account" -- that is a statement
+    // about the rule. What must never appear is a verdict about a ROW.
+    const rows = container.querySelector("tbody")?.textContent ?? "";
+    expect(rows).not.toBe("");
+    for (const verdict of [/botted/i, /fake/i, /suspicious/i, /cheat/i, /abuse/i]) {
+      expect(rows).not.toMatch(verdict);
+    }
   });
 });

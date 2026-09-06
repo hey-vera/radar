@@ -188,6 +188,26 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
                     "mint": r.entry.mint,
                     "reply_url": reply_url(&r.entry.reply_id),
                     "score": r.score,
+                    // The evidence, published so a reader checks the rule
+                    // rather than trusts it. Design 0011: the measurement, and
+                    // never a verdict word. `raw` is what the platform
+                    // reported; `verified` is what survived the scan; `null`
+                    // there means the walk stopped before this entry, which is
+                    // NOT the same as nobody engaging.
+                    "raw": {
+                        "reposts": r.entry.metrics.reposts,
+                        "quotes": r.entry.metrics.quotes,
+                        "likes": r.entry.metrics.likes,
+                        "replies": r.entry.metrics.replies,
+                        "score": r.entry.metrics.raw_score(),
+                    },
+                    "verified": r.entry.metrics.verified.map(|v| json!({
+                        "reposts": v.reposts,
+                        "quoters": v.quoters,
+                        "likes": v.likes,
+                        "engagers": v.engagers,
+                        "engagers_under_age": v.engagers_under_age,
+                    })),
                 })
             })
             .collect();
@@ -214,6 +234,22 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
                 "count": record.ranking.excluded.len(),
                 "reasons": reasons,
             },
+            // The rule this week was actually scored under, so a reader
+            // arguing with a placing argues with the rule that decided it
+            // rather than the one on the page today. `null` on a week closed
+            // before records carried one -- unknown, not "the current rule".
+            "rule": record.rule.as_ref().map(|r| json!({
+                "min_account_age_days": r.min_account_age_days,
+                "min_engager_age_days": r.min_engager_age_days,
+                "cooldown_weeks": r.cooldown_weeks,
+            })),
+            // Present only when the operator voided the week, and then it
+            // carries their words verbatim. A void that did not say why would
+            // be the private correction design 0011 rejects.
+            "voided": record.voided.as_ref().map(|v| json!({
+                "at": timestamp_from_seconds(v.at),
+                "reason": v.reason,
+            })),
         });
     }
 
@@ -240,6 +276,11 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
             json!({
                 "rank": i + 1,
                 "summoner": e.summoner,
+                // The raw counts are not known mid-week either: engagement is
+                // read once, at close. Published as null rather than zero for
+                // the reason `score` is -- a zero here says nobody engaged.
+                "raw": Value::Null,
+                "verified": Value::Null,
                 // Always present, always null here. Handles are read from X at
                 // week close and nothing reads them before, so mid-week there
                 // is no handle to send -- but *omitting* the key gives the two
@@ -455,6 +496,141 @@ mod tests {
             },
             &radar_contest::Rules::published(["op"]),
         )
+    }
+
+    #[test]
+    fn a_closed_week_publishes_the_evidence_the_rule_was_applied_to() {
+        // Design 0011: publish the measurement, never the verdict. A reader
+        // who thinks a week was bought needs the numbers to argue from, and a
+        // reader who thinks the operator is wrong needs the same numbers.
+        //
+        // Re-apply by dropping `raw`: the page shows a score and no way to
+        // check it, which is "trust the operator" with extra steps.
+        let dir = std::env::temp_dir().join(format!("radar-evidence-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let contest = dir.join("contest");
+        std::fs::create_dir_all(&contest).expect("mkdir");
+
+        let week = Week(2957);
+        let mut record = a_record(week);
+        record.ranking.ranked[0].entry.metrics = radar_contest::Metrics {
+            reposts: 4,
+            quotes: 30,
+            likes: 7,
+            replies: 2,
+            verified: Some(radar_contest::Verified {
+                reposts: 4,
+                quoters: 1,
+                likes: 6,
+                engagers: 9,
+                engagers_under_age: 3,
+            }),
+        };
+        record.ranking.ranked[0].score = record.ranking.ranked[0].entry.metrics.score();
+        std::fs::write(
+            contest.join(format!("{}.json", week.0)),
+            record.to_json().expect("json"),
+        )
+        .expect("write");
+
+        let paths = Paths {
+            contest_dir: contest.to_string_lossy().into_owned(),
+            analyst_dir: dir.to_string_lossy().into_owned(),
+            ..Paths::from_vars(&|_| None)
+        };
+        let doc = leaderboard_in(&paths, week.closes_at() + 60);
+        let entry = &doc["entries"][0];
+
+        // Raw, exactly as the platform reported it.
+        assert_eq!(entry["raw"]["quotes"], 30);
+        assert_eq!(entry["raw"]["score"], 4 * 3 + 30 * 3 + 7 + 2);
+        // Verified, which is what actually ranked it.
+        assert_eq!(
+            entry["verified"]["quoters"], 1,
+            "thirty quotes, one account"
+        );
+        assert_eq!(entry["verified"]["engagers"], 9);
+        assert_eq!(entry["verified"]["engagers_under_age"], 3);
+        // Four reposters and one quoter at three each, six likers at one.
+        assert_eq!(entry["score"], 12 + 3 + 6);
+        assert!(
+            entry["score"].as_u64() < entry["raw"]["score"].as_u64(),
+            "the farm's raw score is the thing the rule refuses to use"
+        );
+
+        // The rule that decided it, so an argument is with the right rule.
+        assert_eq!(doc["rule"]["min_engager_age_days"], 30);
+        // Not voided, so the field is null rather than absent-and-ambiguous.
+        assert!(doc["voided"].is_null());
+    }
+
+    #[test]
+    fn a_voided_week_says_so_and_says_why_in_the_operators_words() {
+        // The whole point of the veto being a published thing. A week that
+        // pays nobody with no reason on the page is indistinguishable from one
+        // nobody claimed.
+        let dir = std::env::temp_dir().join(format!("radar-voided-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let contest = dir.join("contest");
+        std::fs::create_dir_all(&contest).expect("mkdir");
+
+        let week = Week(2957);
+        let mut record = a_record(week);
+        record.voided = Some(radar_contest::Voided {
+            at: week.closes_at() + 3_600,
+            reason: "every point came from six accounts made that morning".to_owned(),
+        });
+        std::fs::write(
+            contest.join(format!("{}.json", week.0)),
+            record.to_json().expect("json"),
+        )
+        .expect("write");
+
+        let paths = Paths {
+            contest_dir: contest.to_string_lossy().into_owned(),
+            analyst_dir: dir.to_string_lossy().into_owned(),
+            ..Paths::from_vars(&|_| None)
+        };
+        let doc = leaderboard_in(&paths, week.closes_at() + 7_200);
+        assert_eq!(
+            doc["voided"]["reason"],
+            "every point came from six accounts made that morning"
+        );
+        // And the ranking is still published: voiding pays nobody, it does not
+        // erase what happened.
+        assert!(!doc["entries"].as_array().expect("entries").is_empty());
+    }
+
+    #[test]
+    fn an_open_week_carries_the_same_fields_and_fills_them_with_null() {
+        // One interface types both shapes of this document. Mid-week nothing
+        // has been read -- not the handles, not the metrics -- and `null` says
+        // "not read yet" where an absent key says nothing and types as
+        // `undefined`.
+        let dir = std::env::temp_dir().join(format!("radar-open-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let log = dir.join("replies.jsonl").to_string_lossy().into_owned();
+        radar_analyst::log::append(
+            &log,
+            &a_reply(Week::of(1_788_000_000).opens_at() + 60, Some("r1")),
+        )
+        .expect("append");
+
+        let paths = Paths {
+            contest_dir: dir.join("nowhere").to_string_lossy().into_owned(),
+            analyst_dir: dir.to_string_lossy().into_owned(),
+            ..Paths::from_vars(&|_| None)
+        };
+        let doc = leaderboard_in(&paths, 1_788_000_000);
+        let entry = &doc["entries"][0];
+        for field in ["raw", "verified", "handle", "score"] {
+            assert!(
+                entry[field].is_null(),
+                "{field} should be null mid-week: {entry}"
+            );
+        }
     }
 
     #[test]

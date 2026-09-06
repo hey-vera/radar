@@ -179,18 +179,41 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
                 json!({
                     "rank": i + 1,
                     "summoner": r.entry.summoner,
+                    // The handle, when the week close read one. `api.ts`
+                    // documented this field as "the X handle" while the Rust
+                    // side sent only the numeric id, so the site rendered
+                    // `@1234567890` at every reader -- finding S4. Null here
+                    // means the site links by id instead of inventing a name.
+                    "handle": r.entry.handle,
                     "mint": r.entry.mint,
                     "reply_url": reply_url(&r.entry.reply_id),
                     "score": r.score,
                 })
             })
             .collect();
+        // Exclusions as counts by reason, never as rows.
+        //
+        // The record holds every excluded entry with its reason, and the rule
+        // is published, so the counts let a reader check that the rule was
+        // applied without the site naming accounts it has refused. An entrant
+        // excluded for being thirty days too new does not need that published
+        // beside their handle.
+        let mut reasons: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for (_, why) in &record.ranking.excluded {
+            *reasons.entry(reason_name(why)).or_default() += 1;
+        }
+
         return json!({
             "week": monday_of(record.week),
             "measured_at": timestamp_from_seconds(record.closed_at),
             "entries": ranked,
             "answered": answered,
             "published": published,
+            "excluded": {
+                "count": record.ranking.excluded.len(),
+                "reasons": reasons,
+            },
         });
     }
 
@@ -254,6 +277,7 @@ pub fn pool_in(paths: &Paths) -> Value {
                 json!({
                     "week": monday_of(record.week),
                     "summoner": winner.summoner,
+                    "handle": winner.handle,
                     "lamports": payout.lamports,
                     "signature": payout.signature,
                 }),
@@ -308,6 +332,26 @@ fn monday_of(week: Week) -> String {
 
 /// Where a reply lives on the platform.
 ///
+/// One exclusion reason, as a stable key for the published counts.
+///
+/// Named here rather than taken from `Debug`, because these strings are a
+/// public interface: the site renders a sentence per reason, and a rename in
+/// the enum should be a deliberate change to the document rather than a silent
+/// one. The variants that carry data have it dropped on purpose -- a count
+/// needs the reason, not the account's age.
+fn reason_name(why: &radar_contest::Excluded) -> String {
+    use radar_contest::Excluded as E;
+    match why {
+        E::Operator => "operator",
+        E::AccountTooNew { .. } => "account_too_new",
+        E::AccountAgeUnknown => "account_age_unknown",
+        E::RefusedThisWeek => "refused_this_week",
+        E::WonWithinCooldown { .. } => "won_within_cooldown",
+        E::Unscored => "unscored",
+    }
+    .to_owned()
+}
+
 /// The `i/web/status` form resolves without the author's handle, which the
 /// ledger does not carry and should not have to.
 fn reply_url(reply_id: &str) -> String {
@@ -390,6 +434,7 @@ mod tests {
                     entry: ContestEntry {
                         reply_id: "r1".to_owned(),
                         summoner: "alice".to_owned(),
+                        handle: Some("alice_h".to_owned()),
                         mint: "M".to_owned(),
                         at: week.opens_at() + 10,
                         metrics: Metrics {
@@ -539,7 +584,82 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0]["score"], 4);
         assert_eq!(entries[0]["summoner"], "alice");
+        // The handle the week close read. `api.ts` documented this field long
+        // before the Rust side sent it, so the site rendered the numeric id as
+        // `@1234567890` at every reader -- finding S4.
+        assert_eq!(entries[0]["handle"], "alice_h");
         assert_eq!(entries[0]["reply_url"], "https://x.com/i/web/status/r1");
+        // Exclusions as counts by reason, so a reader can check the published
+        // rule was applied without the site naming the accounts it refused.
+        assert_eq!(doc["excluded"]["count"], 0);
+        assert!(doc["excluded"]["reasons"].is_object());
+    }
+
+    #[test]
+    fn exclusions_are_published_as_counts_and_never_as_named_rows() {
+        // The record holds every excluded entry with its reason. Publishing
+        // those rows would put "excluded: account too new" beside a stranger's
+        // handle on a public page; publishing the counts lets the same reader
+        // check the rule was applied. The account ids must not appear at all.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let mut record = a_record(WEEK);
+        record.ranking.excluded.push((
+            ContestEntry {
+                reply_id: "r2".to_owned(),
+                summoner: "999000111".to_owned(),
+                handle: Some("newbie".to_owned()),
+                mint: "M2".to_owned(),
+                at: WEEK.opens_at() + 20,
+                metrics: Metrics::default(),
+            },
+            radar_contest::Excluded::AccountTooNew { days: 3 },
+        ));
+        record.ranking.excluded.push((
+            ContestEntry {
+                reply_id: "r3".to_owned(),
+                summoner: "999000222".to_owned(),
+                handle: None,
+                mint: "M3".to_owned(),
+                at: WEEK.opens_at() + 30,
+                metrics: Metrics::default(),
+            },
+            radar_contest::Excluded::AccountTooNew { days: 9 },
+        ));
+        record.ranking.excluded.push((
+            ContestEntry {
+                reply_id: "r4".to_owned(),
+                summoner: "999000333".to_owned(),
+                handle: None,
+                mint: "M4".to_owned(),
+                at: WEEK.opens_at() + 40,
+                metrics: Metrics::default(),
+            },
+            radar_contest::Excluded::Unscored,
+        ));
+        std::fs::create_dir_all(&paths.contest_dir).expect("mkdir");
+        std::fs::write(
+            format!("{}/{}.json", paths.contest_dir, WEEK.0),
+            record.to_json().expect("json"),
+        )
+        .expect("write");
+
+        let doc = leaderboard_in(&paths, WEEK.closes_at() + 10);
+        assert_eq!(doc["excluded"]["count"], 3);
+        // Two of one reason and one of another, keyed by a name this file
+        // chooses rather than by `Debug`.
+        assert_eq!(doc["excluded"]["reasons"]["account_too_new"], 2);
+        assert_eq!(doc["excluded"]["reasons"]["unscored"], 1);
+
+        // Nothing that identifies a refused entrant leaves the box: not the
+        // id, not the handle, not the reply, not the days.
+        let text = doc.to_string();
+        for secret in ["999000111", "999000222", "999000333", "newbie", "r2", "M2"] {
+            assert!(
+                !text.contains(secret),
+                "the leaderboard document leaks {secret}: {text}"
+            );
+        }
     }
 
     #[test]

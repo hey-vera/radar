@@ -650,6 +650,7 @@ mod tests {
             entry: Entry {
                 reply_id: "r1".to_owned(),
                 summoner: "alice".to_owned(),
+                handle: None,
                 mint: "M".to_owned(),
                 at: WEEK.opens_at() + 10,
                 metrics: Metrics {

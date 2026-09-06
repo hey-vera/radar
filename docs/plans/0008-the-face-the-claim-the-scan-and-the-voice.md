@@ -73,7 +73,7 @@ and the claim is a reply to *that* — and it was never built.
       already records eating a 375px header. Geist measured at 29.4 kB for the
       latin subset, on headings only.
 
-- [ ] 2. **The claim is a reply to the prompt.** After the week closes the
+- [x] 2. **The claim is a reply to the prompt.** After the week closes the
       account replies to the winner, under its own winning reply, and the claim
       must be a reply to that post. `try_claim` checks `mention.parent` before
       it parses, so a summons is never a claim. `Record.claim_prompt` and
@@ -82,8 +82,16 @@ and the claim is a reply to *that* — and it was never built.
       leaderboard and from the cooldown. `accounts()` returns the username the
       same call already pays for. The leaderboard JSON gains `handle` and the
       exclusion counts.
-      next: blocked on item 1 for the site half only; the Rust half is
-      independent
+      done: `just ci` green -- 1,848 tests against a floor of 1,591, clippy and
+      fmt clean -- and the fix verified by re-applying it: deleting the
+      `claim_prompt` equality fails two tests by name. Stricter than the design
+      on purpose (a reply under the winning reply is NOT a claim), with the
+      daemon re-posting the prompt every tick so strictness costs a delay rather
+      than a week. Two corrections recorded rather than buried:
+      `#[serde(default)]` is redundant on an `Option` and the 2956.json test is
+      the real enforcement; and the early parent guard is an S5 optimisation,
+      not the security property. The site half -- rendering `handle` -- waits on
+      item 1's helpers rather than editing the same files on two branches.
 
 - [ ] 3. **Scan the winner before paying.** `new:crates/radar-onchain/src/funder.rs`
       builds the first-funder read from `signatures_back_to_oldest` and

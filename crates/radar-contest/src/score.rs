@@ -75,8 +75,15 @@ impl Metrics {
 pub struct Entry {
     /// The bot's reply, on the platform.
     pub reply_id: String,
-    /// Who summoned it. The entrant.
+    /// Who summoned it. The entrant, as the numeric account id.
     pub summoner: String,
+    /// The entrant's handle, when the week close read one.
+    ///
+    /// Defaulted for the reason [`crate::ledger::Winner::handle`] gives at
+    /// length: a record that fails to parse is skipped rather than reported,
+    /// so a field added without a default deletes history quietly.
+    #[serde(default)]
+    pub handle: Option<String>,
     /// The coin it was about.
     pub mint: String,
     /// When the reply was posted, as seconds since the epoch.
@@ -265,6 +272,7 @@ mod tests {
         Entry {
             reply_id: id.to_owned(),
             summoner: summoner.to_owned(),
+            handle: None,
             mint: "M".to_owned(),
             at,
             metrics,

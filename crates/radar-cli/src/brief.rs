@@ -2189,6 +2189,7 @@ mod tests {
             summoner: "a".to_owned(),
             reply_id: "r".to_owned(),
             score: 1,
+            handle: None,
         });
         old.claim = Some(radar_contest::Claim {
             address: "ADDR".to_owned(),
@@ -2210,6 +2211,7 @@ mod tests {
             summoner: "b".to_owned(),
             reply_id: "r2".to_owned(),
             score: 4,
+            handle: None,
         });
         write(&latest);
 

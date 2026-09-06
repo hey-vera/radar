@@ -513,6 +513,39 @@ and every link to the account are gated on `VITE_X_HANDLE` at build time and
 render an honest sentence when it is absent — rule 8, in the interface. Setting
 it is an operator step, and until it is set the site has no outbound link to X.
 
+**A claim is a reply to the account's claim prompt, as of 2026-09-06** (plan
+0008 item 2). This closed a real hole rather than adding a feature. `try_claim`
+accepted any base58 address in any mention by the winner inside their claim
+window; a coin's mint address is such an address, so a winner who summoned the
+bot about a coin during their own claim week had that mint written in as their
+payout address, and `Payout::permitted` would have approved paying it, because
+the recipient really did equal the claim. Design 0007 §6.2 specified the
+mechanism that prevents this — the account replies to the winner, and the claim
+is a reply to *that* — and it had never been built, so there was also no post
+telling a winner they had won.
+
+`Record::claim_prompt` now holds that post's id and a claim must reply to it.
+**Stricter than the design in one place, deliberately**: 0007 also accepts a
+reply under the winning reply itself when the prompt failed to post, and that is
+refused, because a winner replying "now do this one" with a fresh coin under
+their own winning reply is an ordinary summons. The daemon re-posts the prompt
+on every tick while the window is open, so the strictness costs a delay rather
+than a week, and an unclaimed pool rolls over.
+
+The week close reads each entrant's handle from the `/2/users` call it already
+makes — same call, same page, same price — so the leaderboard document carries
+`handle` beside `summoner`, and exclusions as counts by reason rather than as
+named rows. `api.ts` had documented a handle field the Rust side never sent,
+which is why the site rendered `@1234567890`.
+
+One correction worth recording, because it was believed while writing this:
+`#[serde(default)]` is **not** what keeps old records parseable. Serde already
+maps a missing `Option` field to `None` without it — established by probe. The
+enforcement is a test that parses the exact bytes of the box's `2956.json`, and
+the hazard it guards is a *required* field being added, which `records_in`
+would answer by skipping the file silently, dropping the week from the
+leaderboard and from the cooldown that reads it.
+
 Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
 against the chain and append-only against its own log.
 

@@ -101,7 +101,16 @@ and the claim is a reply to *that* — and it was never built.
       after a claim lands. `Refusal::Unscanned` and `Refusal::NotAWallet` gate
       the payout. No count refuses payment: the gate is "scanned, and a wallet",
       and the counts are published as counts.
-      next: after item 2
+      SUPERSEDED 2026-09-06 by [design 0011](../design/0011-scan-before-declaring-not-before-paying.md).
+      The owner asked whether the scan belongs before the *winner is declared*
+      rather than before they are paid, so a bought account never reaches the
+      leaderboard. It does. 0011 rewrites this item: scan **down the ranking**
+      rather than across it (bounded cost -- 3-9 reads a week, not ~1,800),
+      publish the **measurement** and never a verdict, and **exclude nobody**
+      until a baseline exists, because the account has never posted and there is
+      nothing to calibrate a threshold against. The claim-address check stays at
+      payout; that object does not exist until the claim.
+      next: implement 0011 phase 1
 
 - [x] 4. **A voice with teeth.** `voice.rs`'s rule 6 currently says to lead with
       the cost line and `verdict.rs` demoted that line on 2026-09-05 for being
@@ -195,7 +204,64 @@ Each carries the answer assumed if the owner says nothing.
   and one sentence on how to claim — the only place the site's name can appear.
 - `RADAR_X_PUBLISH=on`, after reading the dry-run replies.
 
-## Handback
+## Handback — 2026-09-06
 
-Written by the last item to land. Until then: stopped at nothing, started
-nothing.
+**Three of five items landed. The plan is not finished, and the account went
+live during it, which was not in the plan.**
+
+### Landed
+
+| item | merged as | note |
+|---|---|---|
+| 1 the site | #161 | five pages; the fee ladder is pinned by `radar-pumpfun`'s decoder, not a TypeScript copy |
+| 2 the claim | #162 | the defect is closed; a summons can no longer be read as a claim |
+| 4 the voice | #163 | the prompt and the template no longer contradict |
+
+Two fixes fell out of the work rather than the plan, and both were real:
+
+- **#164** — `deploy/README.md` named `CabalHunter` when the account is
+  `thecabalhunter`. Following it set `RADAR_X_USER_ID` from the wrong account.
+- **#165** — the runbook told the operator to set
+  `RADAR_ACCESS_TEAM=heyvera.cloudflareaccess.com`, **a tenant we do not own**
+  (Cloudflare: "already claimed"). `radar-serve` fetches operator signing keys
+  from that domain. Both domains serve a live JWKS with different keys, so
+  operator login failed closed *and* the server was set to trust a stranger's
+  signature. LEARNINGS 31. Fixed on the box the same day.
+
+### Not done
+
+- **Item 3 — superseded, not built, and 0011 is itself undecided.** See
+  [design 0011](../design/0011-scan-before-declaring-not-before-paying.md).
+  Josh asked the question, could have accepted the answer, and deliberately did
+  not: the model that wrote 0011 also wrote #161-#165, so it goes to a fresh
+  reviewer undecided. **Reject it if it is wrong** — nothing is built on it.
+- **Item 5 — not started.** S1-S15 in this file are a *starting* list. S1, S4,
+  S8, S11 and S15 were fixed by items 1 and 2; the rest stand unreviewed.
+
+### What changed underneath the plan
+
+**The account went live at 2026-09-06 16:16 UTC** (`RADAR_X_PUBLISH=on`,
+`publisher=x`). The plan assumed a dry run throughout, and several of its
+statements are now stale by that alone. The 30-day demand-gate clock starts
+here. As of 16:20 it had posted nothing — nobody had summoned it.
+
+**The public endpoints went live the same afternoon.** All three answer 200
+through the edge with the right CORS origin, and the site shows live figures
+(543,195 launches, 2.91% graduated) instead of its fixture. That took three
+separate fixes, none of them obvious from outside — see
+`deploy/README.md`'s Access section and the notes in this file's S13.
+
+**The box was carrying pre-#162 binaries after going live.** `radar-serve`,
+`radar` and `radar-analyst` were all older than the merge. All three were
+replaced and verified by sha; the running analyst image was confirmed to
+contain the claim fix. **This is the trap worth remembering: merging a fix and
+deploying it are different acts, and the account was public in between.**
+
+### For whoever picks this up
+
+Read [design 0011](../design/0011-scan-before-declaring-not-before-paying.md)
+before touching item 3 — the plan's version of that item is wrong about *when*
+the scan runs.
+
+`radar-payout` was not touched by any of this and has never been reviewed
+against a live contest. It is the first place I would look.

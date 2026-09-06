@@ -61,11 +61,18 @@ Rules, all enforced by checks after you write:
 4. A creator's graduation history is NOT a good sign. Tokens that graduate end \
    at a worse median than tokens that never do.
 5. Say plainly what is not known. Never let an absence read as reassurance.
-6. Lead with the cost line if there is one. It is the fact most readers can act \
-   on and the one nobody else publishes.
+6. Lead with the one fact that is about THIS coin: the creator's record, or \
+   the launch block. The round trip is the same figure in every reply, so it \
+   goes last, in one clause, or not at all.
+7. A headline is offered below, already checked. Use it, sharpen it, or write \
+   a better first sentence from the same sheet.
 
-Be direct and dry. Being funny is allowed; being right is the product. \
-Two to four sentences.";
+Be savage and dry. The numbers are the joke: put a count beside the count it \
+should be weighed against, and stop. No adjective where a number will do. No \
+hedging. An unknown is said plainly and never softened. The first sentence \
+stands alone, under a hundred characters, because it will be screenshotted \
+without the rest. One to three sentences. No hashtags, no emoji, no exclamation \
+marks. Never repeat the token's name or ticker.";
 
 /// Why a model reply was not used.
 #[derive(Clone, Debug, PartialEq)]
@@ -177,11 +184,27 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
 /// sits in a position the model reads as true.
 #[must_use]
 pub fn request_for(sheet: &FactSheet) -> Request {
-    let question = format!(
+    let mut question = format!(
         "Token: {}\n\nMEASURED FACTS -- these are the only numbers you may use:\n{}",
         sheet.mint,
         sheet.render()
     );
+    // The deterministic headline, offered rather than imposed.
+    //
+    // Three real launches on 2026-09-04 produced three identical replies: the
+    // cost line is a constant and most launches sit in the same recipient band,
+    // so the model had no anchor that was about the coin in front of it. This
+    // is that anchor, and it is already built out of the sheet, so a model that
+    // simply uses it produces a reply the checks pass by construction.
+    //
+    // It is a fact from this sheet, not an example figure, which is why it may
+    // be interpolated here while `SYSTEM` itself carries no figures at all --
+    // anything numeric in the system prompt is a number the model can echo into
+    // a reply for a different coin.
+    if let Some(headline) = crate::verdict::headline(sheet) {
+        question.push_str("\n\nWHAT RADAR PRINTS IF YOU SAY NOTHING:\n");
+        question.push_str(&headline);
+    }
     let mut request = Request::new(SYSTEM, question);
     for (label, value) in &sheet.untrusted {
         // `observing` fences and escapes -- it is the only way to add evidence
@@ -365,6 +388,85 @@ mod tests {
         let reply = write(&sheet(), Some(&Says("   ")));
         assert!(reply.is_template());
         assert_eq!(reply.fellback, Some(Fellback::Empty));
+    }
+
+    #[test]
+    fn the_system_prompt_carries_no_figure_a_model_could_echo() {
+        // Every number in a reply must be on that reply's fact sheet. A figure
+        // written into the SYSTEM prompt is on no sheet and is in front of the
+        // model for every coin -- so an example like "456 bps" is a number the
+        // model can reproduce for a token it does not describe, and
+        // `fidelity::check` would then bin an otherwise good reply.
+        //
+        // The rule numbers are the only digits allowed, so they are stripped
+        // first. "under a hundred characters" is spelled out in the prompt for
+        // exactly this reason.
+        let body: String = SYSTEM
+            .lines()
+            .map(|l| {
+                let trimmed = l.trim_start();
+                match trimmed.split_once(". ") {
+                    Some((n, rest)) if n.len() == 1 && n.chars().all(|c| c.is_ascii_digit()) => {
+                        rest.to_owned()
+                    }
+                    _ => l.to_owned(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+        let digits: Vec<char> = body.chars().filter(char::is_ascii_digit).collect();
+        assert!(
+            digits.is_empty(),
+            "the system prompt names figures a model could echo: {digits:?} in {body}"
+        );
+    }
+
+    #[test]
+    fn the_prompt_still_carries_every_rule_the_checks_enforce() {
+        // The wording changed; the rules did not. These are the phrases the
+        // downstream checks exist to back up, and losing one silently would
+        // leave a check with no instruction behind it.
+        for phrase in [
+            "MUST appear in the fact sheet",
+            "TOKEN ACCOUNTS",
+            "NOT a good sign",
+            "not known",
+        ] {
+            assert!(SYSTEM.contains(phrase), "the prompt dropped {phrase:?}");
+        }
+        // And the contradiction is gone. `verdict::template` puts the round
+        // trip LAST, deliberately, because it is the same figure in every
+        // reply; the prompt told the model to lead with it. They disagreed
+        // from 2026-09-05 until this change, and the prompt was the wrong one.
+        assert!(
+            !SYSTEM.contains("Lead with the cost"),
+            "the prompt still contradicts the template"
+        );
+    }
+
+    #[test]
+    fn the_request_offers_the_headline_the_floor_would_have_printed() {
+        // So the model has an anchor about THIS coin. Three real launches on
+        // 2026-09-04 produced three identical replies without one.
+        let sheet = sheet();
+        let request = request_for(&sheet);
+        let rendered = request.render();
+        match crate::verdict::headline(&sheet) {
+            Some(headline) => assert!(
+                rendered.contains(&headline),
+                "the request does not carry the headline: {rendered}"
+            ),
+            // A sheet with neither a creator record nor a launch block offers
+            // no headline, and the request must not grow an empty section for
+            // one. Rule 9: nothing is better than a placeholder.
+            None => assert!(
+                !rendered.contains("WHAT RADAR PRINTS IF YOU SAY NOTHING"),
+                "an empty headline section was added: {rendered}"
+            ),
+        }
     }
 
     #[test]

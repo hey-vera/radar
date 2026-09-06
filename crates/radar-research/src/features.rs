@@ -858,24 +858,28 @@ fn labels(inputs: &Inputs<'_>) -> (Option<f64>, Option<f64>, Option<GraduationMo
         if exit.measured_at <= entry.measured_at {
             return None;
         }
-        // And a **fill** between them, which is the same mistake one level
-        // down. `last_price` is the price of the last observed fill, so a token
-        // that stops trading reports the identical number at every later
-        // measurement: two distinct measurements, one observation, and a return
-        // of exactly zero. That is not a price that did not move -- it is a
-        // price nobody quoted. A position taken at T in a token that never
-        // trades again cannot be exited at the entry price; it cannot be exited.
+        // And both prices have to be **fresh**, which is the same mistake two
+        // levels down. `last_price` is the price of the last observed fill, so
+        // a token that stops trading reports the identical number at every
+        // later measurement: two measurements, one observation, and a return of
+        // exactly zero. That is not a price that held steady -- it is a price
+        // nobody quoted, on a position that could not have been exited at all.
         //
-        // The second live run, after the identity above was fixed: 352,070
-        // labelled rows and every median in every stratum still exactly 0.0 bps,
-        // because 97% of them were this.
+        // Three runs found this three times. `last_transfer_slot` was the
+        // second attempt and it was the wrong field: a transfer is a token
+        // moving between wallets, which happens to dead coins constantly and is
+        // not a trade.
         //
-        // `last_transfer_slot` moving is the minimal condition for the two
-        // prices to be different observations. It is not proof the exit price
-        // is *executable* -- a transfer is not always a fill, and a fill hours
-        // before the checkpoint is a stale quote. That is a modelling question
-        // about liquidity, named here rather than silently answered.
-        if exit.last_transfer_slot? <= entry.last_transfer_slot? {
+        // `window_peak_price` is the right one and it was here all along. It is
+        // taken from **that measurement's own window** and is `None` when the
+        // window held no fills, so `is_some()` says "fills happened near this
+        // reading" -- which is precisely the question. Both ends need it: a
+        // stale entry price is a quote nobody could have bought at, and a stale
+        // exit price is one nobody could have sold at.
+        //
+        // It is absent on every row written before 2026-08-31, when the column
+        // was added, so labels before then are refused rather than guessed.
+        if entry.window_peak_price.is_none() || exit.window_peak_price.is_none() {
             return None;
         }
         bps_between(entry.last_price?, exit.last_price?)

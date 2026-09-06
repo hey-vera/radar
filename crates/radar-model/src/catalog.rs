@@ -300,6 +300,28 @@ mod tests {
     }
 
     #[test]
+    fn the_upper_bound_is_a_million_dollars_per_million_tokens_and_it_is_inclusive() {
+        // The ceiling exists to catch a parse error wearing a price -- a
+        // catalog field that arrived as a token count, say. Where exactly it
+        // sits matters less than that it is pinned: CI mutated `>` into `>=`
+        // and nothing failed, so the boundary was decoration.
+        //
+        // A million dollars per million tokens is a dollar a token. Nothing
+        // real is anywhere near it, and it is accepted rather than refused
+        // because a bound that rejects its own stated limit is off by one.
+        assert_eq!(
+            micro_per_million(1_000_000.0),
+            Some(MicroUsd(1_000_000_000_000)),
+            "the limit itself is a price"
+        );
+        assert_eq!(
+            micro_per_million(1_000_000.000_001),
+            None,
+            "and anything past it is not"
+        );
+    }
+
+    #[test]
     fn a_reseller_listing_the_same_id_does_not_win_the_lookup() {
         // The catalog lists hundreds of providers, including brokers that
         // re-list a model at their own price. `some-reseller` quotes

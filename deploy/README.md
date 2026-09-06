@@ -142,9 +142,30 @@ happens because nobody chose.
 
 ```
 sudo tee -a /etc/radar/radar.env >/dev/null <<'ENV'
-RADAR_ACCESS_TEAM=heyvera.cloudflareaccess.com
+RADAR_ACCESS_TEAM=<your-team>.cloudflareaccess.com
 RADAR_ACCESS_AUD=<the Application Audience tag from the Access application>
 ENV
+```
+
+**Both values are placeholders and the server refuses either one unsubstituted**
+— `looks_unsubstituted` rejects angle brackets at startup, so a heredoc pasted
+with its own template still in it fails loudly instead of running.
+
+**`RADAR_ACCESS_TEAM` is the team domain of the account you control**, and it
+decides *whose signing keys this server trusts*: `radar-serve` fetches
+`https://<team>/cdn-cgi/access/certs` and verifies every operator token against
+them. Point it at somebody else's tenant and two things happen — your own logins
+are refused, because the issuer will not match, and the server is trusting a
+third party's keys to vouch for your operator identity.
+
+This line named a real, plausible-looking domain until 2026-09-06, it was copied
+verbatim onto the box, and it was **not** an account we own. See LEARNINGS 31.
+
+Find yours in the Zero Trust dashboard under **Settings → Custom Pages**, or
+read it out of the login redirect, which is the cheaper check:
+
+```bash
+curl -sI https://<your-host>/ | grep -i ^location
 ```
 
 The AUD tag is on the Access application's **Overview** page. It is per

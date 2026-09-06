@@ -858,6 +858,26 @@ fn labels(inputs: &Inputs<'_>) -> (Option<f64>, Option<f64>, Option<GraduationMo
         if exit.measured_at <= entry.measured_at {
             return None;
         }
+        // And a **fill** between them, which is the same mistake one level
+        // down. `last_price` is the price of the last observed fill, so a token
+        // that stops trading reports the identical number at every later
+        // measurement: two distinct measurements, one observation, and a return
+        // of exactly zero. That is not a price that did not move -- it is a
+        // price nobody quoted. A position taken at T in a token that never
+        // trades again cannot be exited at the entry price; it cannot be exited.
+        //
+        // The second live run, after the identity above was fixed: 352,070
+        // labelled rows and every median in every stratum still exactly 0.0 bps,
+        // because 97% of them were this.
+        //
+        // `last_transfer_slot` moving is the minimal condition for the two
+        // prices to be different observations. It is not proof the exit price
+        // is *executable* -- a transfer is not always a fill, and a fill hours
+        // before the checkpoint is a stale quote. That is a modelling question
+        // about liquidity, named here rather than silently answered.
+        if exit.last_transfer_slot? <= entry.last_transfer_slot? {
+            return None;
+        }
         bps_between(entry.last_price?, exit.last_price?)
     };
     (

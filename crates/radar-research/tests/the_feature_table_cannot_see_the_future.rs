@@ -92,6 +92,14 @@ fn buy(mint: u8, trader: u8, slot: u64, tx: u32, sol: u64) -> Event {
 
 /// A measurement. `graduated_after` of `None` never graduated; a value larger
 /// than the store's own `INSTANT_WITHIN_SLOTS` is organic.
+///
+/// The last transfer is the measurement itself: a token still trading right up
+/// to when it was looked at. That is the ordinary case and it has to be the
+/// default, because `last_price` is the price of the last observed **fill** --
+/// a fixture whose transfer slot never advances is a token that stopped
+/// trading, and its price is the same observation read twice rather than a
+/// return. `stillborn_outcome` and the tests about that case set it back
+/// deliberately.
 fn outcome(
     mint: u8,
     measured: u64,
@@ -104,7 +112,7 @@ fn outcome(
         measured_at: Slot(measured),
         launch_slot: Slot(launch_slot),
         first_transfer_slot: Some(Slot(launch_slot)),
-        last_transfer_slot: Some(Slot(launch_slot + 400)),
+        last_transfer_slot: Some(Slot(measured)),
         transfers: 40,
         unique_senders: 7,
         unique_receivers: 5,
@@ -863,15 +871,56 @@ fn one_measurement_after_t_is_not_a_return() {
 #[test]
 fn a_second_measurement_after_t_is_a_return() {
     // The other side, so the rule above is not satisfied by refusing every
-    // label. Two distinct readings after T are a real move.
+    // label. Two distinct readings after T, with a fill between them, are a
+    // real move.
     let at = 1_000u64;
-    let table = table_over(
-        vec![launch(1, 100, at)],
-        vec![
-            outcome(1, at + T, at, None, Some(100)),
-            outcome(1, at + T + 1, at, None, Some(150)),
-        ],
-    );
+    let mut first = outcome(1, at + T, at, None, Some(100));
+    first.last_transfer_slot = Some(Slot(at + T - 10));
+    let mut second = outcome(1, at + T + 1, at, None, Some(150));
+    second.last_transfer_slot = Some(Slot(at + T));
+
+    let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
 
     assert_eq!(table.rows[0].gross_6h_bps, Some(5_000.0));
+}
+
+#[test]
+fn two_measurements_of_one_fill_are_not_a_return() {
+    // The second live run found this after the identity above was fixed:
+    // 352,070 labelled rows and every median in every stratum still exactly
+    // 0.0 bps, because 97% of them were this.
+    //
+    // `last_price` is the price of the last observed **fill**. A token that
+    // stops trading reports the identical number at every later measurement --
+    // two distinct measurements, one observation. A return of zero here is not
+    // a price that held steady; it is a price nobody quoted, on a position that
+    // could not have been exited at all.
+    let at = 1_000u64;
+    let traded_at = Slot(at + 500);
+    let mut first = outcome(1, at + T, at, None, Some(100));
+    first.last_transfer_slot = Some(traded_at);
+    let mut second = outcome(1, at + T + 5_000, at, None, Some(100));
+    second.last_transfer_slot = Some(traded_at);
+
+    let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
+
+    assert_eq!(table.rows[0].gross_6h_bps, None);
+    assert_eq!(table.rows[0].gross_24h_bps, None);
+}
+
+#[test]
+fn a_price_that_traded_back_to_where_it_started_is_a_return_of_zero() {
+    // And the case the rule above must not sweep up with it. A token that
+    // traded after entry and came back to the same price really did return
+    // zero, and that is a measurement -- the point mass research 0017 found is
+    // made of these, and losing them would flatter every median.
+    let at = 1_000u64;
+    let mut first = outcome(1, at + T, at, None, Some(100));
+    first.last_transfer_slot = Some(Slot(at + 500));
+    let mut second = outcome(1, at + T + 5_000, at, None, Some(100));
+    second.last_transfer_slot = Some(Slot(at + T + 4_000));
+
+    let table = table_over(vec![launch(1, 100, at)], vec![first, second]);
+
+    assert_eq!(table.rows[0].gross_6h_bps, Some(0.0));
 }

@@ -20,6 +20,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { About } from "./About";
+import { History } from "./History";
 import { Home } from "./Home";
 import { Leaderboard } from "./Leaderboard";
 import { Pool } from "./Pool";
@@ -151,8 +152,9 @@ describe("the tokenomics page before any token exists", () => {
   it("says no token exists, in words, rather than showing a zero", async () => {
     render(<Token />);
     expect(screen.getByText(/No token exists/i)).toBeTruthy();
-    expect(screen.getByText(/any address claiming to be this token is not/i))
-      .toBeTruthy();
+    expect(
+      screen.getByText(/any address claiming to be this token is not/i),
+    ).toBeTruthy();
   });
 
   it("puts no valuation of its own token on the page", () => {
@@ -342,7 +344,10 @@ describe("a week that ran names its entrants the way the record can", () => {
     });
     expect(screen.queryByText("@2005812292693483520")).toBeNull();
     expect(
-      screen.getByText("2005812292693483520").closest("a")?.getAttribute("href"),
+      screen
+        .getByText("2005812292693483520")
+        .closest("a")
+        ?.getAttribute("href"),
     ).toBe("https://x.com/i/user/2005812292693483520");
   });
 });
@@ -376,7 +381,13 @@ describe("a closed week publishes the evidence, not a verdict", () => {
                       mint: "So11111111111111111111111111111111111111112",
                       reply_url: "https://x.com/i/web/status/1",
                       score: 30,
-                      raw: { reposts: 10, quotes: 0, likes: 0, replies: 0, score: 30 },
+                      raw: {
+                        reposts: 10,
+                        quotes: 0,
+                        likes: 0,
+                        replies: 0,
+                        score: 30,
+                      },
                       verified: {
                         reposts: 10,
                         quoters: 0,
@@ -392,7 +403,13 @@ describe("a closed week publishes the evidence, not a verdict", () => {
                       mint: null,
                       reply_url: null,
                       score: 3,
-                      raw: { reposts: 0, quotes: 30, likes: 0, replies: 30, score: 120 },
+                      raw: {
+                        reposts: 0,
+                        quotes: 30,
+                        likes: 0,
+                        replies: 30,
+                        score: 120,
+                      },
                       verified: {
                         reposts: 0,
                         quoters: 1,
@@ -430,7 +447,9 @@ describe("a closed week publishes the evidence, not a verdict", () => {
     // Ten real reposters outrank it, which is the whole point of the rule.
     // `getAllBy`, because for an honest entry the two columns agree -- and
     // that agreement is itself the thing a reader is checking for.
-    expect(screen.getAllByTitle("10 reposts / 0 quotes / 0 likes")).toHaveLength(2);
+    expect(
+      screen.getAllByTitle("10 reposts / 0 quotes / 0 likes"),
+    ).toHaveLength(2);
   });
 
   it("counts new accounts without calling anybody a bot", async () => {
@@ -448,8 +467,157 @@ describe("a closed week publishes the evidence, not a verdict", () => {
     // about the rule. What must never appear is a verdict about a ROW.
     const rows = container.querySelector("tbody")?.textContent ?? "";
     expect(rows).not.toBe("");
-    for (const verdict of [/botted/i, /fake/i, /suspicious/i, /cheat/i, /abuse/i]) {
+    for (const verdict of [
+      /botted/i,
+      /fake/i,
+      /suspicious/i,
+      /cheat/i,
+      /abuse/i,
+    ]) {
       expect(rows).not.toMatch(verdict);
     }
+  });
+});
+
+describe("the history page", () => {
+  /** A server that answers `/weeks` with one closed, claimed and paid week. */
+  function withWeeks(week: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((url: string) =>
+        String(url).includes("/weeks")
+          ? Promise.resolve({
+              ok: true,
+              json: () =>
+                Promise.resolve({
+                  measured_at: "2026-09-07T00:01:00Z",
+                  weeks: [week],
+                }),
+            })
+          : Promise.reject(new Error("no server")),
+      ),
+    );
+  }
+
+  const paid = {
+    week: "2026-08-31",
+    opened_at: "2026-08-31T00:00:00Z",
+    closed_at: "2026-09-07T00:00:00Z",
+    entries: 4,
+    excluded: { count: 2, reasons: { account_too_new: 1, operator: 1 } },
+    winner: {
+      summoner: "1889496824328880128",
+      handle: "somebody",
+      reply_url: "https://x.com/i/web/status/1",
+      score: 12,
+      mint: "So11111111111111111111111111111111111111112",
+      verified: {
+        reposts: 4,
+        quoters: 1,
+        likes: 6,
+        engagers: 9,
+        engagers_under_age: 2,
+      },
+    },
+    rule: {
+      operators: 2,
+      min_account_age_days: 30,
+      min_engager_age_days: 30,
+      cooldown_weeks: 3,
+    },
+    voided: null,
+    claim: {
+      state: "claimed",
+      at: "2026-09-07T00:05:00Z",
+      address: "So11111111111111111111111111111111111111112",
+      reply_url: "https://x.com/i/web/status/2",
+    },
+    payout: {
+      state: "paid",
+      lamports: 3_000_000_000,
+      recipient: "So11111111111111111111111111111111111111112",
+      signature:
+        "5xoBq7f3vT1kQ9mNpLrWcJhYzA2dEuG6sVtXnH4bKfPqxoBq7f3vT1kQ9mNpLrWcJhYzA2dEuG6sVtXnH4bKfPqa",
+      at: "2026-09-07T01:00:00Z",
+    },
+  };
+
+  it("says no week has closed rather than showing an empty table", async () => {
+    // The state it ships in today, and the wrong version looks right: an empty
+    // table says a week ran and nobody entered it.
+    render(<History />);
+    expect(await screen.findByText(/No week has closed yet/i)).toBeTruthy();
+    expect(document.querySelector("table")).toBeNull();
+  });
+
+  it("renders a paid week as three things a stranger can check", async () => {
+    withWeeks(paid);
+    render(<History />);
+
+    // The winner, by handle, linked by id (S4/S27).
+    const winner = await screen.findByText("@somebody");
+    expect(winner.getAttribute("href")).toBe(
+      "https://x.com/i/user/1889496824328880128",
+    );
+    // The winning reply, the claim, and the transaction: all links out.
+    const links = Array.from(document.querySelectorAll("a")).map((a) =>
+      a.getAttribute("href"),
+    );
+    expect(links).toContain("https://x.com/i/web/status/1");
+    expect(links).toContain("https://x.com/i/web/status/2");
+    expect(links.some((h) => h?.startsWith("https://solscan.io/tx/"))).toBe(
+      true,
+    );
+    // The prize, in the unit it was paid in.
+    expect(screen.getByText(/3\.0000 SOL/)).toBeTruthy();
+    // The rule the week was scored under, printed beside it.
+    expect(document.body.textContent).toContain("Scored under");
+    // And the exclusions as counts, never as names.
+    expect(document.body.textContent).toContain(
+      "account younger than the rule allows",
+    );
+  });
+
+  it("says why a week paid nobody instead of leaving the cell blank", async () => {
+    // Four different facts. A page that renders all four the same asks the
+    // reader to trust the operator about the one thing they would not.
+    withWeeks({
+      ...paid,
+      winner: { ...paid.winner, verified: null },
+      claim: { state: "rolled_over", closed_at: "2026-09-14T00:00:00Z" },
+      payout: { state: "unclaimed" },
+    });
+    render(<History />);
+    expect(await screen.findByText(/never claimed/i)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("SOL");
+    // Unread engagement is "not read", never a row of zeroes.
+    expect(document.body.textContent).toContain("not read");
+    expect(document.body.textContent).not.toContain("0/0/0");
+  });
+
+  it("publishes the reason a week was voided, verbatim", async () => {
+    // Design 0011: the correction is public or it is not a correction.
+    withWeeks({
+      ...paid,
+      voided: {
+        at: "2026-09-08T00:00:00Z",
+        reason: "every point came from six accounts made that morning",
+      },
+      payout: { state: "voided" },
+    });
+    render(<History />);
+    expect(
+      await screen.findByText(/six accounts made that morning/),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("pays nobody");
+  });
+
+  it("shows no rule at all for a week that did not record one", async () => {
+    // Rule 9 on the page somebody opens to dispute a placing. Today's numbers
+    // are not evidence about a week that closed before they existed.
+    withWeeks({ ...paid, rule: null });
+    render(<History />);
+    expect(await screen.findByText(/was not recorded/i)).toBeTruthy();
+    expect(document.body.textContent).not.toContain("Scored under");
   });
 });

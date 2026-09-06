@@ -155,12 +155,126 @@ export interface Winner {
   readonly signature: string;
 }
 
+/**
+ * One closed week, with everything a reader needs to check it.
+ *
+ * The page's whole job is that nothing on it has to be taken on trust: the
+ * reply is a link, the payment is a signature, the claim is a link, and the
+ * rule the week was scored under travels with the week rather than being
+ * looked up. A field that is `null` is a fact the record does not carry, never
+ * a zero and never the current value standing in for a past one.
+ */
+export interface Week {
+  /** ISO date of the week's Monday. */
+  readonly week: string;
+  readonly opened_at: string;
+  readonly closed_at: string;
+  /** How many entries counted. */
+  readonly entries: number;
+  readonly excluded: Excluded;
+  /** `null` when nothing counted at all. */
+  readonly winner: WeekWinner | null;
+  /**
+   * The rule this week was scored under.
+   *
+   * `null` on a week closed before 2026-09-06, when nothing recorded it. That
+   * is **unknown**, not "the current rule" -- the difference decides whether
+   * somebody disputing a placing is looking at the rule that actually applied.
+   */
+  readonly rule: Rule | null;
+  /** Set only when the operator voided the week, with the published reason. */
+  readonly voided: Voided | null;
+  readonly claim: Claim;
+  readonly payout: Payout;
+}
+
+/** Entries that did not count, as counts by reason and never as names. */
+export interface Excluded {
+  readonly count: number;
+  /** Reason key to how many. The page renders a sentence per key. */
+  readonly reasons: Readonly<Record<string, number>>;
+}
+
+/** The winner, and the counts their score was built from. */
+export interface WeekWinner {
+  readonly summoner: string;
+  readonly handle: string | null;
+  readonly reply_url: string;
+  readonly score: number;
+  readonly mint: string | null;
+  /** `null` when the week's scan never reached this entry — not "nobody engaged". */
+  readonly verified: Verified | null;
+}
+
+/** Distinct accounts, old enough to count, behind a score. */
+export interface Verified {
+  readonly reposts: number;
+  readonly quoters: number;
+  readonly likes: number;
+  readonly engagers: number;
+  readonly engagers_under_age: number;
+}
+
+/** The published exclusions, as the week was actually scored. */
+export interface Rule {
+  /** How many accounts the operator declared. Ids are not published. */
+  readonly operators: number;
+  readonly min_account_age_days: number;
+  readonly min_engager_age_days: number;
+  readonly cooldown_weeks: number;
+}
+
+/** The operator cancelled the week, and why. */
+export interface Voided {
+  readonly at: string;
+  readonly reason: string;
+}
+
+/**
+ * Whether the winner collected.
+ *
+ * `open` is a deadline somebody can still meet; `rolled_over` is money that has
+ * already moved to the next week. They are not the same fact and the page must
+ * not render them the same way.
+ */
+export interface Claim {
+  readonly state: "claimed" | "open" | "rolled_over" | "no_winner";
+  readonly at?: string;
+  readonly address?: string;
+  readonly reply_url?: string;
+  readonly closes_at?: string;
+  readonly closed_at?: string;
+}
+
+/**
+ * Whether the prize was paid, or the reason it was not.
+ *
+ * Five states, because "not paid" has four causes and they say very different
+ * things about whoever runs this.
+ */
+export interface Payout {
+  readonly state:
+    "paid" | "owed" | "unclaimed" | "awaiting_claim" | "voided" | "no_winner";
+  readonly lamports?: number;
+  readonly recipient?: string;
+  readonly signature?: string;
+  readonly at?: string;
+}
+
+/** Every closed week, newest first. */
+export interface Weeks {
+  readonly measured_at: string | null;
+  readonly weeks: readonly Week[];
+}
+
 /** Fetches JSON, or gives up quietly. */
 async function get<T>(path: string): Promise<T | null> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    const response = await fetch(`${BASE}${path}`, { signal: controller.signal });
+    const response = await fetch(`${BASE}${path}`, {
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!response.ok) return null;
     return (await response.json()) as T;
@@ -176,7 +290,9 @@ async function get<T>(path: string): Promise<T | null> {
 /** The population figures, live if possible and committed otherwise. */
 export async function stats(): Promise<Sourced<Stats>> {
   const live = await get<Stats>("/v1/public/stats");
-  return live ? { value: live, stale: false } : { value: FALLBACK, stale: true };
+  return live
+    ? { value: live, stale: false }
+    : { value: FALLBACK, stale: true };
 }
 
 /**
@@ -190,14 +306,35 @@ export async function stats(): Promise<Sourced<Stats>> {
 export async function leaderboard(): Promise<Leaderboard> {
   const live = await get<Leaderboard>("/v1/public/leaderboard");
   return (
-    live ?? { week: null, measured_at: null, entries: [], answered: 0, published: 0 }
+    live ?? {
+      week: null,
+      measured_at: null,
+      entries: [],
+      answered: 0,
+      published: 0,
+    }
   );
 }
 
 /** The prize pool, or the fact that there is not one yet. */
 export async function pool(): Promise<Pool> {
   const live = await get<Pool>("/v1/public/pool");
-  return live ?? { vault: null, lamports: null, measured_at: null, winners: [] };
+  return (
+    live ?? { vault: null, lamports: null, measured_at: null, winners: [] }
+  );
+}
+
+/**
+ * Every closed week.
+ *
+ * An empty list, like the leaderboard's, is the honest state before any week
+ * has closed -- and an unreachable endpoint produces the same one, for the
+ * reason `leaderboard` gives: from the reader's side both mean there is
+ * nothing to show, and the page says which.
+ */
+export async function weeks(): Promise<Weeks> {
+  const live = await get<Weeks>("/v1/public/weeks");
+  return live ?? { measured_at: null, weeks: [] };
 }
 
 /** Lamports as SOL, at the precision a prize is worth quoting to. */

@@ -32,6 +32,7 @@ export const ROUTES = [
   { path: "/", label: "Home", inNav: true },
   { path: "/leaderboard", label: "Leaderboard", inNav: true },
   { path: "/pool", label: "Prize pool", short: "Pool", inNav: true },
+  { path: "/history", label: "Past weeks", short: "History", inNav: true },
   { path: "/token", label: "Tokenomics", short: "Token", inNav: true },
   { path: "/about", label: "About", inNav: true },
 ] as const satisfies readonly Route[];

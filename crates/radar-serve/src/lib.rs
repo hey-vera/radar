@@ -160,6 +160,7 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/public/stats", get(public::stats))
         .route("/v1/public/leaderboard", get(public::leaderboard))
         .route("/v1/public/pool", get(public::pool))
+        .route("/v1/public/weeks", get(public::weeks))
         .route("/v1/scoreboard", get(scoreboard))
         .route("/v1/customer/config", get(customer_config))
         .route("/v1/customer/siws/challenge", post(siws::challenge))

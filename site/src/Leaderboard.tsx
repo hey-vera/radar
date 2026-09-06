@@ -29,13 +29,26 @@ function TheRule() {
     <Card>
       <h3 className="font-semibold text-[var(--color-text)]">How it is scored</h3>
       <p className="mt-3 font-mono text-sm text-[var(--color-signal)]">
-        3 × reposts + 3 × quotes + 1 × likes + 1 × replies
+        3 × reposters + 3 × quoters + 1 × likers
       </p>
       <p className="mt-3 text-sm text-[var(--color-dim)]">
         Measured on <strong>Cabal Hunter's own reply</strong>, not on your post.
         That is deliberate: it is the cheaper read, it is harder to buy
         engagement on somebody else's tweet, and it rewards bringing a coin worth
         answering rather than bringing an audience.
+      </p>
+      <p className="mt-3 text-sm text-[var(--color-dim)]">
+        <strong>Accounts, not actions</strong>, and that is the whole rule. One
+        account can quote or reply to the same post as many times as it likes;
+        only a repost and a like are one per account. So ten quotes from one
+        account count once, and replies count for nothing — they are
+        conversation, not reach. Only accounts at least 30 days old at close are
+        counted, the same floor entrants meet.
+      </p>
+      <p className="mt-3 text-sm text-[var(--color-dim)]">
+        Every week publishes both numbers: what the platform reported, and what
+        was counted. The gap between them is the part worth looking at, and it
+        is yours to judge — this page publishes counts and never a verdict.
       </p>
       <ul className="mt-4 space-y-2 text-sm text-[var(--color-dim)]">
         <li>· Weeks run Monday 00:00 UTC to Monday 00:00 UTC.</li>
@@ -55,10 +68,13 @@ function TheRule() {
         <li>· Entry is free. You never need to hold anything to enter or to win.</li>
       </ul>
       <p className="mt-4 text-xs text-[var(--color-faint)]">
-        Engagement can be bought. The weights, the account-age floor and full
-        publication of every score make that visible rather than impossible. If
-        a winner is obviously bought, the rule changes and the change is
-        recorded.
+        Engagement can be bought. Counting accounts rather than actions, and
+        only accounts old enough to cost money to fake, moves the price of a
+        point from nothing to real money — it does not make buying impossible,
+        and nothing here claims it does. Publishing every number is what makes a
+        bought week visible. If one happens anyway, the operator can void the
+        week: it pays nobody, the pool rolls over, and their reason appears here
+        in their own words.
       </p>
     </Card>
   );
@@ -125,6 +141,32 @@ function HowToClaim() {
   );
 }
 
+/// Three counts in one cell, in the order the weights run.
+///
+/// Written as `4/1/6` rather than three columns, because the point of showing
+/// them beside each other is the *gap* between reported and counted -- and a
+/// reader comparing two rows of three numbers reads a shape faster than nine
+/// columns.
+function Engagement({
+  reposts,
+  quotes,
+  likes,
+}: {
+  reposts: number;
+  quotes: number;
+  likes: number;
+}) {
+  return (
+    <span title={`${reposts} reposts / ${quotes} quotes / ${likes} likes`}>
+      {count(reposts)}
+      <span className="text-[var(--color-faint)]">/</span>
+      {count(quotes)}
+      <span className="text-[var(--color-faint)]">/</span>
+      {count(likes)}
+    </span>
+  );
+}
+
 function Table({ data }: { data: Data }) {
   return (
     <div className="overflow-x-auto">
@@ -135,6 +177,19 @@ function Table({ data }: { data: Data }) {
             <th className="py-3 pr-4 font-normal">Who asked</th>
             <th className="py-3 pr-4 font-normal">Coin</th>
             <th className="py-3 pr-4 font-normal">Reply</th>
+            {/* The evidence columns. Hidden below `sm` rather than dropped:
+                a phone gets the ranking, and the numbers behind it are one
+                rotation away. Counts only -- design 0011 publishes the
+                measurement and never a verdict. */}
+            <th className="hidden py-3 pr-4 text-right font-normal sm:table-cell">
+              Counted
+            </th>
+            <th className="hidden py-3 pr-4 text-right font-normal sm:table-cell">
+              Reported
+            </th>
+            <th className="hidden py-3 pr-4 text-right font-normal sm:table-cell">
+              People
+            </th>
             <th className="py-3 text-right font-normal">Score</th>
           </tr>
         </thead>
@@ -168,6 +223,51 @@ function Table({ data }: { data: Data }) {
                   // Answered but not published: the distinction the operator's
                   // own analyst page makes, and it belongs here too.
                   <span className="text-[var(--color-faint)]">not published</span>
+                )}
+              </td>
+              <td className="tnum hidden py-3 pr-4 text-right text-[var(--color-dim)] sm:table-cell">
+                {/* What the rule counted: distinct accounts, old enough. */}
+                {e.verified ? (
+                  <Engagement
+                    reposts={e.verified.reposts}
+                    quotes={e.verified.quoters}
+                    likes={e.verified.likes}
+                  />
+                ) : (
+                  <span className="text-[var(--color-faint)]" title="the scan stopped above this entry">
+                    not scanned
+                  </span>
+                )}
+              </td>
+              <td className="tnum hidden py-3 pr-4 text-right text-[var(--color-faint)] sm:table-cell">
+                {/* What the platform reported. Published so the gap between
+                    the two is visible: that gap IS the farming. */}
+                {e.raw ? (
+                  <Engagement
+                    reposts={e.raw.reposts}
+                    quotes={e.raw.quotes}
+                    likes={e.raw.likes}
+                  />
+                ) : (
+                  <span title="engagement is read once, at close">—</span>
+                )}
+              </td>
+              <td className="tnum hidden py-3 pr-4 text-right text-[var(--color-dim)] sm:table-cell">
+                {e.verified ? (
+                  <>
+                    {count(e.verified.engagers)}
+                    {/* A count, never an accusation. A reader weighs it. */}
+                    {e.verified.engagers_under_age > 0 && (
+                      <span
+                        className="text-[var(--color-faint)]"
+                        title={`${e.verified.engagers_under_age} were under the age floor`}
+                      >
+                        {" "}({count(e.verified.engagers_under_age)} new)
+                      </span>
+                    )}
+                  </>
+                ) : (
+                  <span className="text-[var(--color-faint)]">—</span>
                 )}
               </td>
               <td className="tnum py-3 text-right text-[var(--color-text)]">
@@ -221,7 +321,7 @@ export function Leaderboard() {
           ) : empty ? (
             <Nothing
               what="No week has run yet."
-              why="Cabal Hunter has not answered anyone. The account is not live — when it is, every question asked that week appears here with its score, and the rule beside this is what decides them."
+              why="The account is live and answering, and no week has closed yet. When one does, every question asked that week appears here with its score, the engagement behind it, and the rule that decided them."
             />
           ) : (
             <>

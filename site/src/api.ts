@@ -48,6 +48,10 @@ export interface Leaderboard {
   readonly answered: number;
   /** Of those, how many actually reached the platform. */
   readonly published: number;
+  /** The rule that decided this week, when the record carried one. */
+  readonly rule?: ScoredRule | null;
+  /** Present only when the operator voided the week. */
+  readonly voided?: Voided | null;
 }
 
 /** One entry: somebody summoned the bot, and the bot's reply scored. */
@@ -72,6 +76,57 @@ export interface Entry {
   readonly reply_url: string | null;
   /** `null` when engagement has not been read yet — never `0`. */
   readonly score: number | null;
+  /**
+   * What the platform reported, before the scan.
+   *
+   * Published as evidence beside `verified`, never as the ranking: quotes and
+   * replies are unlimited per account, so this is the number one account can
+   * farm to the top for nothing. `null` mid-week -- engagement is read once,
+   * at close.
+   */
+  readonly raw: RawMetrics | null;
+  /**
+   * What survived the scan, and what ranked the entry.
+   *
+   * `null` means the scan never reached this entry -- the walk stops as soon as
+   * arithmetic says nothing below can win -- which is NOT the same as nobody
+   * engaging. An entry with `null` here was scored on `raw`.
+   */
+  readonly verified: VerifiedMetrics | null;
+}
+
+/** Engagement as the platform counts it: actions, not accounts. */
+export interface RawMetrics {
+  readonly reposts: number;
+  readonly quotes: number;
+  readonly likes: number;
+  readonly replies: number;
+  readonly score: number;
+}
+
+/** Engagement as the rule counts it: distinct accounts old enough to count. */
+export interface VerifiedMetrics {
+  readonly reposts: number;
+  /** Distinct accounts that quoted, however many times each. */
+  readonly quoters: number;
+  readonly likes: number;
+  /** Distinct accounts seen across all three reads. */
+  readonly engagers: number;
+  /** How many of those were under the published age floor. A count, not a verdict. */
+  readonly engagers_under_age: number;
+}
+
+/** The rule a closed week was scored under. `null` on weeks closed before it was recorded. */
+export interface ScoredRule {
+  readonly min_account_age_days: number;
+  readonly min_engager_age_days: number;
+  readonly cooldown_weeks: number;
+}
+
+/** The operator voided the week: it pays nobody, and this is why, verbatim. */
+export interface Voided {
+  readonly at: string;
+  readonly reason: string;
 }
 
 /**

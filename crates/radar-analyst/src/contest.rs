@@ -33,9 +33,62 @@ use radar_contest::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::admission::Refused;
 use crate::daemon::Paths;
 use crate::log::Entry;
 use crate::x::{Mention, X};
+
+/// Which refusal it was.
+///
+/// [`Refused`]'s shape without its payloads: the record needs to know which
+/// refusal happened, never the cap that produced it.
+///
+/// It exists because **only one of the five costs an account the week**, and
+/// until 2026-09-06 all five did. `why` is a sentence written for a person and
+/// is the wrong thing to branch on; this is the same fact in a form the rule
+/// can read. Research 0029, S17.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefusalKind {
+    /// No limits were configured, so nothing was answered.
+    Unconfigured,
+    /// This account had spent its own daily allowance.
+    SummonerDaily,
+    /// The account's whole daily cap was spent.
+    GlobalDaily,
+    /// Somebody had already asked about this mint inside the dedupe window.
+    AlreadyAnswered,
+    /// Radar, or an account it never answers.
+    SelfOrIgnored,
+}
+
+impl RefusalKind {
+    /// What the gate refused, as the record stores it.
+    #[must_use]
+    pub const fn of(refused: &Refused) -> Self {
+        match refused {
+            Refused::Unconfigured => Self::Unconfigured,
+            Refused::SummonerDaily { .. } => Self::SummonerDaily,
+            Refused::GlobalDaily { .. } => Self::GlobalDaily,
+            Refused::AlreadyAnswered { .. } => Self::AlreadyAnswered,
+            Refused::SelfOrIgnored => Self::SelfOrIgnored,
+        }
+    }
+
+    /// Whether this refusal costs the account the week.
+    ///
+    /// **One of the five.** Design 0007 §6.2 meant the burst -- an account
+    /// hammering the gate should not also win the prize -- and the code
+    /// excluded every refusal there is. So an honest entrant asking about a
+    /// coin somebody else asked about an hour ago was out for the week
+    /// (`AlreadyAnswered`), and anybody could spend the global cap early on
+    /// Monday and put **every** later summoner out until Sunday
+    /// (`GlobalDaily`). Neither is a thing the entrant did.
+    #[must_use]
+    pub const fn costs_the_week(self) -> bool {
+        matches!(self, Self::SummonerDaily)
+    }
+}
 
 /// One refusal by the X gate, as the week-close job needs it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +99,17 @@ pub struct RefusalLine {
     pub summoner: String,
     /// Why, in the gate's words.
     pub why: String,
+    /// Which refusal it was, or `None` on a line written before kinds were
+    /// recorded.
+    ///
+    /// `None` is **unknown, and counted the old way**: a line that cannot say
+    /// which refusal it was is excluded, exactly as every line was before
+    /// 2026-09-06. Rule 9 -- absent is not a benign default, and guessing
+    /// `AlreadyAnswered` here would silently re-admit an account that really
+    /// had burst the gate. There are no such lines on the box, so this is a
+    /// migration path nothing currently walks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<RefusalKind>,
 }
 
 /// Appends one refusal.
@@ -154,10 +218,13 @@ pub fn close(inputs: &Inputs<'_>) -> Record {
                     u32::try_from(closes_at.saturating_sub(a.created_at) / 86_400)
                         .unwrap_or(u32::MAX)
                 }),
-                refused_this_week: inputs
-                    .refusals
-                    .iter()
-                    .any(|r| r.summoner == s && week.contains(r.at)),
+                // Only the refusal the entrant caused. See
+                // `RefusalKind::costs_the_week` for the four that do not.
+                refused_this_week: inputs.refusals.iter().any(|r| {
+                    r.summoner == s
+                        && week.contains(r.at)
+                        && r.kind.is_none_or(RefusalKind::costs_the_week)
+                }),
                 last_win: inputs
                     .previous
                     .iter()
@@ -522,6 +589,7 @@ mod tests {
             at: open + 5,
             summoner: "carol".to_owned(),
             why: "cap".to_owned(),
+            kind: Some(RefusalKind::SummonerDaily),
         }];
         let mut last_week = Record::close(Week(WEEK.0 - 1), radar_contest::Ranking::default());
         last_week.winner = Some(radar_contest::Winner {
@@ -583,6 +651,7 @@ mod tests {
             at: WEEK.opens_at() - 1,
             summoner: "alice".to_owned(),
             why: "cap".to_owned(),
+            kind: Some(RefusalKind::SummonerDaily),
         }];
         let rules = Rules::published(["radar"]);
         let record = close(&Inputs {
@@ -598,6 +667,110 @@ mod tests {
             record.winner.as_ref().map(|w| w.summoner.as_str()),
             Some("alice")
         );
+    }
+
+    #[test]
+    fn only_the_refusal_the_entrant_caused_costs_them_the_week() {
+        // Research 0029, S17. The rule excluded every refusal there was, so an
+        // honest entrant asking about a coin somebody else asked about an hour
+        // ago was out for the week -- and anybody could spend the global cap
+        // early on Monday and put every later summoner out until Sunday.
+        // Neither is a thing the entrant did. Design 0007 6.2 meant the burst,
+        // which is `SummonerDaily` and nothing else.
+        //
+        // Re-apply by making `costs_the_week` return true for every variant:
+        // the four benign kinds exclude alice and this fails four times.
+        for (kind, wins) in [
+            (Some(RefusalKind::SummonerDaily), false),
+            (Some(RefusalKind::AlreadyAnswered), true),
+            (Some(RefusalKind::GlobalDaily), true),
+            (Some(RefusalKind::Unconfigured), true),
+            (Some(RefusalKind::SelfOrIgnored), true),
+            // A line written before kinds were recorded cannot say which it
+            // was, so it is counted the old way rather than guessed at.
+            (None, false),
+        ] {
+            let log = vec![entry("a", "alice", WEEK.opens_at() + 10, Some("ra"), None)];
+            let metrics: BTreeMap<String, Metrics> = [("ra".to_owned(), Metrics::default())]
+                .into_iter()
+                .collect();
+            let accounts: BTreeMap<String, crate::x::Account> =
+                [("alice".to_owned(), account(100))].into_iter().collect();
+            let refusals = vec![RefusalLine {
+                at: WEEK.opens_at() + 5,
+                summoner: "alice".to_owned(),
+                why: "whatever the gate said".to_owned(),
+                kind,
+            }];
+            let rules = Rules::published(["radar"]);
+            let record = close(&Inputs {
+                week: WEEK,
+                log: &log,
+                refusals: &refusals,
+                previous: &[],
+                metrics: &metrics,
+                accounts: &accounts,
+                rules: &rules,
+            });
+            assert_eq!(
+                record.winner.is_some(),
+                wins,
+                "{kind:?} should {} the week",
+                if wins { "not cost" } else { "cost" }
+            );
+        }
+    }
+
+    #[test]
+    fn a_refusal_line_written_before_kinds_existed_still_parses() {
+        // The migration path. `read_refusals` drops any line it cannot parse,
+        // so a required field here would silently empty the file -- and an
+        // empty refusals file is a week where nobody was excluded, which reads
+        // as correct. There are no such lines on the box; this is what makes
+        // that true rather than lucky.
+        let old = r#"{"at":7,"summoner":"mallory","why":"cap"}"#;
+        let line: RefusalLine = serde_json::from_str(old).expect("an old line still parses");
+        assert_eq!(line.kind, None);
+        assert_eq!(line.summoner, "mallory");
+
+        // And a line with no kind does not grow an empty field when it is
+        // written back out.
+        let written = serde_json::to_string(&line).expect("serialises");
+        assert!(!written.contains("kind"), "{written}");
+    }
+
+    #[test]
+    fn every_gate_refusal_maps_to_its_own_kind() {
+        // Mutation testing replaces a match arm with any other. Five refusals
+        // collapsing to one kind would make every refusal benign, or every one
+        // fatal, and no other test in this file would notice.
+        let pairs = [
+            (Refused::Unconfigured, RefusalKind::Unconfigured),
+            (
+                Refused::SummonerDaily { cap: 3 },
+                RefusalKind::SummonerDaily,
+            ),
+            (Refused::GlobalDaily { cap: 50 }, RefusalKind::GlobalDaily),
+            (
+                Refused::AlreadyAnswered {
+                    reply_id: "r1".to_owned(),
+                },
+                RefusalKind::AlreadyAnswered,
+            ),
+            (Refused::SelfOrIgnored, RefusalKind::SelfOrIgnored),
+        ];
+        for (refused, expected) in &pairs {
+            assert_eq!(RefusalKind::of(refused), *expected, "{refused:?}");
+        }
+        assert!(RefusalKind::SummonerDaily.costs_the_week());
+        for benign in [
+            RefusalKind::Unconfigured,
+            RefusalKind::GlobalDaily,
+            RefusalKind::AlreadyAnswered,
+            RefusalKind::SelfOrIgnored,
+        ] {
+            assert!(!benign.costs_the_week(), "{benign:?}");
+        }
     }
 
     #[test]
@@ -670,6 +843,7 @@ mod tests {
             at: 7,
             summoner: "mallory".to_owned(),
             why: "this account has had its 3 replies today".to_owned(),
+            kind: Some(RefusalKind::SummonerDaily),
         };
         append_refusal(&path, &line).expect("append");
         append_refusal(&path, &line).expect("append");

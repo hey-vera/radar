@@ -311,6 +311,22 @@ pub fn publisher_for(x: Option<X>, publishing: bool) -> Box<dyn Publisher> {
     }
 }
 
+/// Who the gate never answers.
+///
+/// **The bot's own numeric id**, which is what a mention's `author_id` carries.
+/// This was the literal string `radar` until 2026-09-06 -- a value no X account
+/// id can equal, so the one entry the ignore list exists for was never in it,
+/// and the account would have answered its own mention had anything produced
+/// one. Research 0029, S21. The contest's own operator list has read
+/// `x.user_id()` since #167; the gate did not.
+///
+/// With no credential there is no id and nothing to poll, so the list is empty
+/// rather than carrying a placeholder that matches nobody.
+#[must_use]
+pub fn ignored(x: Option<&X>) -> Vec<String> {
+    x.map(|x| vec![x.user_id().to_owned()]).unwrap_or_default()
+}
+
 /// Runs the loop. Never returns.
 #[allow(
     clippy::too_many_lines,
@@ -367,7 +383,7 @@ pub fn run() -> ! {
     }
 
     let limits = limits_from(&env);
-    let mut gate = Gate::new(limits, vec!["radar".to_owned()]);
+    let mut gate = Gate::new(limits, ignored(x.as_ref()));
     let mut spend = Spend::open(budget, prices, paths.ledger.clone(), day_of(now()));
 
     let client = radar_onchain::RpcClient::from_vars(&env);
@@ -908,6 +924,7 @@ pub fn tick(
                             at,
                             summoner: mention.author.clone(),
                             why: crate::answer::describe(why),
+                            kind: Some(crate::contest::RefusalKind::of(why)),
                         },
                     )
                 {
@@ -1278,5 +1295,23 @@ mod tests {
         assert!(unsigned.contains("RADAR_X_API_KEY"), "{unsigned}");
         assert!(!unsigned.contains("LIVE"), "{unsigned}");
         assert!(!unsigned.contains("log ONLY"), "{unsigned}");
+    }
+
+    #[test]
+    fn the_gate_ignores_the_bot_by_its_own_id_and_not_by_a_name() {
+        // Research 0029, S21. The list held the literal `radar` until
+        // 2026-09-06. A mention carries `author_id`, which is a run of digits,
+        // so no account could ever match it -- the one entry the ignore list
+        // exists for was the one entry it did not contain.
+        //
+        // Re-apply by returning `vec!["radar".to_owned()]` and the first
+        // assertion fails.
+        let x = X::at("http://127.0.0.1:1", "test-token", "1739482910");
+        assert_eq!(ignored(Some(&x)), vec!["1739482910".to_owned()]);
+
+        // No credential is nothing to poll, so there is nobody to ignore. A
+        // placeholder here would be a list that matches nobody, which is what
+        // the bug was.
+        assert!(ignored(None).is_empty());
     }
 }

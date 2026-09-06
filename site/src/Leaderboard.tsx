@@ -42,8 +42,11 @@ function TheRule() {
         <li>· Ties go to whoever asked first.</li>
         <li>
           · Excluded: every account the operator controls — the bot itself and
-          the account that manages it — accounts under 30 days old, and anyone the
-          admission gate refused that week.
+          the account that manages it — accounts under 30 days old, and any
+          account that hit its own daily cap that week. Being turned away for a
+          reason you did not cause — someone else asked about the coin first,
+          the account's whole daily cap was already spent — does not cost you
+          the week.
         </li>
         <li>
           · One win in any four weeks. A winner sits out the next three, so the

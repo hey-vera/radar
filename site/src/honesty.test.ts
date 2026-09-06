@@ -180,8 +180,8 @@ describe("links", () => {
   });
 
   it("allows the host it was given", () => {
-    expect(safeHref("https://x.com/CabalHunter", ["x.com"])).toBe(
-      "https://x.com/CabalHunter",
+    expect(safeHref("https://x.com/thecabalhunter", ["x.com"])).toBe(
+      "https://x.com/thecabalhunter",
     );
   });
 
@@ -231,20 +231,20 @@ describe("links", () => {
 
   it("builds a summons only when both halves are real", () => {
     const mint = "a".repeat(43);
-    expect(summonIntent("CabalHunter", mint)).toBe(
-      `https://x.com/intent/post?text=%40CabalHunter%20${mint}`,
+    expect(summonIntent("thecabalhunter", mint)).toBe(
+      `https://x.com/intent/post?text=%40thecabalhunter%20${mint}`,
     );
     // A button that posts "@undefined <mint>" is worse than no button.
     expect(summonIntent("", mint)).toBe(null);
     expect(summonIntent("a".repeat(16), mint)).toBe(null);
-    expect(summonIntent("CabalHunter", "not an address")).toBe(null);
+    expect(summonIntent("thecabalhunter", "not an address")).toBe(null);
   });
 
   it("encodes the mint rather than pasting it into a query string", () => {
     // The mint is address-shaped by the time it reaches here, so nothing needs
     // escaping today. The encoding is asserted anyway: the day this function
     // takes a ticker instead, '$' and '&' arrive with it.
-    const url = summonIntent("CabalHunter", "a".repeat(32));
+    const url = summonIntent("thecabalhunter", "a".repeat(32));
     expect(url).not.toBe(null);
     expect(url).toContain("%40");
     expect(url).not.toContain("@");

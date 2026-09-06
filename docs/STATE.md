@@ -504,14 +504,21 @@ hex and a TypeScript copy of the fee parser would be a second answer to get
 wrong. Every URL on the site is now built by a function in `honesty.ts` that
 can refuse, rather than by string template in a component.
 
-**The account's handle is not recorded anywhere in this repository, and the
-site refuses to guess it.** `deploy/README.md` uses `CabalHunter` in a `curl`
-example for looking up the numeric id; the analyst identifies the account by
-`RADAR_X_USER_ID`; and on 2026-09-06 the production analyst's post log still
-said `no publisher configured: this instance cannot post`. So the summon box
-and every link to the account are gated on `VITE_X_HANDLE` at build time and
-render an honest sentence when it is absent — rule 8, in the interface. Setting
-it is an operator step, and until it is set the site has no outbound link to X.
+**The account's handle is `thecabalhunter`**, confirmed by the operator on
+2026-09-06. It had been recorded in no file — `deploy/README.md`'s `curl`
+example said `CabalHunter`, which is a different account, and anyone following
+it would have set `RADAR_X_USER_ID` to the wrong id or none at all. That example
+is corrected.
+
+**The site still does not hard-code it, and that is deliberate.** Nothing on the
+Rust side needs a handle: the analyst identifies the account by
+`RADAR_X_USER_ID` and `radar-serve` builds reply links as
+`x.com/i/web/status/<id>`. The site is the only surface that wants a name, and a
+name can change without anything breaking loudly — so it is gated on
+`VITE_X_HANDLE` at build time, validated against X's own rule, and every link to
+the account renders an honest sentence when it is absent. Rule 8, in the
+interface. Until it is set in the Cloudflare Pages environment the site has no
+outbound link to X.
 
 **A claim is a reply to the account's claim prompt, as of 2026-09-06** (plan
 0008 item 2). This closed a real hole rather than adding a feature. `try_claim`

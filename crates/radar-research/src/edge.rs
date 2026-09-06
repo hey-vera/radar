@@ -2166,14 +2166,38 @@ mod tests {
     }
 
     #[test]
+    fn the_horizons_are_named_and_matured_by_the_numbers_the_protocol_uses() {
+        // Both are read by something that cannot see them: the label goes in a
+        // report and the maturity sets the purge. A maturity of one slot purges
+        // nothing and every fold then fits on labels it could not have known.
+        assert_eq!(Horizon::SixHours.label(), "6h");
+        assert_eq!(Horizon::TwentyFourHours.label(), "24h");
+        assert_eq!(Horizon::SixHours.maturity_slots(), 54_000, "six hours");
+        assert_eq!(
+            Horizon::TwentyFourHours.maturity_slots(),
+            216_000,
+            "twenty-four hours"
+        );
+        assert_eq!(
+            Horizon::TwentyFourHours.maturity_slots(),
+            EMBARGO_SLOTS,
+            "the embargo is the widest label's maturity, which is why it is that              number and not another"
+        );
+    }
+
+    #[test]
     fn the_purge_drops_a_fitting_row_whose_label_matures_after_the_boundary() {
         // The row launched inside the fitting period, but its twenty-four-hour
         // return was not known until after it. Keeping it fits on something the
         // boundary could not have known.
-        let maturity = Horizon::TwentyFourHours.maturity_slots();
+        //
+        // The spacing is a literal rather than a fraction of the maturity under
+        // test. Derived from it, a mutated maturity moves the fixture with the
+        // rule and the test sees nothing -- which is exactly what CI reported.
+        let maturity = 216_000u64;
         let points: Vec<Point> = (0..500u64)
             .map(|i| Point {
-                launch_slot: Slot(i * maturity / 100),
+                launch_slot: Slot(i * 2_160),
                 gross: 0.0,
                 net: 0.0,
                 values: Vec::new(),

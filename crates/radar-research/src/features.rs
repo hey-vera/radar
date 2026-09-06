@@ -1381,6 +1381,24 @@ mod tests {
     }
 
     #[test]
+    fn a_graduation_mode_survives_the_file_in_the_stores_own_vocabulary() {
+        // Both directions and both variants. A dropped arm here reads every
+        // instant graduation back as "not measured", which would quietly move
+        // the whole instant cohort out of every stratum that names it -- and the
+        // file would still parse.
+        for mode in [GraduationMode::Instant, GraduationMode::Organic] {
+            assert_eq!(mode_from(mode_label(mode)), Some(mode), "{mode:?}");
+        }
+        assert_eq!(mode_label(GraduationMode::Instant), "instant");
+        assert_eq!(mode_label(GraduationMode::Organic), "organic");
+        assert_eq!(
+            mode_from("bundled"),
+            None,
+            "a spelling this does not know is absent, not a guess: a new label              is a schema change and guessing one puts tokens in a cohort nobody              measured"
+        );
+    }
+
+    #[test]
     fn an_unrecognised_prevalence_label_is_absent_rather_than_ordinary() {
         assert_eq!(prevalence_ordinal("ordinary"), Some(0.0));
         assert_eq!(prevalence_ordinal("repeat launcher"), Some(1.0));

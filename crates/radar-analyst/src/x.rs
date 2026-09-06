@@ -60,6 +60,18 @@ pub struct Mention {
     pub parent: Option<String>,
 }
 
+/// What one entrant's account says about itself, as read at week close.
+///
+/// Both fields come from a single `/2/users` lookup. `created_at` decides the
+/// age rule; `username` is what the leaderboard prints instead of a numeric id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Account {
+    /// When the account was created, seconds since the epoch.
+    pub created_at: u64,
+    /// Its handle, when the platform returned one.
+    pub username: Option<String>,
+}
+
 /// Why a call to the platform did not produce an answer.
 #[derive(Debug, thiserror::Error)]
 pub enum Unreachable {
@@ -520,7 +532,7 @@ impl X {
     #[must_use]
     pub fn accounts_url(&self, ids: &[String]) -> String {
         format!(
-            "{}/2/users?ids={}&user.fields=created_at",
+            "{}/2/users?ids={}&user.fields=created_at,username",
             self.base,
             digits_joined(ids)
         )
@@ -544,20 +556,27 @@ impl X {
         Ok(out)
     }
 
-    /// When each account was created, as seconds since the epoch, keyed by id.
+    /// What is known about each entrant's account, keyed by id.
     ///
-    /// The contest's age rule needs it (design 0007 §6.2). An account the
-    /// platform did not return is absent, and the caller treats that as an age
-    /// it could not read -- excluded as unknown, never as old enough.
+    /// The contest's age rule needs the creation time (design 0007 §6.2). An
+    /// account the platform did not return is absent, and the caller treats
+    /// that as an age it could not read -- excluded as unknown, never as old
+    /// enough.
+    ///
+    /// The handle rides along on the same call, the same page and the same
+    /// price: `user.fields` takes a list, and asking for `username` beside
+    /// `created_at` costs nothing extra. Design 0008 §5.2 asked for handles on
+    /// the leaderboard, and the alternative was a second metered call to learn
+    /// something this one was already entitled to return.
     ///
     /// # Errors
     ///
     /// [`Unreachable`] on the first page that fails.
-    pub fn accounts(&self, ids: &[String]) -> Result<BTreeMap<String, u64>, Unreachable> {
+    pub fn accounts(&self, ids: &[String]) -> Result<BTreeMap<String, Account>, Unreachable> {
         let mut out = BTreeMap::new();
         for page in ids.chunks(LOOKUP) {
             let body = self.get(&self.accounts_url(page))?;
-            out.extend(parse_created_at(&body)?);
+            out.extend(parse_accounts(&body)?);
         }
         Ok(out)
     }
@@ -625,7 +644,7 @@ pub fn parse_metrics(body: &str) -> Result<BTreeMap<String, Metrics>, Unreachabl
 ///
 /// [`Unreachable::Unreadable`] when the body is not JSON or reports an error
 /// with no data.
-pub fn parse_created_at(body: &str) -> Result<BTreeMap<String, u64>, Unreachable> {
+pub fn parse_accounts(body: &str) -> Result<BTreeMap<String, Account>, Unreachable> {
     let value: serde_json::Value = serde_json::from_str(body)
         .map_err(|e| Unreachable::Unreadable(format!("not json: {e}")))?;
     let mut out = BTreeMap::new();
@@ -644,7 +663,20 @@ pub fn parse_created_at(body: &str) -> Result<BTreeMap<String, u64>, Unreachable
         ) else {
             continue;
         };
-        out.insert(id.to_owned(), created);
+        out.insert(
+            id.to_owned(),
+            Account {
+                created_at: created,
+                // Absent rather than empty when the platform does not return
+                // one. A handle is used to build a link, and an empty string
+                // would build a link to the platform's own front page.
+                username: item
+                    .get("username")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|u| !u.is_empty())
+                    .map(str::to_owned),
+            },
+        );
     }
     Ok(out)
 }
@@ -721,7 +753,7 @@ mod tests {
         );
         assert_eq!(
             x.accounts_url(&ids),
-            "https://api.test/2/users?ids=123,45&user.fields=created_at"
+            "https://api.test/2/users?ids=123,45&user.fields=created_at,username"
         );
     }
 

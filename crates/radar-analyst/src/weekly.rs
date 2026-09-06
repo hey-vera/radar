@@ -262,6 +262,7 @@ mod tests {
                 entry: ContestEntry {
                     reply_id: "1963012345678901234".to_owned(),
                     summoner: "9001".to_owned(),
+                    handle: None,
                     mint: "MintOne".to_owned(),
                     at: WEEK.opens_at() + 10,
                     metrics: Metrics {
@@ -277,6 +278,7 @@ mod tests {
             ContestEntry {
                 reply_id: "r2".to_owned(),
                 summoner: "9002".to_owned(),
+                handle: None,
                 mint: "MintTwo".to_owned(),
                 at: WEEK.opens_at() + 20,
                 metrics: Metrics::default(),

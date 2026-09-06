@@ -31,12 +31,35 @@ pub const CLAIM_WINDOW_SECONDS: u64 = 7 * SECONDS_PER_DAY;
 /// The week's winner, as decided by the rule.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Winner {
-    /// Who.
+    /// Who, as the numeric account id a mention carries.
     pub summoner: String,
     /// The reply that won.
     pub reply_id: String,
     /// Its score.
     pub score: u64,
+    /// The handle, when the close read one.
+    ///
+    /// `Option` because it arrives from a platform call that can fail while the
+    /// rest of the close succeeds, and because every record written before
+    /// 2026-09-06 has no such field.
+    ///
+    /// `serde(default)` is **redundant on an `Option` and kept as a statement of
+    /// intent**, which is worth saying plainly because the first draft of this
+    /// comment claimed the attribute was load-bearing. It is not: serde already
+    /// maps a missing `Option` field to `None`, established by probe rather than
+    /// recalled. What it buys is a visible marker that this field is expected to
+    /// be absent in older records, and it starts mattering the day somebody
+    /// changes the type to a bare `String`.
+    ///
+    /// The hazard it marks is real, and it is finding S11: [`records_in`] skips
+    /// a file it cannot parse, without warning and without failing, so a
+    /// **required** field added to a record would make old weeks vanish from the
+    /// leaderboard and from the cooldown that reads them — quietly freeing a
+    /// past winner to win again. The test named
+    /// `the_record_production_wrote_before_these_fields_existed_still_parses` is
+    /// the enforcement; this attribute is only the note.
+    #[serde(default)]
+    pub handle: Option<String>,
 }
 
 /// The address the winner asked to be paid at, and the reply that said so.
@@ -140,6 +163,22 @@ pub struct Record {
     pub ranking: Ranking,
     /// The winner, if anything counted.
     pub winner: Option<Winner>,
+    /// The post the winner must reply to in order to claim.
+    ///
+    /// Written back after the week closes, once the account has posted it under
+    /// its own winning reply (design 0007 §6.2). `None` means the prompt has not
+    /// been posted — in a dry run it never is, and no claim can be made, which
+    /// is correct, because no winning reply was published for anyone to see
+    /// either.
+    ///
+    /// **This field is what stops a coin's mint address being paid the prize.**
+    /// Before it existed, `try_claim` accepted any mint-shaped string in any
+    /// mention by the winner inside the claim window, and a mint is such a
+    /// string — so a winner who summoned the bot about a coin during their own
+    /// claim week had that coin's mint recorded as their payout address, and
+    /// `Payout::permitted` would have approved paying it. See `try_claim`.
+    #[serde(default)]
+    pub claim_prompt: Option<String>,
     /// The winner's claim, once made.
     pub claim: Option<Claim>,
     /// The payment, once made.
@@ -154,6 +193,7 @@ impl Record {
             summoner: r.entry.summoner.clone(),
             reply_id: r.entry.reply_id.clone(),
             score: r.score,
+            handle: r.entry.handle.clone(),
         });
         Self {
             week,
@@ -161,6 +201,7 @@ impl Record {
             closed_at: week.closes_at(),
             ranking,
             winner,
+            claim_prompt: None,
             claim: None,
             payout: None,
         }
@@ -307,6 +348,7 @@ mod tests {
                 entry: Entry {
                     reply_id: "r1".to_owned(),
                     summoner: "alice".to_owned(),
+                    handle: Some("alice_h".to_owned()),
                     mint: "M".to_owned(),
                     at: WEEK.opens_at() + 10,
                     metrics: Metrics {
@@ -338,7 +380,10 @@ mod tests {
             Some(Winner {
                 summoner: "alice".to_owned(),
                 reply_id: "r1".to_owned(),
-                score: 4
+                score: 4,
+                // Carried from the entry, so the leaderboard can print a name
+                // rather than a numeric id.
+                handle: Some("alice_h".to_owned()),
             })
         );
         assert_eq!(record.opened_at, WEEK.opens_at());
@@ -455,6 +500,7 @@ mod tests {
             Entry {
                 reply_id: "r9".to_owned(),
                 summoner: "radar".to_owned(),
+                handle: None,
                 mint: "M".to_owned(),
                 at: WEEK.opens_at() + 5,
                 metrics: Metrics::default(),
@@ -472,5 +518,60 @@ mod tests {
 
         // Half a file is not evidence.
         assert!(Record::from_json(&json[..json.len() / 2]).is_err());
+    }
+    #[test]
+    fn the_record_production_wrote_before_these_fields_existed_still_parses() {
+        // The exact bytes of `~/radar/data/contest/2956.json`, read off the
+        // production box on 2026-09-06. It was written before `claim_prompt`
+        // and `handle` existed, and it is the only closed week there is.
+        //
+        // This is the S11 regression and the failure it guards against is
+        // silent. `records_in` SKIPS a file it cannot parse -- it does not warn
+        // and it does not fail -- so a *required* field added to this struct
+        // would make old weeks disappear from the leaderboard and, worse, from
+        // the cooldown that reads every earlier record to decide who is still
+        // serving one. A past winner would quietly become eligible again.
+        //
+        // Re-applied and confirmed: adding a required `probe_required: u64` to
+        // `Record` fails exactly this test with
+        // `missing field `probe_required``, 28 passed and 1 failed, while
+        // nothing else in the crate notices.
+        //
+        // Deleting the `#[serde(default)]` above does NOT fail it, and finding
+        // that out beat assuming it: serde already maps a missing `Option`
+        // field to `None`. The attribute is a note about intent. This test is
+        // the enforcement.
+        const AS_PRODUCTION_WROTE_IT: &str = r#"{
+  "week": 2956,
+  "opened_at": 1787529600,
+  "closed_at": 1788134400,
+  "ranking": {
+    "ranked": [],
+    "excluded": []
+  },
+  "winner": null,
+  "claim": null,
+  "payout": null
+}"#;
+        let record = Record::from_json(AS_PRODUCTION_WROTE_IT)
+            .expect("a record written before the new fields existed still parses");
+        assert_eq!(record.week, Week(2956));
+        assert_eq!(record.opened_at, 1_787_529_600);
+        assert_eq!(record.closed_at, 1_788_134_400);
+        assert!(record.winner.is_none());
+        // Absent, and absent is the value that lets no claim through.
+        assert!(record.claim_prompt.is_none());
+    }
+
+    #[test]
+    fn an_entry_written_before_handles_existed_still_parses() {
+        // The same guarantee one level down. An entry is nested inside a
+        // record, so a required field added here takes the whole week with it.
+        let entry: crate::score::Entry = serde_json::from_str(
+            r#"{"reply_id":"r1","summoner":"123","mint":"M","at":10,
+                "metrics":{"reposts":0,"quotes":0,"likes":0,"replies":0}}"#,
+        )
+        .expect("an entry without a handle parses");
+        assert_eq!(entry.handle, None);
     }
 }

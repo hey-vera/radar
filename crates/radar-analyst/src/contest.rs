@@ -103,8 +103,12 @@ pub struct Inputs<'a> {
     pub previous: &'a [Record],
     /// Public metrics by reply id, as read at close.
     pub metrics: &'a BTreeMap<String, Metrics>,
-    /// Account creation times by summoner id, as read at close.
-    pub created_at: &'a BTreeMap<String, u64>,
+    /// What each entrant's account says about itself, as read at close.
+    ///
+    /// Was a map of creation times alone. It carries the handle now too,
+    /// because both arrive from one `/2/users` call and printing a numeric id
+    /// on the leaderboard as though it were a handle was finding S4.
+    pub accounts: &'a BTreeMap<String, crate::x::Account>,
     /// The published rule.
     pub rules: &'a Rules,
 }
@@ -123,6 +127,13 @@ pub fn close(inputs: &Inputs<'_>) -> Record {
         let entry = |metrics| ContestEntry {
             reply_id: reply_id.clone(),
             summoner: e.summoner.clone(),
+            // Absent when the account lookup did not return this entrant, and
+            // absent is rendered as the id-based link rather than as a blank
+            // name.
+            handle: inputs
+                .accounts
+                .get(&e.summoner)
+                .and_then(|a| a.username.clone()),
             mint: mint.clone(),
             at: e.at,
             metrics,
@@ -139,8 +150,9 @@ pub fn close(inputs: &Inputs<'_>) -> Record {
         .map(|s| {
             let standing = Standing {
                 // Whole days at close; an account made this week is 0 days old.
-                account_age_days: inputs.created_at.get(s).map(|created| {
-                    u32::try_from(closes_at.saturating_sub(*created) / 86_400).unwrap_or(u32::MAX)
+                account_age_days: inputs.accounts.get(s).map(|a| {
+                    u32::try_from(closes_at.saturating_sub(a.created_at) / 86_400)
+                        .unwrap_or(u32::MAX)
                 }),
                 refused_this_week: inputs
                     .refusals
@@ -196,6 +208,29 @@ pub fn sightings(log: &[Entry], week: Week) -> Vec<Sighting> {
 /// visible "no record" rather than a silent second claim.
 #[must_use]
 pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week> {
+    // A claim is a reply to the account's own claim prompt. Nothing else is a
+    // claim, however it is worded and whatever address it contains.
+    //
+    // Before that rule existed, `try_claim` accepted any mint-shaped string in
+    // any mention by the winner inside their claim window -- and a coin's mint
+    // address is exactly that shape, 32 bytes of base58, indistinguishable from
+    // a wallet by looking at it. A winner who summoned the bot about a coin
+    // during their own claim week had that coin's mint written in as their
+    // payout address, and `Payout::permitted` would have approved the transfer,
+    // because the recipient really did equal the claim. The prize would have
+    // gone to a mint account nobody controls.
+    //
+    // **The guarantee is the `claim_prompt` equality in the predicate below**,
+    // not this line. Established by re-applying each separately: deleting that
+    // condition fails two tests by name; weakening this `?` to an empty default
+    // fails nothing, because an empty parent still does not equal a prompt id.
+    //
+    // This line is a cheap early return and is honest about being one. A
+    // mention that replies to nothing cannot be a claim, and that is most
+    // mentions -- so it saves the directory listing below on the common path,
+    // which is finding S5.
+    let parent = mention.parent.as_deref()?;
+
     let crate::mention::Asked::Mint(address) = crate::mention::read(&mention.text) else {
         return None;
     };
@@ -205,8 +240,23 @@ pub fn try_claim(mention: &Mention, contest_dir: &str, now: u64) -> Option<Week>
     let mut record = radar_contest::records_in(std::path::Path::new(contest_dir))
         .into_iter()
         .find(|r| {
+            // `claim_prompt` must be present AND must be what was replied to.
+            //
+            // Deliberately strict. Design 0007 §6.2 also allows a reply under
+            // the *winning reply* to count when the prompt failed to post, and
+            // that is rejected here: a winner replying "now do this one" with a
+            // new coin under their own winning reply is an ordinary summons,
+            // and treating it as a claim would reopen the exact hole this
+            // function was fixed to close.
+            //
+            // The cost of strictness is a week whose prompt never posted being
+            // unclaimable, and that is bounded and recoverable -- the daemon
+            // retries the prompt on every tick while the window is open, and an
+            // unclaimed pool rolls into the next week rather than being lost. A
+            // prize paid to a mint account is not recoverable at all.
             r.claim.is_none()
                 && r.accepts_claim_at(now)
+                && r.claim_prompt.as_deref() == Some(parent)
                 && r.winner
                     .as_ref()
                     .is_some_and(|w| w.summoner == mention.author)
@@ -283,7 +333,7 @@ pub fn close_if_due(
     let log = crate::log::latest(&paths.log).unwrap_or_default();
     let entries = entries_in(&log, week);
 
-    let (metrics, created_at) = if entries.is_empty() {
+    let (metrics, accounts) = if entries.is_empty() {
         (BTreeMap::new(), BTreeMap::new())
     } else {
         let Some(x) = x else {
@@ -303,14 +353,14 @@ pub fn close_if_due(
                 return Ok(None);
             }
         };
-        let created = match x.accounts(&summoners.into_iter().collect::<Vec<_>>()) {
+        let accounts = match x.accounts(&summoners.into_iter().collect::<Vec<_>>()) {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("radar-analyst: cannot read the entrants' accounts: {e}; not closing");
                 return Ok(None);
             }
         };
-        (metrics, created)
+        (metrics, accounts)
     };
 
     let refusals = read_refusals(&paths.refusals);
@@ -321,7 +371,7 @@ pub fn close_if_due(
         refusals: &refusals,
         previous: &previous,
         metrics: &metrics,
-        created_at: &created_at,
+        accounts: &accounts,
         rules,
     });
 
@@ -373,6 +423,18 @@ mod tests {
         WEEK.closes_at() - days_before_close * 86_400
     }
 
+    /// An account of the given age, with no handle.
+    ///
+    /// No handle by default because that is the case the leaderboard has to
+    /// keep rendering: the lookup can return a user without one, and the page
+    /// falls back to the id-based link rather than printing a blank name.
+    fn account(days_before_close: u64) -> crate::x::Account {
+        crate::x::Account {
+            created_at: created(days_before_close),
+            username: None,
+        }
+    }
+
     #[test]
     fn only_published_replies_with_a_mint_in_the_week_are_entries() {
         let open = WEEK.opens_at();
@@ -420,11 +482,11 @@ mod tests {
         ]
         .into_iter()
         .collect();
-        let created_at: BTreeMap<String, u64> = [
-            ("alice".to_owned(), created(400)),
-            ("bob".to_owned(), created(400)),
-            ("carol".to_owned(), created(400)),
-            ("dan".to_owned(), created(400)),
+        let accounts: BTreeMap<String, crate::x::Account> = [
+            ("alice".to_owned(), account(400)),
+            ("bob".to_owned(), account(400)),
+            ("carol".to_owned(), account(400)),
+            ("dan".to_owned(), account(400)),
         ]
         .into_iter()
         .collect();
@@ -438,6 +500,7 @@ mod tests {
             summoner: "dan".to_owned(),
             reply_id: "old".to_owned(),
             score: 9,
+            handle: None,
         });
         let rules = Rules::published("radar");
         let record = close(&Inputs {
@@ -446,7 +509,7 @@ mod tests {
             refusals: &refusals,
             previous: &[last_week],
             metrics: &metrics,
-            created_at: &created_at,
+            accounts: &accounts,
             rules: &rules,
         });
 
@@ -486,8 +549,8 @@ mod tests {
         let metrics: BTreeMap<String, Metrics> = [("ra".to_owned(), Metrics::default())]
             .into_iter()
             .collect();
-        let created_at: BTreeMap<String, u64> =
-            [("alice".to_owned(), created(100))].into_iter().collect();
+        let accounts: BTreeMap<String, crate::x::Account> =
+            [("alice".to_owned(), account(100))].into_iter().collect();
         let refusals = vec![RefusalLine {
             at: WEEK.opens_at() - 1,
             summoner: "alice".to_owned(),
@@ -500,7 +563,7 @@ mod tests {
             refusals: &refusals,
             previous: &[],
             metrics: &metrics,
-            created_at: &created_at,
+            accounts: &accounts,
             rules: &rules,
         });
         assert_eq!(
@@ -518,10 +581,15 @@ mod tests {
             let metrics: BTreeMap<String, Metrics> = [("ra".to_owned(), Metrics::default())]
                 .into_iter()
                 .collect();
-            let created_at: BTreeMap<String, u64> =
-                [("alice".to_owned(), WEEK.closes_at() - secs_before_close)]
-                    .into_iter()
-                    .collect();
+            let accounts: BTreeMap<String, crate::x::Account> = [(
+                "alice".to_owned(),
+                crate::x::Account {
+                    created_at: WEEK.closes_at() - secs_before_close,
+                    username: None,
+                },
+            )]
+            .into_iter()
+            .collect();
             let rules = Rules::published("radar");
             let record = close(&Inputs {
                 week: WEEK,
@@ -529,7 +597,7 @@ mod tests {
                 refusals: &[],
                 previous: &[],
                 metrics: &metrics,
-                created_at: &created_at,
+                accounts: &accounts,
                 rules: &rules,
             });
             assert_eq!(
@@ -581,13 +649,19 @@ mod tests {
     }
 
     #[test]
-    fn a_winners_address_inside_the_window_is_a_claim_and_everything_else_is_a_summons() {
-        // The winner names an address within seven days of close: written into
-        // the record, and the mention is not answered. Somebody else naming an
-        // address, the winner naming nothing, the winner after the window, and
-        // a second claim are all summonses. Re-applied by dropping
-        // `accepts_claim_at`: the late claim is recorded and the fourth
-        // assertion fails.
+    fn a_reply_to_the_claim_prompt_is_a_claim_and_everything_else_is_a_summons() {
+        // The winner replies to the account's claim prompt with an address:
+        // written into the record, and the mention is not answered. Everything
+        // else is a summons -- somebody else replying to the prompt, the winner
+        // replying with no address, the winner after the window, a second
+        // claim, and, THE ONE THIS FUNCTION WAS FIXED FOR, the winner summoning
+        // the bot about a coin during their own claim week.
+        //
+        // Re-applied: drop the `claim_prompt` condition from the predicate and
+        // `a_summons_naming_a_mint` below is recorded as a claim -- the coin's
+        // mint address becomes the winner's payout address, and the payout
+        // policy approves it, because the recipient really does equal the
+        // claim. Drop `accepts_claim_at` and the late claim is recorded.
         let dir = std::env::temp_dir().join(format!("radar-claim-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("mkdir");
@@ -597,30 +671,78 @@ mod tests {
             summoner: "alice".to_owned(),
             reply_id: "r1".to_owned(),
             score: 3,
+            handle: None,
         });
+        record.claim_prompt = Some("prompt-1".to_owned());
         write_atomically(&record_path(&dir, WEEK), &record.to_json().expect("json"))
             .expect("write");
         let address = radar_types::Address::new([5u8; 32]).to_string();
-        let mention = |author: &str, text: &str| Mention {
+        let under = |author: &str, text: &str, parent: Option<&str>| Mention {
             id: format!("m-{author}"),
             author: author.to_owned(),
             text: text.to_owned(),
-            parent: None,
+            parent: parent.map(str::to_owned),
         };
         let inside = WEEK.closes_at() + 3_600;
         let late = record.claim_window_closes_at();
 
+        // Somebody else, replying to the prompt.
         assert_eq!(
-            try_claim(&mention("bob", &format!("pay me {address}")), &dir, inside),
+            try_claim(
+                &under("bob", &format!("pay me {address}"), Some("prompt-1")),
+                &dir,
+                inside
+            ),
             None
         );
-        assert_eq!(try_claim(&mention("alice", "thanks!"), &dir, inside), None);
+        // The winner, replying to the prompt with no address in it.
         assert_eq!(
-            try_claim(&mention("alice", &format!("here {address}")), &dir, late),
+            try_claim(&under("alice", "thanks!", Some("prompt-1")), &dir, inside),
             None
         );
+        // The winner, too late.
         assert_eq!(
-            try_claim(&mention("alice", &format!("here {address}")), &dir, inside),
+            try_claim(
+                &under("alice", &format!("here {address}"), Some("prompt-1")),
+                &dir,
+                late
+            ),
+            None
+        );
+
+        // THE MINT CASE. The winner summons the bot about a coin during their
+        // claim week. A mint is 32 bytes of base58 and so is a wallet, so the
+        // text alone cannot tell them apart -- only the post being replied to
+        // can. This is a top-level mention with no parent at all.
+        let a_summons_naming_a_mint = under("alice", "@radar what is HWvHqvfF...pump", None);
+        assert_eq!(
+            try_claim(&a_summons_naming_a_mint, &dir, inside),
+            None,
+            "a summons is not a claim, whatever address it happens to contain"
+        );
+        // And the same, replying under some unrelated post rather than the
+        // prompt -- which is how most summonses actually arrive.
+        assert_eq!(
+            try_claim(
+                &under(
+                    "alice",
+                    &format!("look at {address}"),
+                    Some("some-other-post")
+                ),
+                &dir,
+                inside
+            ),
+            None,
+            "a reply to anything but the claim prompt is not a claim"
+        );
+
+        // The real claim.
+        assert_eq!(
+            try_claim(
+                &under("alice", &format!("here {address}"), Some("prompt-1")),
+                &dir,
+                inside
+            ),
             Some(WEEK)
         );
         let saved = radar_contest::records_in(std::path::Path::new(&dir));
@@ -631,11 +753,55 @@ mod tests {
         );
         // A second address from the winner is a summons: the first claim stands.
         let other = radar_types::Address::new([6u8; 32]).to_string();
-        assert_eq!(try_claim(&mention("alice", &other), &dir, inside + 1), None);
+        assert_eq!(
+            try_claim(&under("alice", &other, Some("prompt-1")), &dir, inside + 1),
+            None
+        );
         assert_eq!(
             saved[0].claim.as_ref().map(|c| c.address.as_str()),
             Some(address.as_str())
         );
+    }
+
+    #[test]
+    fn a_week_whose_prompt_never_posted_accepts_no_claim_at_all() {
+        // `claim_prompt: None` is a week where the account never managed to
+        // post the prompt -- a dry run, or a failed post. No mention can claim
+        // it, including one that replies to the winning reply itself.
+        //
+        // Deliberate, and the safer half of a real trade-off. Design 0007 §6.2
+        // would also accept a reply under the winning reply; that is refused
+        // here because a winner replying "now do this one" with a fresh coin
+        // under their own winning reply is an ordinary summons, and reading it
+        // as a claim would reopen exactly the hole this function was fixed to
+        // close. The cost is a week that cannot be claimed until the prompt
+        // posts -- the daemon retries it every tick -- and an unclaimed pool
+        // rolls over. A prize paid to a mint account does not roll back.
+        let dir = std::env::temp_dir().join(format!("radar-noprompt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let dir = dir.to_string_lossy().into_owned();
+        let mut record = Record::close(WEEK, radar_contest::Ranking::default());
+        record.winner = Some(radar_contest::Winner {
+            summoner: "alice".to_owned(),
+            reply_id: "r1".to_owned(),
+            score: 3,
+            handle: None,
+        });
+        assert!(record.claim_prompt.is_none());
+        write_atomically(&record_path(&dir, WEEK), &record.to_json().expect("json"))
+            .expect("write");
+        let address = radar_types::Address::new([7u8; 32]).to_string();
+        let inside = WEEK.closes_at() + 3_600;
+        for parent in [None, Some("r1"), Some("anything")] {
+            let mention = Mention {
+                id: "m1".to_owned(),
+                author: "alice".to_owned(),
+                text: format!("here {address}"),
+                parent: parent.map(str::to_owned),
+            };
+            assert_eq!(try_claim(&mention, &dir, inside), None, "parent {parent:?}");
+        }
     }
 
     #[test]

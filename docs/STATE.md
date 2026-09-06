@@ -337,6 +337,24 @@ answers nothing rather than spending an unmetered amount — which is what makes
 the two unverified X billing figures a line in a config file rather than a
 blocker.
 
+**The voice, as of 2026-09-06.** "Meters what it spends" was an overclaim until
+that date: `Cost::ModelCall` was priced and never authorised, so the model call —
+the one billable thing a stranger can trigger — was the one thing the day's
+budget never saw. It is now reserved before the call and settled at what the
+provider reported, on both the X and Telegram lanes, against one budget.
+`voice::Reply` carries `Billed` rather than an optional cost, because *no call
+was made* and *a call whose cost nobody reported* settle in opposite directions
+and rule 9 is exactly that distinction.
+
+Three metered providers are compiled in and **exactly one may be configured**;
+two is refused at start-up with both named. `RADAR_MODEL_OPENAI_KEY` speaks Chat
+Completions, `RADAR_MODEL_API_KEY` speaks Anthropic's Messages shape
+(`claude-sonnet-5` and its siblings), and `RADAR_MODEL_CODEX` is the
+subscription CLI, private use only and not for this account. The endpoint, the
+model name and the two prices are shared, so moving between vendors is an env
+edit and a restart. **No key is on the box yet**, so every reply in the log is
+still the deterministic template.
+
 Three properties are load-bearing and each is pinned by a test that was verified
 by re-applying the bug it prevents:
 

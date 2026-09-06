@@ -295,6 +295,28 @@ exclude_re = [
     # lines first and confirm the probe kills them.
     'replace untracked_documents -> Vec<String> with vec!\[\]',
     'delete ! in untracked_documents',
+
+    # `edge::search`: the two `skip` offsets that walk the mask list.
+    #
+    # Equivalent, and the reason is the same for both. `skip(i + 1)` mutated to
+    # `skip(i * 1)` lets the inner loop's candidate be the outer loop's own
+    # term; `skip(j + 1)` mutated the same way lets the third term be the
+    # second. In both cases the extra candidate shares a feature with the term
+    # it repeats, and the very next line refuses a conjunction with two terms on
+    # one feature -- so the loop reaches the same set of strata by a slightly
+    # longer route.
+    #
+    # Checked by hand against `the_enumeration_is_exactly_the_conjunctions_the_grammar_allows`,
+    # which pins the count at eleven for a grammar built to distinguish these:
+    # both offsets produce eleven, while the floor comparisons, the feature
+    # guards and the third term's starting point each produce a different
+    # number. That test is the evidence these two are the only equivalent ones
+    # in the loop.
+    #
+    # The pattern is exact rather than broad: `search` contains three additions,
+    # and the third is `*tried += 1`, whose mutants are named `replace += with
+    # *=` and do not match this.
+    'replace \+ with \* in search',
 ]
 
 # A note on what does NOT belong here, learned on 2026-09-03 and worth the four

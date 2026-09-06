@@ -653,18 +653,22 @@ fn grammar(points: &[Point], fit: &[usize], width: usize) -> Vec<Term> {
             continue;
         }
         values.sort_by(f64::total_cmp);
-        let mut seen: Vec<f64> = Vec::new();
+        let mut seen: Vec<u64> = Vec::new();
         for decile in 1..10usize {
             let index = values.len() * decile / 10;
             let Some(threshold) = values.get(index).copied() else {
                 continue;
             };
             // A constant feature has nine identical deciles, and nine copies of
-            // one term is nine times the work for one answer.
-            if seen.iter().any(|s| (s - threshold).abs() < f64::EPSILON) {
+            // one term is nine times the work for one answer. Compared by bits
+            // rather than within an epsilon: every threshold here *is* a value
+            // some row held, so two deciles are either the same reading or two
+            // different ones, and a tolerance would quietly merge two thresholds
+            // a hair apart into one statement.
+            if seen.contains(&threshold.to_bits()) {
                 continue;
             }
-            seen.push(threshold);
+            seen.push(threshold.to_bits());
             terms.push(Term {
                 feature,
                 at_least: true,
@@ -1116,6 +1120,292 @@ mod tests {
     }
 
     #[test]
+    fn a_stratum_reads_the_feature_its_term_names_and_not_the_planted_column() {
+        // The other side of the index test above. A term on a real feature must
+        // read that feature: reading the planted noise instead would make every
+        // stratum a statement about a random number, and it would still look
+        // like a stratum.
+        let mut values = vec![None; FEATURES.len()];
+        values[0] = Some(1.0);
+        let row = Row {
+            mint: Address::new([9; 32]),
+            creator: Address::new([1; 32]),
+            launch_slot: Slot(1),
+            t: Slot(6_001),
+            values,
+            gross_6h_bps: None,
+            gross_24h_bps: None,
+            mode: None,
+        };
+        let real = Stratum::named(
+            "real",
+            vec![Term {
+                feature: 0,
+                at_least: true,
+                threshold: 5.0,
+            }],
+        );
+        assert!(
+            !real.admits(&row, Some(9.0)),
+            "the feature is 1.0 and the noise is 9.0; the term is about the feature"
+        );
+    }
+
+    #[test]
+    fn the_last_window_reaches_the_last_row_even_when_the_rows_do_not_divide() {
+        // 503 rows into five windows is 100 apiece with three left over, and
+        // the last window has to carry them. Computing its end the way the
+        // others are computed would drop the final three rows from the protocol
+        // entirely, silently.
+        let points: Vec<Point> = (0..503u64)
+            .map(|i| point(i * 10, Vec::new(), 0.0, 0.0))
+            .collect();
+        let windows = split(&points);
+
+        assert_eq!(
+            windows.last().copied(),
+            Some((Slot(4_000), Slot(5_020))),
+            "the last window ends at the last row, not at its own hundredth"
+        );
+        assert_eq!(windows[0], (Slot(0), Slot(990)));
+    }
+
+    #[test]
+    fn a_fitting_window_reports_only_the_rows_inside_it() {
+        // The window filter is an `and`. As an `or` every window would report
+        // every fitting row, because each row is either at or after one edge or
+        // at or before the other.
+        let rates = rates();
+        let table = table_of(FOLDS * MIN_ROWS * 4 + 1, |i| {
+            #[expect(clippy::cast_precision_loss, reason = "a small index")]
+            let v = (i % 7) as f64 * 100.0;
+            v
+        });
+        let report = run(&table, &rates, &Options::default()).expect("runs");
+
+        let fitting: usize = report.folds[..FIT_FOLDS].iter().map(|f| f.rows).sum();
+        for fold in &report.folds[..FIT_FOLDS] {
+            assert!(
+                fold.rows < fitting,
+                "one window reported the whole fitting period: {:?}",
+                report.folds
+            );
+        }
+
+        // The two test folds are different windows and must be read as such: a
+        // row count taken from the wrong one would report a fold that was never
+        // measured.
+        assert_ne!(
+            report.folds[FIT_FOLDS].rows,
+            report.folds[FIT_FOLDS + 1].rows,
+            "this table's last window is one row longer, so the two differ"
+        );
+    }
+
+    #[test]
+    fn the_planted_seed_widens_the_grammar_by_exactly_one_feature() {
+        // The noise column has to reach the grammar, or the planted test is a
+        // run with nothing planted in it -- which would pass, every time,
+        // proving nothing.
+        let rates = rates();
+        let mut table = table_of(FOLDS * MIN_ROWS * 2, |i| {
+            #[expect(clippy::cast_precision_loss, reason = "a small index")]
+            let v = (i % 7) as f64 * 100.0;
+            v
+        });
+        // A value in the last real feature as well, so a grammar one column too
+        // narrow is visible too.
+        for (index, row) in table.rows.iter_mut().enumerate() {
+            #[expect(clippy::cast_precision_loss, reason = "a small index")]
+            let v = (index % 3) as f64;
+            let last = FEATURES.len() - 1;
+            row.values[last] = Some(v);
+        }
+
+        let plain = run(&table, &rates, &Options::default()).expect("runs");
+        let planted = run(
+            &table,
+            &rates,
+            &Options {
+                noise_seed: Some(1),
+                ..Options::default()
+            },
+        )
+        .expect("runs");
+
+        assert!(
+            planted.strata_tried > plain.strata_tried,
+            "planting a column must add strata: {} against {}",
+            planted.strata_tried,
+            plain.strata_tried
+        );
+    }
+
+    #[test]
+    fn the_enumeration_is_exactly_the_conjunctions_the_grammar_allows() {
+        // Every rule of the loop, pinned as one number. Five terms over four
+        // features -- the first and the last share one -- with thresholds
+        // chosen so that three pairs land exactly on the floor:
+        //
+        //   singles                                        4 (one term is
+        //                                                     below the floor)
+        //   pairs, features differing                      5
+        //   triples, third past the second, features apart 2
+        //                                                 --
+        //                                                 11
+        //
+        // A floor applied with `<=` drops the three pairs on it and the triples
+        // under them; a third term taken from past the *first* enumerates two
+        // of these twice; an `and` between the two feature guards admits a
+        // conjunction with two terms on one feature. Each shows up here as a
+        // different number.
+        let points: Vec<Point> = (0..300u64)
+            .map(|i| {
+                #[expect(clippy::cast_precision_loss, reason = "a small index")]
+                let v = i as f64;
+                point(i, vec![Some(v), Some(v), Some(v), Some(v)], v, 0.0)
+            })
+            .collect();
+        let rows: Vec<usize> = (0..points.len()).collect();
+        let terms = vec![
+            Term {
+                feature: 0,
+                at_least: true,
+                threshold: 100.0,
+            },
+            Term {
+                feature: 1,
+                at_least: true,
+                threshold: 150.0,
+            },
+            Term {
+                feature: 2,
+                at_least: true,
+                threshold: 200.0,
+            },
+            Term {
+                feature: 3,
+                at_least: true,
+                threshold: 250.0,
+            },
+            Term {
+                feature: 0,
+                at_least: true,
+                threshold: 120.0,
+            },
+        ];
+
+        let (_, tried, enumeration) = search(&points, &rows, &terms, 0.0, 100, 10_000);
+        assert_eq!(enumeration, Enumeration::Exhaustive);
+        assert_eq!(tried, 11, "the grammar allows exactly eleven here");
+    }
+
+    #[test]
+    fn a_clearly_better_incumbent_is_kept_however_sure_the_candidate_looks() {
+        // The second comparison, which no test reached: the incumbent is better
+        // by more than the noise, so nothing below it is consulted. Without it
+        // a candidate with a higher Wilson bound would displace a stratum whose
+        // median is plainly better.
+        let held_stratum = Stratum::named(
+            "held",
+            vec![
+                Term {
+                    feature: 0,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 1,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 2,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+            ],
+        );
+        let held = Reading {
+            n: 400,
+            median_gross: 400.0,
+            median_net: 150.0,
+            positive: 300,
+            wilson_lower: 0.70,
+            se_median: 2.0,
+        };
+        let worse = Reading {
+            median_net: 100.0,
+            se_median: 1.0,
+            wilson_lower: 0.99,
+            ..held
+        };
+        assert!(
+            !prefer(&worse, 1, Some(&(held_stratum.clone(), held))),
+            "fifty basis points worse against a noise of two is worse, and the \
+             Wilson bound does not get a say"
+        );
+
+        // The boundary, in the same direction as the first comparison's: worse
+        // by exactly the noise is not worse.
+        let exactly = Reading {
+            median_net: 148.0,
+            se_median: 2.0,
+            wilson_lower: 0.99,
+            ..held
+        };
+        assert!(
+            prefer(&exactly, 1, Some(&(held_stratum, held))),
+            "exactly one standard error worse has not been shown to be worse, \
+             so the Wilson bound decides and the candidate is surer"
+        );
+    }
+
+    #[test]
+    fn a_less_sure_candidate_loses_even_when_it_is_simpler() {
+        // The fourth comparison. Simplicity breaks a tie on the bound; it does
+        // not overrule one. A one-term stratum whose rows paid less often than
+        // a three-term stratum's is not the better statement.
+        let held_stratum = Stratum::named(
+            "held",
+            vec![
+                Term {
+                    feature: 0,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 1,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+                Term {
+                    feature: 2,
+                    at_least: true,
+                    threshold: 1.0,
+                },
+            ],
+        );
+        let held = Reading {
+            n: 400,
+            median_gross: 1_000.0,
+            median_net: 750.0,
+            positive: 300,
+            wilson_lower: 0.70,
+            se_median: 40.0,
+        };
+        let simpler_but_less_sure = Reading {
+            wilson_lower: 0.60,
+            ..held
+        };
+        assert!(!prefer(
+            &simpler_but_less_sure,
+            1,
+            Some(&(held_stratum, held))
+        ));
+    }
+
+    #[test]
     fn the_intersection_is_an_and_and_counts_what_survives_it() {
         // A conjunction is this and nothing else. An `or` here would make every
         // three-term stratum wider than its terms, and a reading over the wrong
@@ -1246,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_are_the_exact_slices_the_folds_report() {
+    fn the_windows_are_contiguous_equal_slices_in_launch_order() {
         // Off by one in either edge shifts every fold boundary, which shifts
         // the purge and the embargo with it.
         let points: Vec<Point> = (0..500u64)

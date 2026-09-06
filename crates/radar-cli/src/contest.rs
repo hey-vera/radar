@@ -76,8 +76,20 @@ pub fn run(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
+        Some("void") => {
+            let reason = crate::flag(args, "--reason")
+                .ok_or("--reason <words> is required, and it is published verbatim")?;
+            let record = radar_analyst::contest::void_week(&contest_dir, week, &reason, now)?;
+            let voided = record.voided.as_ref().ok_or("the week was not voided")?;
+            println!(
+                "week {}: voided, pays nobody, the pool rolls over.
+reason, published verbatim: {}",
+                week.0, voided.reason
+            );
+            Ok(())
+        }
         _ => Err(
-            "radar contest <pay --dry-run | record-payout --signature <sig>> --week <n> --creator <address> --rpc <url>"
+            "radar contest <pay --dry-run | record-payout --signature <sig> | void --reason <words>> --week <n> --creator <address> --rpc <url>"
                 .to_owned(),
         ),
     }

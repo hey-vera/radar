@@ -29,7 +29,7 @@ use std::io::Write as _;
 
 use radar_contest::hunter::{Placing, Sighting, tally};
 use radar_contest::{
-    Entry as ContestEntry, Excluded, Metrics, Record, Rules, Standing, Verified, Week, rank,
+    Entry as ContestEntry, Excluded, Metrics, Record, Rules, Standing, Verified, Voided, Week, rank,
 };
 use serde::{Deserialize, Serialize};
 
@@ -634,6 +634,49 @@ pub fn close_if_due(
     Ok(Some(record))
 }
 
+/// Marks a week as voided, or says why it cannot be.
+///
+/// # Errors
+///
+/// The week has no record, the record will not read or write, the reason is
+/// empty, or the week has already been paid or voided.
+pub fn void_week(contest_dir: &str, week: Week, reason: &str, now: u64) -> Result<Record, String> {
+    let reason = reason.trim();
+    if reason.is_empty() {
+        // The reason IS the mechanism. A void with no words published beside it
+        // is exactly the private correction design 0011 rejects.
+        return Err("--reason is required, and it is published verbatim".to_owned());
+    }
+    let path = record_path(contest_dir, week);
+    let text = std::fs::read_to_string(&path)
+        .map_err(|e| format!("week {} has no record at {path}: {e}", week.0))?;
+    let mut record: Record =
+        serde_json::from_str(&text).map_err(|e| format!("{path} will not read: {e}"))?;
+
+    if let Some(paid) = &record.payout {
+        // Voiding after the money left would publish a claim about a week that
+        // is not true of it. The honest correction there is a new record, not
+        // an edit to this one.
+        return Err(format!(
+            "week {} was paid under {}; voiding it now would not unpay it",
+            week.0, paid.signature
+        ));
+    }
+    if let Some(already) = &record.voided {
+        return Err(format!(
+            "week {} was already voided: {}",
+            week.0, already.reason
+        ));
+    }
+
+    record.voided = Some(Voided {
+        at: now,
+        reason: reason.to_owned(),
+    });
+    write_record(contest_dir, &record).map_err(|e| format!("cannot write {path}: {e}"))?;
+    Ok(record)
+}
+
 /// Writes one week's record back, atomically.
 ///
 /// Used after the record has already been written once and something was
@@ -1225,6 +1268,92 @@ mod tests {
         assert_eq!(why("re"), Some(Excluded::AccountAgeUnknown));
         assert_eq!(record.week, WEEK);
         assert_eq!(record.closed_at, WEEK.closes_at());
+    }
+
+    #[test]
+    fn voiding_a_week_records_the_reason_and_refuses_to_be_silent() {
+        // The reason IS the mechanism. Design 0011's argument is that an
+        // exclusion at payout is a private correction to a public error; a void
+        // with no words published beside it is exactly that, wearing a
+        // different name. So an empty reason is refused rather than defaulted.
+        //
+        // Re-apply by accepting a blank reason: a week can then be voided with
+        // nothing on the page explaining it.
+        let dir = std::env::temp_dir().join(format!("radar-void-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.to_string_lossy().into_owned();
+        let rules = Rules::published(["radar"]);
+        let record = Record::close(WEEK, radar_contest::Ranking::default(), &rules);
+        write_record(&path, &record).expect("write");
+
+        for blank in ["", "   ", "\t\n"] {
+            assert!(
+                void_week(&path, WEEK, blank, 1_788_000_000).is_err(),
+                "{blank:?} is not a reason"
+            );
+        }
+
+        let voided =
+            void_week(&path, WEEK, "  bought, six accounts  ", 1_788_000_000).expect("voided");
+        let why = voided.voided.expect("a reason");
+        assert_eq!(why.reason, "bought, six accounts", "trimmed, not mangled");
+        assert_eq!(why.at, 1_788_000_000);
+
+        // It is on disk, not only in the returned value.
+        let reread = radar_contest::records_in(std::path::Path::new(&path));
+        assert_eq!(
+            reread[0].voided.as_ref().expect("persisted").reason,
+            "bought, six accounts"
+        );
+    }
+
+    #[test]
+    fn a_week_cannot_be_voided_twice_or_after_it_was_paid() {
+        // Both refusals name what happened rather than saying no. An operator
+        // reaching for this is already having a bad week.
+        let dir = std::env::temp_dir().join(format!("radar-void2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.to_string_lossy().into_owned();
+        let rules = Rules::published(["radar"]);
+        write_record(
+            &path,
+            &Record::close(WEEK, radar_contest::Ranking::default(), &rules),
+        )
+        .expect("write");
+
+        void_week(&path, WEEK, "first reason", 1).expect("voided");
+        let twice = void_week(&path, WEEK, "second reason", 2).expect_err("already voided");
+        assert!(twice.contains("first reason"), "{twice}");
+
+        // A week with no record at all is a different failure and says so.
+        let missing = void_week(&path, Week(WEEK.0 + 9), "whatever", 3).expect_err("no record");
+        assert!(missing.contains("no record"), "{missing}");
+    }
+
+    #[test]
+    fn voiding_a_paid_week_is_refused_because_it_would_not_unpay_it() {
+        // The one case where the file cannot be the truth. Editing a record
+        // after the money left would publish a claim that is not true of the
+        // week, and the honest correction is a new record rather than an edit.
+        let dir = std::env::temp_dir().join(format!("radar-void3-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.to_string_lossy().into_owned();
+        let rules = Rules::published(["radar"]);
+        let mut record = Record::close(WEEK, radar_contest::Ranking::default(), &rules);
+        record.payout = Some(radar_contest::Payout {
+            recipient: "somebody".to_owned(),
+            lamports: 10,
+            signature: "the-signature".to_owned(),
+            at: 5,
+        });
+        write_record(&path, &record).expect("write");
+
+        let why = void_week(&path, WEEK, "too late", 6).expect_err("already paid");
+        assert!(why.contains("the-signature"), "{why}");
+        assert!(why.contains("would not unpay"), "{why}");
     }
 
     #[test]

@@ -704,20 +704,39 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
 /// account id is a number and a handle pasted here would silently never match
 /// the `summoner` field, which carries an id.
 fn operator_ids(x: Option<&X>) -> Vec<String> {
-    let mut ids = vec![x.map_or_else(|| "radar".to_owned(), |x| x.user_id().to_owned())];
-    if let Ok(listed) = std::env::var("RADAR_CONTEST_OPERATORS") {
-        ids.extend(
-            listed
-                .split(',')
-                .map(|id| {
-                    id.trim()
-                        .chars()
-                        .filter(char::is_ascii_digit)
-                        .collect::<String>()
-                })
-                .filter(|id| !id.is_empty()),
-        );
-    }
+    let own = x.map_or_else(|| "radar".to_owned(), |x| x.user_id().to_owned());
+    operator_ids_from(
+        &own,
+        std::env::var("RADAR_CONTEST_OPERATORS").ok().as_deref(),
+    )
+}
+
+/// The same, with the listed value supplied rather than read.
+///
+/// Split out so the rule can be tested without setting a process-wide variable
+/// — the pattern `Paths::from_vars` already uses, for the same reason.
+#[must_use]
+fn operator_ids_from(own: &str, listed: Option<&str>) -> Vec<String> {
+    let mut ids = vec![own.to_owned()];
+    let Some(listed) = listed else {
+        return ids;
+    };
+    ids.extend(
+        listed
+            .split(',')
+            .map(|id| {
+                id.trim()
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>()
+            })
+            // An empty id is what a stray comma, a blank entry or a pasted
+            // handle collapses to, and an empty string in the set would make
+            // `is_operator("")` true. No summoner is empty today, so this is
+            // belt and braces — but the belt costs one `!`, and the failure it
+            // prevents is an entrant silently excluded from a prize.
+            .filter(|id| !id.is_empty()),
+    );
     ids
 }
 
@@ -871,6 +890,36 @@ pub fn tick(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_operator_set_always_holds_the_bots_own_id_and_drops_empty_ones() {
+        use super::operator_ids_from;
+
+        // Unset: the bot is still excluded. This ordering is the point -- a
+        // missing variable must never make the bot eligible for its own prize.
+        assert_eq!(operator_ids_from("111", None), vec!["111".to_owned()]);
+
+        // Listed ids are additive.
+        assert_eq!(
+            operator_ids_from("111", Some("222,333")),
+            vec!["111".to_owned(), "222".to_owned(), "333".to_owned()]
+        );
+
+        // Whitespace and a handle pasted where an id belongs. `summoner` is a
+        // numeric id, so a handle would silently never match; it collapses to
+        // empty and is dropped rather than sitting in the set as "".
+        //
+        // Re-apply by deleting the `!` in the filter and the last assertion
+        // fails: "" enters the set and `is_operator("")` becomes true.
+        assert_eq!(
+            operator_ids_from("111", Some(" 222 , , @thecabalhunter , 333 ")),
+            vec!["111".to_owned(), "222".to_owned(), "333".to_owned()]
+        );
+        assert!(
+            !operator_ids_from("111", Some(",,")).contains(&String::new()),
+            "an empty id must never enter the set"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -1,9 +1,13 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Design 0013 — What Telegram is for, now that nothing is gated
 
-**Status:** **a recommendation, not a decision.** Josh's question, 2026-09-06,
-while being walked through wiring the lane up. The recommendation is section 5;
-the decision is his and is recorded when he makes it.
+**Status:** **decided, 2026-09-06: the lane stays off.** Josh asked the question
+in section 1 while being walked through wiring the lane up, read section 5, and
+answered "lets turn telegram off". `RADAR_TELEGRAM_BOT_TOKEN` was removed from
+`/etc/radar/analyst.env` the same day, before any restart could switch it on.
+
+Section 6 is **not** decided. Whether an X Community replaces the lane rests on
+one test nobody has run.
 
 **Supersedes nothing.** [Design 0009](0009-three-loops-and-no-formula.md) L5
 decided *what* Telegram is; this asks whether that still holds after L2, L3 and

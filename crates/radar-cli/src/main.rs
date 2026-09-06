@@ -23,6 +23,7 @@ mod edge;
 mod exits;
 mod features;
 mod graduations;
+mod model_prices;
 mod replay;
 mod roast;
 mod route;
@@ -119,6 +120,12 @@ commands:
                                  from a file: strict parse, admission gate,
                                  dossier, reply, log. Dry run -- it holds no
                                  credential and posts nothing
+  model-prices <model> [--check] | --list
+                                 what to paste into analyst.env for a model,
+                                 read from models.dev rather than typed. The
+                                 daemon never calls this: the number that
+                                 governs spending is the one in the file, and
+                                 --check reports when it has drifted
   exits --store <dir> [--cost-bps N]
                                  would a stop or a take-profit have beaten
                                  holding; reports both tie-break bounds
@@ -748,6 +755,7 @@ fn main() -> ExitCode {
         "dossier" => dossier::run(&args),
         "roast" => roast::run(&args),
         "analyst" => analyst::run(&args),
+        "model-prices" => model_prices::run(&args),
         "selection" => selection_report(&args),
         "basis" => basis_report(&args),
         "control" => control_report(&args),

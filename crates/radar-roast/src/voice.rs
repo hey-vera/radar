@@ -34,7 +34,7 @@
 //! analyst that cannot verify what it is about to say falls back to saying only
 //! what it measured.
 
-use radar_model::{Provider, Request};
+use radar_model::{Provider, Request, Unreachable};
 
 use crate::sheet::FactSheet;
 use crate::{fidelity, forbidden, render, verdict};
@@ -91,6 +91,35 @@ pub enum Fellback {
     Empty,
 }
 
+/// What the voice pass owes the meter.
+///
+/// A reservation is made **before** [`write`] runs, because the call it makes is
+/// the moment the money is spent and a ceiling checked afterwards is not a
+/// ceiling. This is what settles that reservation, and the three cases go in
+/// different directions.
+///
+/// `Option<MicroUsd>` will not do here, which is the whole reason this type
+/// exists. It cannot tell *no call was made* apart from *a call was made and the
+/// provider did not say what it cost*, and those settle opposite ways — the
+/// first gives the reservation back, the second charges it in full. That is rule
+/// 9 exactly, and collapsing it would make every unreported call free.
+///
+/// Note which side a rejected reply falls on: a fabricated figure, a forbidden
+/// claim and an unusable answer all shipped the template **after** the provider
+/// was paid, so they are billed. Only a call that never happened is not.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Billed {
+    /// Nothing reached a provider: none was configured, or none answered.
+    NoCall,
+    /// A call was answered and the provider reported what it cost.
+    Reported(radar_types::MicroUsd),
+    /// A call was answered and the provider reported no cost.
+    ///
+    /// A subscription CLI never reports one. The caller charges what it
+    /// reserved, because an unknown cost charged as zero is a free call.
+    Unreported,
+}
+
 /// A finished reply, and how it was produced.
 #[derive(Clone, Debug)]
 pub struct Reply {
@@ -103,6 +132,13 @@ pub struct Reply {
     /// tell its operator, and a silent fallback would hide the one signal that
     /// says the voice pass is drifting.
     pub fellback: Option<Fellback>,
+    /// What the model call cost, for the meter that reserved it.
+    ///
+    /// Deliberately not derived from `fellback` by the caller. `Unreachable`
+    /// alone spans both answers — a refused request cost nothing and an
+    /// unreadable one was billed — so a caller re-deriving the mapping from the
+    /// fallback reason gets that case wrong, in the direction that overspends.
+    pub billed: Billed,
 }
 
 impl Reply {
@@ -125,6 +161,7 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
         return Reply {
             text: fallback,
             fellback: Some(Fellback::NoProvider),
+            billed: Billed::NoCall,
         };
     };
 
@@ -132,12 +169,26 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
     let answer = match provider.ask(&request) {
         Ok(a) => a,
         Err(e) => {
+            // A failed call is not automatically a free one, and the four
+            // variants do not agree. No route and an outright refusal cost
+            // nothing. `Unreadable` means the provider *answered* — and
+            // therefore billed — and this end could not read it; a timeout
+            // means it may have, with the request still running after the
+            // client gave up. Rule 9: an unknown cost is charged rather than
+            // waived, because waiving is the direction that overspends the day.
+            let billed = match &e {
+                Unreachable::NoContact(_) | Unreachable::Refused { .. } => Billed::NoCall,
+                Unreachable::Unreadable(_) | Unreachable::TimedOut { .. } => Billed::Unreported,
+            };
             return Reply {
                 text: fallback,
                 fellback: Some(Fellback::Unreachable(e.to_string())),
+                billed,
             };
         }
     };
+    // Everything below here has been paid for, whatever is done with the text.
+    let billed = answer.cost.map_or(Billed::Unreported, Billed::Reported);
 
     // Cleaned **before** the checks, not after, and the ordering is the whole
     // reason `render` exists. Both checks below read the text as characters, and
@@ -150,6 +201,7 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
         return Reply {
             text: fallback,
             fellback: Some(Fellback::Empty),
+            billed,
         };
     }
 
@@ -161,6 +213,7 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
         return Reply {
             text: fallback,
             fellback: Some(Fellback::Forbidden(violations)),
+            billed,
         };
     }
     let fabricated = fidelity::check(&text, &sheet.authorised());
@@ -168,12 +221,14 @@ pub fn write(sheet: &FactSheet, provider: Option<&dyn Provider>) -> Reply {
         return Reply {
             text: fallback,
             fellback: Some(Fellback::Fabricated(fabricated)),
+            billed,
         };
     }
 
     Reply {
         text,
         fellback: None,
+        billed,
     }
 }
 
@@ -357,6 +412,115 @@ mod tests {
         let reply = write(&sheet(), Some(&Down));
         assert!(reply.is_template());
         assert!(matches!(reply.fellback, Some(Fellback::Unreachable(_))));
+    }
+
+    /// A provider that answers and reports what it charged.
+    #[derive(Debug)]
+    struct Priced(&'static str, u64);
+
+    impl Provider for Priced {
+        fn name(&self) -> &'static str {
+            "priced"
+        }
+        fn estimate(&self) -> MicroUsd {
+            MicroUsd(9_999)
+        }
+        fn ask(&self, _: &Request) -> Result<Answer, Unreachable> {
+            Ok(Answer {
+                text: self.0.to_owned(),
+                cost: Some(MicroUsd(self.1)),
+            })
+        }
+    }
+
+    /// A provider that fails in a named way.
+    #[derive(Debug)]
+    struct Fails(fn() -> Unreachable);
+
+    impl Provider for Fails {
+        fn name(&self) -> &'static str {
+            "fails"
+        }
+        fn estimate(&self) -> MicroUsd {
+            MicroUsd(0)
+        }
+        fn ask(&self, _: &Request) -> Result<Answer, Unreachable> {
+            Err(self.0())
+        }
+    }
+
+    #[test]
+    fn a_reported_cost_is_carried_to_the_meter_verbatim() {
+        let good = "11 recipients in the launch block, and the round trip runs 850 bps.";
+        let reply = write(&sheet(), Some(&Priced(good, 4_500)));
+        assert!(!reply.is_template(), "{:?}", reply.fellback);
+        assert_eq!(reply.billed, Billed::Reported(MicroUsd(4_500)));
+    }
+
+    #[test]
+    fn a_call_the_provider_did_not_price_is_billed_rather_than_free() {
+        // Rule 9, and the reason `Billed` is three cases rather than an
+        // `Option`. `Says` reports no cost, which is what a subscription CLI
+        // does. Read as zero, every call on that path is free and the day's
+        // meter never moves -- while the bill does.
+        let good = "11 recipients in the launch block, and the round trip runs 850 bps.";
+        let reply = write(&sheet(), Some(&Says(good)));
+        assert!(!reply.is_template(), "{:?}", reply.fellback);
+        assert_eq!(reply.billed, Billed::Unreported);
+    }
+
+    #[test]
+    fn a_reply_the_checks_threw_away_was_still_paid_for() {
+        // The case a caller inferring from `fellback` gets wrong. The template
+        // shipped, so nothing the reader sees came from the model -- and the
+        // provider generated every token of it and charged for them.
+        for (why, provider) in [
+            ("fabricated", Priced("the round trip is 4200 bps", 4_500)),
+            ("forbidden", Priced("11 recipients. This is a scam.", 4_500)),
+            ("empty", Priced("   ", 4_500)),
+        ] {
+            let reply = write(&sheet(), Some(&provider));
+            assert!(reply.is_template(), "{why}");
+            assert_eq!(
+                reply.billed,
+                Billed::Reported(MicroUsd(4_500)),
+                "a {why} reply is thrown away after it is paid for"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_call_is_billed_only_when_the_provider_may_have_answered() {
+        // The distinction worth the enum. No route and a 429 cost nothing, and
+        // charging them would spend the day's budget on calls that never
+        // happened -- the same failure `Spend::release` exists for. An
+        // unreadable body means the provider *did* answer and did bill; a
+        // timeout means the request may still have run to completion after this
+        // end gave up. Rule 9 sends both of those to the charged side.
+        let free: [fn() -> Unreachable; 2] = [
+            || Unreachable::NoContact("no route".to_owned()),
+            || Unreachable::Refused {
+                status: "429".to_owned(),
+            },
+        ];
+        for make in free {
+            let reply = write(&sheet(), Some(&Fails(make)));
+            assert_eq!(reply.billed, Billed::NoCall, "{:?}", make());
+        }
+
+        let charged: [fn() -> Unreachable; 2] = [
+            || Unreachable::Unreadable("not JSON".to_owned()),
+            || Unreachable::TimedOut { seconds: 90 },
+        ];
+        for make in charged {
+            let reply = write(&sheet(), Some(&Fails(make)));
+            assert_eq!(reply.billed, Billed::Unreported, "{:?}", make());
+        }
+    }
+
+    #[test]
+    fn no_provider_bills_nothing() {
+        assert_eq!(write(&sheet(), None).billed, Billed::NoCall);
     }
 
     #[test]

@@ -186,6 +186,24 @@ fn prices() -> Prices {
     }
 }
 
+/// A meter with room for anything the Telegram lane does in a test.
+///
+/// That lane shares the X meter, so its tick needs one even where nothing is
+/// billed: these tests configure no provider, so no model call is ever reserved
+/// and the ledger stays at zero. The day must match the one the tick computes,
+/// or every authorisation lands in a different window from the ledger.
+fn funded(paths: &Paths) -> Spend {
+    Spend::open(
+        Budget {
+            per_call_max: MicroUsd(50_000),
+            daily_max: MicroUsd(1_000_000),
+        },
+        prices(),
+        paths.ledger.clone(),
+        radar_analyst::daemon::day_of(radar_analyst::daemon::now()),
+    )
+}
+
 fn open_limits() -> Limits {
     Limits {
         per_summoner_daily: 5,
@@ -718,10 +736,12 @@ fn a_telegram_message_is_answered_into_its_own_log_and_never_into_the_record() {
     let mut gate = Gate::new(open_limits(), Vec::new());
     let client = radar_onchain::RpcClient::new(rpc);
 
+    let mut spend = funded(&paths);
     let answered = radar_analyst::telegram::tick(
         Some(&bot),
         &DryRun,
         &mut gate,
+        &mut spend,
         &client,
         None,
         None,
@@ -784,10 +804,12 @@ fn a_telegram_reply_that_is_sent_is_counted_and_remembered_by_the_gate() {
     let mut gate = Gate::new(open_limits(), Vec::new());
     let client = radar_onchain::RpcClient::new(rpc);
 
+    let mut spend = funded(&paths);
     let answered = radar_analyst::telegram::tick(
         Some(&bot),
         &Posts,
         &mut gate,
+        &mut spend,
         &client,
         None,
         None,
@@ -806,6 +828,7 @@ fn a_telegram_reply_that_is_sent_is_counted_and_remembered_by_the_gate() {
         Some(&bot),
         &Posts,
         &mut gate,
+        &mut spend,
         &client,
         None,
         None,
@@ -829,11 +852,93 @@ fn with_no_telegram_token_the_lane_reads_nothing_and_writes_nothing() {
     let paths = Paths::under(&dir);
     let mut gate = Gate::new(open_limits(), Vec::new());
     let client = radar_onchain::RpcClient::new(rpc);
+    let mut spend = funded(&paths);
     let answered = radar_analyst::telegram::tick(
-        None, &DryRun, &mut gate, &client, None, None, None, None, &paths,
+        None, &DryRun, &mut gate, &mut spend, &client, None, None, None, None, &paths,
     );
     assert_eq!(answered, 0);
     assert_eq!(requests.load(std::sync::atomic::Ordering::Relaxed), 0);
     assert!(!std::path::Path::new(&paths.telegram_log).exists());
     assert!(!std::path::Path::new(&paths.telegram_cursor).exists());
+}
+
+/// A provider that answers, says what it charged, and says nothing usable.
+///
+/// The text is deliberately unusable, so the template ships. That is the
+/// discriminating shape: the call was made, the answer was thrown away, and the
+/// money is gone either way.
+#[derive(Debug)]
+struct Priced;
+
+impl radar_model::Provider for Priced {
+    fn name(&self) -> &'static str {
+        "priced"
+    }
+    fn estimate(&self) -> MicroUsd {
+        MicroUsd(2_000)
+    }
+    fn ask(
+        &self,
+        _: &radar_model::Request,
+    ) -> Result<radar_model::Answer, radar_model::Unreachable> {
+        Ok(radar_model::Answer {
+            text: "   ".to_owned(),
+            cost: Some(MicroUsd(1_234)),
+        })
+    }
+}
+
+#[test]
+fn the_model_call_is_charged_for_the_mention_that_made_one_and_no_other() {
+    // Research 0029, S20. `Cost::ModelCall` existed, `Prices` carried its
+    // price, and nothing in the loop ever authorised it -- so the one cost a
+    // stranger can trigger without limit was the one cost the meter never saw.
+    //
+    // Two mentions in one poll. The first names a mint and reaches the
+    // provider; the second names nothing and returns before the provider is
+    // consulted. A reservation taken for both and released for neither would
+    // read 3,468; one taken and never settled would read the 2,000 estimate
+    // instead of the 1,234 the provider reported; none taken at all reads
+    // 1,000. Only the right behaviour reads 2,234.
+    //
+    // Re-apply the bug by deleting the `authorize`/`settle` pair in
+    // `daemon::tick` and this reads 1,000.
+    let mint = "So11111111111111111111111111111111111111112";
+    let page = format!(
+        r#"{{"data":[
+            {{"id":"2001","author_id":"alice","text":"@radar {mint}"}},
+            {{"id":"2002","author_id":"bob","text":"@radar hello there"}}
+        ]}}"#
+    );
+    let (base, _seen) = platform(&page);
+    let (rpc, _stop, _requests) = empty_chain();
+    let dir = workspace("model-metered");
+    let paths = Paths::under(&dir);
+    let mut gate = Gate::new(open_limits(), vec!["radar".to_owned()]);
+    let mut spend = funded(&paths);
+    let client = radar_onchain::RpcClient::new(rpc);
+    let x = X::at(base, "test-token", "u42");
+
+    tick(
+        Some(&x),
+        &DryRun,
+        &mut gate,
+        &mut spend,
+        &client,
+        None,
+        None,
+        Some(&Priced),
+        None,
+        &paths,
+    );
+
+    // One mention read at 1,000 plus one model call at the 1,234 the provider
+    // reported. The reply's own 10,000 reservation is released, because the dry
+    // run published nothing -- so this number is the model call and the poll,
+    // and nothing else.
+    assert_eq!(
+        spend.spent_today(),
+        MicroUsd(2_234),
+        "the model call must be charged once, at what it reported"
+    );
 }

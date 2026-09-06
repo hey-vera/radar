@@ -17,7 +17,7 @@
 use std::time::Duration;
 
 use radar_provider::Budget;
-use radar_roast::BaseRates;
+use radar_roast::{BaseRates, Billed};
 use radar_types::{Address, MicroUsd};
 
 use crate::admission::{Gate, Limits};
@@ -426,6 +426,7 @@ pub fn run() -> ! {
             telegram.as_ref(),
             telegram_publisher.as_ref(),
             &mut telegram_gate,
+            &mut spend,
             &client,
             rates.as_ref(),
             creators.as_ref(),
@@ -797,15 +798,6 @@ pub fn tick(
         }
     };
 
-    let ctx = Answering {
-        client,
-        rates,
-        creators,
-        provider,
-        self_mint,
-        now: at,
-    };
-
     let mut answered = 0;
     for mention in &mentions {
         // A winner naming an address inside the claim window is claiming, not
@@ -819,8 +811,58 @@ pub fn tick(
             );
             continue;
         }
-        match crate::answer::answer(mention, gate, &ctx) {
-            Answered::Reply(entry) => {
+
+        // The model call is the one thing a stranger can make this account
+        // spend that nothing charged for until now. Reserved **before**
+        // `answer`, because `answer` makes the call internally: by the time a
+        // reply comes back the money is gone, and a ceiling checked after that
+        // is not a ceiling.
+        //
+        // A refusal here does not refuse the mention. The day's model budget
+        // being spent means this one reply is the deterministic template --
+        // which is exactly what the account ships with no provider configured
+        // at all, so it is rule 8 rather than an outage.
+        let reserved = provider.and_then(|_| {
+            spend
+                .authorize(Cost::ModelCall, today)
+                .inspect_err(|_| {
+                    eprintln!(
+                        "radar-analyst: model budget spent; {} answered by the template",
+                        mention.id
+                    );
+                })
+                .ok()
+        });
+        let ctx = Answering {
+            client,
+            rates,
+            creators,
+            // Gated on the reservation, so a refused meter means no call was
+            // made rather than one that was made unmetered.
+            provider: if reserved.is_some() { provider } else { None },
+            self_mint,
+            now: at,
+        };
+
+        let outcome = crate::answer::answer(mention, gate, &ctx);
+        // Settled here rather than inside the arms below. The money is already
+        // spent by this point, and the reply's own reservation is a separate
+        // ceiling that can be refused -- one must not hold the other open.
+        if let Some(commitment) = reserved {
+            match outcome.billed() {
+                Billed::NoCall => spend.release(commitment),
+                Billed::Reported(actual) => spend.settle(commitment, actual),
+                // Rule 9. What was reserved is the honest charge for a cost
+                // nobody reported. Zero is not.
+                Billed::Unreported => {
+                    let charged = commitment.reserved();
+                    spend.settle(commitment, charged);
+                }
+            }
+        }
+
+        match outcome {
+            Answered::Reply { entry, .. } => {
                 let mint = entry.mint.clone().unwrap_or_default();
                 let Ok(reply_cost) = spend.authorize(Cost::Reply, today) else {
                     eprintln!("radar-analyst: budget spent; {} not answered", mention.id);

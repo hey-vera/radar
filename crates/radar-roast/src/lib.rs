@@ -52,7 +52,7 @@ pub use baserates::BaseRates;
 pub use creator::{CreatorIndex, Population};
 pub use sheet::{About, Fact, FactSheet};
 pub use verdict::{Verdict, template};
-pub use voice::{Fellback, Reply, write};
+pub use voice::{Billed, Fellback, Reply, write};
 
 use radar_model::Provider;
 use radar_onchain::Dossier;

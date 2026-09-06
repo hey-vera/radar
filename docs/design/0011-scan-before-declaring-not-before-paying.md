@@ -1,11 +1,17 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 # Design 0011 — Scan before declaring, not before paying
 
-**Status:** proposed — the owner's question, 2026-09-06. Supersedes plan
-[0008](../plans/0008-the-face-the-claim-the-scan-and-the-voice.md) item 3 and
-its Q1 if accepted.
+**Status:** **proposed, and deliberately not accepted yet.** Josh asked the
+question and could have accepted this on the spot; he declined to, and the
+reason is worth recording: **the model that wrote this design also wrote the
+code it governs** (#161-#165, in one session). A recommendation reviewed against
+the assumptions that produced it is the weak form of review. So this goes to a
+fresh reviewer *undecided*, and that reviewer is free to reject it outright.
+Supersedes plan [0008](../plans/0008-the-face-the-claim-the-scan-and-the-voice.md)
+item 3 and its Q1 **if** accepted.
 **Asked by:** Josh, 2026-09-06
 **Written by:** Claude Opus 5
+**Awaiting:** a fresh review, then Josh's decision
 
 ## The question
 
@@ -154,3 +160,10 @@ So the split is:
 Accept Phase 1 as the replacement for plan 0008 item 3. Keep the claim-address
 check where it is. Do not set an exclusion threshold until a measured baseline
 exists, and record that threshold as an ADR when it does.
+
+**This is a recommendation, not a decision, and it is the author's own** — see
+the status above. The reviewer should treat every number in it as unverified:
+the `2 + 3·N·P` read estimate, the claim that 3-9 reads covers the ordinary
+week, and the assertion that no baseline exists were all established by the
+same session that proposes the design. The last of those is the one to check
+first, because everything in Phase 1 rests on it.

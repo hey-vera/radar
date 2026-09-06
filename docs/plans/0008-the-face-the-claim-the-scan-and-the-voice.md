@@ -230,10 +230,11 @@ Two fixes fell out of the work rather than the plan, and both were real:
 
 ### Not done
 
-- **Item 3 — superseded, not built.** See
-  [design 0011](../design/0011-scan-before-declaring-not-before-paying.md),
-  awaiting the owner's decision. Phase 1 is measure-and-exclude-nobody; nothing
-  is written yet.
+- **Item 3 — superseded, not built, and 0011 is itself undecided.** See
+  [design 0011](../design/0011-scan-before-declaring-not-before-paying.md).
+  Josh asked the question, could have accepted the answer, and deliberately did
+  not: the model that wrote 0011 also wrote #161-#165, so it goes to a fresh
+  reviewer undecided. **Reject it if it is wrong** — nothing is built on it.
 - **Item 5 — not started.** S1-S15 in this file are a *starting* list. S1, S4,
   S8, S11 and S15 were fixed by items 1 and 2; the rest stand unreviewed.
 

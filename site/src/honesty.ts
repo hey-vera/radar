@@ -168,3 +168,148 @@ export function mostCoordinated(rows: readonly Band[]): Band | null {
   }
   return best;
 }
+
+/* ------------------------------------------------------------------------- *
+ * Links.
+ *
+ * Every function below returns `string | null`, and `null` means "do not
+ * render a link". That shape is the whole point: the alternative is a
+ * component interpolating an API field straight into an `href`, and the
+ * fields these are built from arrive from `/v1/public/*` — a document this
+ * site does not write. A `javascript:` URL in a field the site trusts is one
+ * stored value away from running in a reader's browser.
+ *
+ * `wouter` and React escape *text*, and neither escapes a URL scheme. React
+ * warns on `javascript:` in newer versions and does not block it, and a warning
+ * in somebody else's console is not a defence.
+ *
+ * These are also the reason the site never builds an `href` by template in a
+ * component. If a link is not made here, it is not made.
+ * ------------------------------------------------------------------------- */
+
+/** The base58 alphabet, which excludes the confusable characters `0OIl`. */
+const BASE58 = /^[1-9A-HJ-NP-Za-km-z]+$/;
+
+/**
+ * A URL that is safe to put in an `href`, or `null`.
+ *
+ * `https` only, and the host must be one the caller named. Parsing with `URL`
+ * rather than matching a prefix is deliberate: `https://evil.example/#@x.com`
+ * passes a `startsWith` check and is not x.com, and every hand-rolled version
+ * of this function in the wild is a prefix check.
+ */
+export function safeHref(url: string, hosts: readonly string[]): string | null {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:") return null;
+  if (!hosts.includes(parsed.hostname)) return null;
+  return parsed.toString();
+}
+
+/**
+ * A link to an X account from its handle, or `null`.
+ *
+ * X's own rule: 1–15 characters, letters, digits and underscore. A 16th
+ * character is not a handle, and rendering it as one produces a link to a
+ * profile that does not exist — on the page that is supposed to be the account's
+ * introduction.
+ */
+export function handleHref(handle: string): string | null {
+  if (!/^[A-Za-z0-9_]{1,15}$/.test(handle)) return null;
+  return `https://x.com/${handle}`;
+}
+
+/**
+ * A link to an X account from its numeric id, or `null`.
+ *
+ * The leaderboard has ids and may not have handles: `close()` records the
+ * summoner's id because that is what a mention carries, and the handle is a
+ * second field that can be missing. The `i/user` form resolves without a
+ * handle, exactly as `public.rs` uses `i/web/status` for a post.
+ *
+ * Digits only. An id is a number, and anything else in that position came from
+ * somewhere it should not have.
+ */
+export function userHref(id: string): string | null {
+  if (!/^[0-9]{1,25}$/.test(id)) return null;
+  return `https://x.com/i/user/${id}`;
+}
+
+/**
+ * A link to a transaction on Solscan, or `null`.
+ *
+ * Signatures are 64 bytes in base58, which is 87 or 88 characters. The bound is
+ * exact rather than "long enough", for the reason `mention.rs` gives about
+ * addresses: a run that is too long is not a signature, and truncating it to a
+ * plausible length hands a reader a link to somebody else's transaction.
+ */
+export function solscanTx(signature: string): string | null {
+  if (signature.length < 86 || signature.length > 88) return null;
+  if (!BASE58.test(signature)) return null;
+  return `https://solscan.io/tx/${signature}`;
+}
+
+/** A link to an account on Solscan, or `null`. Same rule as a mint. */
+export function solscanAccount(address: string): string | null {
+  if (!mintShaped(address)) return null;
+  return `https://solscan.io/account/${address}`;
+}
+
+/**
+ * Whether this is shaped like a Solana address.
+ *
+ * The same rule `mention.rs` applies to a summons, restated here because the
+ * summon box has to decide *before* anything is sent whether the bot would read
+ * what the reader pasted. 32 to 44 base58 characters, bounds exact.
+ *
+ * This is a shape check and not an existence check, and the interface must say
+ * so: a well-formed address for a coin that does not exist is not caught here,
+ * and the bot answers that case by refusing rather than by inventing a record.
+ */
+export function mintShaped(text: string): boolean {
+  const t = text.trim();
+  return t.length >= 32 && t.length <= 44 && BASE58.test(t);
+}
+
+/**
+ * A prefilled X post that summons the account about a mint, or `null`.
+ *
+ * `null` when the handle is not configured or the text is not address-shaped —
+ * a summon button that posts `@undefined` would be worse than no button. The
+ * handle is a parameter rather than a constant here because this site does not
+ * know it: see [`account`].
+ */
+export function summonIntent(handle: string, mint: string): string | null {
+  if (handleHref(handle) === null) return null;
+  if (!mintShaped(mint)) return null;
+  const text = encodeURIComponent(`@${handle} ${mint.trim()}`);
+  return `https://x.com/intent/post?text=${text}`;
+}
+
+/**
+ * The account's handle, from the build environment, or `null`.
+ *
+ * **The site does not know this and must not guess it.** `deploy/README.md`
+ * uses `CabalHunter` in a `curl` example for looking up the numeric id; no file
+ * in this repository records the handle as a fact, the analyst identifies the
+ * account by `RADAR_X_USER_ID` rather than by name, and on 2026-09-06 the
+ * production analyst's own post log said `no publisher configured: this
+ * instance cannot post` — so the account may not be posting under any handle
+ * yet.
+ *
+ * A guessed handle on this page is a link sending strangers to somebody else's
+ * profile, which is the one link on the site that cannot be walked back. So it
+ * is operator configuration, it is validated on the way in, and everything that
+ * needs it renders an honest alternative when it is absent. AGENTS.md rule 8:
+ * deny by default when config is missing.
+ */
+export function account(): string | null {
+  const configured = import.meta.env["VITE_X_HANDLE"];
+  if (typeof configured !== "string") return null;
+  const handle = configured.trim().replace(/^@/, "");
+  return handleHref(handle) === null ? null : handle;
+}

@@ -231,6 +231,11 @@ licence-headers:
     done < <(
         find crates -name '*.rs' -not -path '*/target/*'
         find web -name '*.ts' -o -name '*.tsx' 2>/dev/null             | grep -v node_modules | grep -v '/dist/' || true
+        # The public site was not walked here until 2026-09-06. Every file in
+        # it happened to carry a header, so nothing was wrong -- but nothing
+        # was checking either, on the one application whose source a stranger
+        # can read by opening devtools.
+        find site \( -name '*.ts' -o -name '*.tsx' \) 2>/dev/null             | grep -v node_modules | grep -v '/dist/' || true
     )
     exit $missing
 
@@ -242,10 +247,16 @@ licence-headers:
 # added; never lower it to make a run go green.
 export MIN_WEB_TESTS := "173"
 
-# The public site at cabalhunter.org. Lower because it has four pages, and it
+# The public site at cabalhunter.org. Lower because it has five pages, and it
 # exists for the same reason MIN_WEB_TESTS does: `vitest run` exits zero when it
 # finds no test files at all, so a broken `include` turns the suite off silently.
-export MIN_SITE_TESTS := "19"
+#
+# Raised 19 -> 49 on 2026-09-06, with the tokenomics page, the link helpers and
+# figures.test.ts. The last of those is the one worth naming: index.html claimed
+# "checked by the same test that checks the rendered page" and no such test
+# existed, so the copy of the figures that crawlers and link unfurlers read was
+# the copy nothing checked.
+export MIN_SITE_TESTS := "49"
 
 # The interface: install exactly the locked dependencies, check them for known
 # advisories, type-check, test, and build.

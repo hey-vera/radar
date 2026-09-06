@@ -11,6 +11,8 @@
 //! elsewhere is a number; this is where the method behind the numbers, and the
 //! things deliberately not claimed, are written down.
 
+import { Link } from "wouter";
+
 import { useTitle } from "./title";
 import { Card, Heading, Section } from "./ui";
 
@@ -122,6 +124,32 @@ export function About() {
           <p>
             The bot answers questions about that token on exactly the same rule
             as any other coin, and it never mentions its price.
+          </p>
+          <p>
+            <Link
+              href="/token"
+              className="text-[var(--color-signal)] underline underline-offset-4 hover:text-[var(--color-text)]"
+            >
+              The six rules, the fee ladder, and what has to be true before any
+              of it happens →
+            </Link>
+          </p>
+        </Block>
+
+        <Block title="If you win">
+          <p>
+            The account replies to you, in your own thread, under the reply that
+            won. You claim by replying to <em>that</em> post with a Solana
+            wallet address, within seven days. There is nothing to connect and
+            nothing to sign.
+          </p>
+          <p>
+            <Link
+              href="/leaderboard"
+              className="text-[var(--color-signal)] underline underline-offset-4 hover:text-[var(--color-text)]"
+            >
+              The scoring rule and the claim steps in full →
+            </Link>
           </p>
         </Block>
 

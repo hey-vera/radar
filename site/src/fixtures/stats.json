@@ -1,8 +1,15 @@
 {
   "_comment": [
-    "What Cabal Hunter has watched. Read off the production box on 2026-09-04 at",
-    "23:55 UTC, by summing the creator index radar-creator-index.timer had just",
+    "What Cabal Hunter has watched. Read off the production box on 2026-09-05 at",
+    "22:55 UTC, out of the creator index radar-creator-index.timer had just",
     "rebuilt, plus the band figures from docs/research/data/0024-base-rates.json.",
+    "",
+    "The population block is the index's own `population` object, copied field",
+    "for field rather than re-summed here -- the index computes it while it walks",
+    "the store, and a second sum over the same file would be a second answer to",
+    "get wrong. `creators` is the number of keys in its `creators` map. The band",
+    "block below is unchanged: 0024 has not been re-run, and copying a fresh date",
+    "onto a stale measurement is the one edit this file must never carry.",
     "",
     "COUNTS, NOT SHARES, and that is deliberate. Every share on the site is",
     "derived in one place -- honesty.ts -- out of `measured`, never out of",
@@ -17,15 +24,15 @@
     "",
     "EVERY NUMBER HERE HAS A DATE ON IT AND IS EXPECTED TO MOVE."
   ],
-  "measured_at": "2026-09-04T23:55:00Z",
-  "watermark_slot": 444374676,
+  "measured_at": "2026-09-05T22:55:16Z",
+  "watermark_slot": 444637451,
   "watched": {
-    "launches": 508814,
-    "creators": 116752,
-    "measured": 506991,
-    "organic": 8999,
-    "instant": 5230,
-    "stillborn": 116427
+    "launches": 528871,
+    "creators": 121445,
+    "measured": 527490,
+    "organic": 9431,
+    "instant": 5708,
+    "stillborn": 119318
   },
   "bands": {
     "measured_on": "2026-09-03",

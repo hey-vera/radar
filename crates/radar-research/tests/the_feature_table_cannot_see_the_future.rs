@@ -807,3 +807,35 @@ fn a_quiet_launch_in_a_store_that_does_record_trades_reads_zero() {
     assert_eq!(value(&table, 1, "trades_6000"), Some(0.0));
     assert_eq!(value(&table, 2, "launch_traders"), Some(1.0));
 }
+
+#[test]
+fn a_window_the_trades_table_only_half_covers_is_not_covered() {
+    // The store partitions at 12,800 slots. A launch at 12,000 has its T at
+    // 18,000, so its window straddles two partitions -- and the trades table
+    // holds only the first. Counting the half it has would produce a number
+    // that is right about one part of the window and silent about the other,
+    // which is worse than absent because it looks like a measurement.
+    let straddling = 12_000u64;
+    assert_ne!(
+        straddling / 12_800,
+        (straddling + T) / 12_800,
+        "the fixture must actually straddle a partition boundary"
+    );
+
+    let table = table_over(
+        vec![
+            launch(1, 100, straddling),
+            // A trade in the first partition only, for another mint, so the
+            // table exists and covers the launch slot but not T.
+            launch(2, 101, straddling + 1),
+            buy(2, 10, straddling + 1, 0, 1),
+        ],
+        vec![],
+    );
+
+    assert_eq!(
+        value(&table, 1, "launch_traders"),
+        None,
+        "half a window is not a measurement"
+    );
+}

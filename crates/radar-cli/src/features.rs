@@ -74,11 +74,8 @@ pub fn run(reader: &Reader, args: &[String]) -> Result<(), String> {
         .filter(|r| r.value(traders).is_some())
         .count();
     println!("trade features: {with_trades} of {} rows", table.rows.len());
-    if with_trades == 0 && !table.rows.is_empty() {
-        println!(
-            "               the trades table covers none of these windows, so the
-                            twelve trade-derived features are absent rather than zero"
-        );
+    if let Some(note) = trade_note(with_trades, table.rows.len()) {
+        println!("{note}");
     }
     println!("written to   : {out}");
 
@@ -89,6 +86,19 @@ pub fn run(reader: &Reader, args: &[String]) -> Result<(), String> {
         );
     }
     Ok(())
+}
+
+/// The line that explains an empty trade-feature count, when there is one.
+///
+/// Only when there are rows and none of them carries a trade feature. With no
+/// rows the count is trivially zero and saying "the trades table covers none of
+/// these windows" would be a claim about a store the pass never looked at; with
+/// some rows carrying them the file speaks for itself.
+fn trade_note(with_trades: usize, rows: usize) -> Option<&'static str> {
+    (with_trades == 0 && rows > 0).then_some(
+        "               the trades table covers none of these windows, so the \
+         twelve trade-derived features are absent rather than zero",
+    )
 }
 
 /// The launch window to build, defaulting to the whole store.
@@ -127,6 +137,20 @@ mod tests {
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_note_about_absent_trade_features_appears_only_when_it_is_true() {
+        // Three cases, and the middle one is the reason this is a function.
+        // With no rows the count is trivially zero, and saying the trades table
+        // covers nothing would be a claim about a store this pass never read.
+        assert!(trade_note(0, 100).is_some(), "rows, and none with trades");
+        assert!(
+            trade_note(0, 0).is_none(),
+            "no rows says nothing about trades"
+        );
+        assert!(trade_note(1, 100).is_none(), "some rows carry them");
+        assert!(trade_note(100, 100).is_none());
     }
 
     #[test]

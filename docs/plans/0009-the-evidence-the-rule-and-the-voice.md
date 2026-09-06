@@ -51,6 +51,14 @@ Afterwards: every number in a reply about a graduated coin is about that coin; r
 
 Nothing below needs a merge. Each line says who.
 
+**Read off the box at 18:40 UTC on 2026-09-06, and three of these lines were wrong.** Corrections here rather than edits to the lines themselves, so the plan is not quietly rewritten into having been right.
+
+- **0.2 has no endpoint to point at.** "Set it to the Helius endpoint the recorder uses" assumed one exists. There is none, anywhere: `radar-follow.service` carries no `EnvironmentFile` and no `Environment=`, neither `/etc/radar/analyst.env` nor `/etc/radar/radar.env` sets `RADAR_RPC` or `RADAR_RPC_URL`, and no config on the box contains the string `helius`, `quicknode` or `alchemy`. **The recorder, both hourly crons and the analyst are all on the free public node.** So 0.2 is not an env edit; it is "obtain an endpoint", and it is a purchase before it is a configuration.
+- **0.3 is cosmetic, not a live hazard.** The two `RADAR_CONTEST_OPERATORS` lines are *identical* — both `2005812292693483520` — so systemd taking the last one changes nothing. The plan said "keep the one with both ids", which implied they differed. They do not, and both operator accounts are in fact covered: `operator_ids` adds `RADAR_X_USER_ID` (`1889496824328880128`, the bot) to whatever the variable lists, so the bot and the managing account are both excluded. Worth tidying; not worth a restart of its own.
+- **0.4 has no source files on the box.** `~/radar` is the analyst's `WorkingDirectory` and holds the three data files it reads, but it is a checkout of `github.com/1xmint/radar.git` with no `deploy/` directory and no `crates/`. The unit files have to be copied to the box before they can be installed, which the runbook's commands assume away by starting at `deploy/`.
+
+The 429 claim behind 0.2 is worth stating exactly rather than repeating: over the six hours to 18:40, `radar-analyst` logged **zero** rate-limit lines and `radar-follow` logged **six**, while continuing to record rows throughout. The analyst has answered one mention in its life, so its zero is a measurement of its traffic and not of the endpoint. The case for a paid endpoint is what a busy coin's signature walk needs, not an outage in the log.
+
 - [ ] 0.1 **Tonight's close, read after it happens** (session). Week 2957 closes at 00:00 UTC. Expected: `weekly:2957:0` in `posts.jsonl` with a `reply_id`, saying one summoned reply, none counted, one excluded, no winner, no token yet. If the post did not go out, the reason is on the same line.
       proof: `ssh guardian-vps-tail 'grep weekly:2957 ~/radar/data/analyst/posts.jsonl | tail -1'` and the post on the account.
 - [ ] 0.2 **`RADAR_RPC` on the analyst** (Josh; root edits the env, restarts the unit). The analyst is on `api.mainnet-beta.solana.com`, which rate-limits and cannot reach the history a busy coin needs. LEARNINGS 30 fixed the *name* of the variable; the box still has no value. Set it to the Helius endpoint the recorder uses.
@@ -206,6 +214,10 @@ One departure from the plan's wording, and it is the reason rule 9 exists. The p
 
 Deliberately **not** built: a runtime chain that falls back from one vendor to the other. The fallback on an unreachable provider is the deterministic template, which is rule 8 and is a working product. A second live credential on the box would be a second bill and a second thing to rotate, and it would contradict the refusal above.
 
-**Stopped at:** item 1 code-complete, unpushed, nothing on the box.
-**Next action:** push `feat/meter-the-voice` and read CI, including `mutants-shards`. The key goes on the box only after this is deployed (Phase 0.7) and after Josh has read the automation-rules clause (Phase 0.6(c)).
-**Do not:** put a model key on the box against the currently installed binary — it is pre-#168 and does not meter the call.
+**Item 3, 2026-09-06 (Opus 5).** `RefusalKind` is typed rather than a string, because `why` is a sentence written for a person and is the wrong thing to branch on. `None` -- a line written before kinds existed -- is counted the **old** way: rule 9, absent is unknown rather than benign, and a harmless default would silently re-admit an account that really had burst the gate. S21 came with it.
+
+Both merged: #168 at `914a0fd`, #169 at `81e422a`.
+
+**Stopped at:** items 1 and 3 on `main`. Phase 0 read off the box and three of its lines corrected above.
+**Next action:** install the `81e422a` build to `~/bin/radar-analyst` and restart, then the model key (Phase 0.7). Then item 5 (the history page and the `` handle bug), which is the next thing a stranger sees.
+**Do not:** put a model key on the box before that install. Anything earlier than #168 does not meter the call, and the meter is the only thing standing between a stranger and an open invoice.

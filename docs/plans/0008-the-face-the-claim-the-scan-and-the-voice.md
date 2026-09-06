@@ -51,7 +51,7 @@ and the claim is a reply to *that* — and it was never built.
 
 ## Items
 
-- [ ] 1. **The site, wholesale.** `site/`. A display face, a fluid type scale,
+- [x] 1. **The site, wholesale.** `site/`. A display face, a fluid type scale,
       a numbered argument that reads top to bottom on a phone, the launch block
       as an illustration, the real reply as a receipt, and a one-tap summon
       box. `new:site/src/Token.tsx` for the tokenomics page; `/token` in
@@ -62,7 +62,16 @@ and the claim is a reply to *that* — and it was never built.
       `new:site/public/og.png` at 1200x630 with `new:scripts/site/og.ps1` that
       made it; `honesty.ts` gains `safeHref` and its family and loses nothing.
       Fixture refreshed from the box's index at slot 444,637,451.
-      next: measure the font before choosing it
+      done: `just site` green with 49 tests at the raised floor, at `20f8b12`;
+      `cargo test -p repo-conformance` 33 passed; browser at 375 and 1280 with
+      no horizontal overflow on any of the five routes and a clean console.
+      Three departures from the plan, each argued in the commit: the fee ladder
+      is pinned by `radar-pumpfun`'s decoder rather than by a TypeScript copy of
+      it; the account handle is build config rather than a literal, because
+      `@thecabalhunter` is in no file and the analyst still has no publisher;
+      and there is no header CTA, because the fifth nav item is what `routes.ts`
+      already records eating a 375px header. Geist measured at 29.4 kB for the
+      latin subset, on headings only.
 
 - [ ] 2. **The claim is a reply to the prompt.** After the week closes the
       account replies to the winner, under its own winning reply, and the claim

@@ -188,9 +188,6 @@ pub struct Group {
     pub later_organic: u64,
 }
 
-/// z for a 95% two-sided interval.
-const Z_95: f64 = 1.96;
-
 impl Group {
     /// A 95% Wilson score interval on the later organic rate, in basis points.
     ///
@@ -211,27 +208,17 @@ impl Group {
         if self.creators < MIN_GROUP || self.later_launches == 0 {
             return None;
         }
-        #[expect(
-            clippy::cast_precision_loss,
-            reason = "counts here are far below f64's exact-integer range"
-        )]
-        let (hits, n) = (self.later_organic as f64, self.later_launches as f64);
-        let p = hits / n;
-        let z2 = Z_95 * Z_95;
-        let denom = 1.0 + z2 / n;
-        let centre = (p + z2 / (2.0 * n)) / denom;
-        let half = (Z_95 / denom) * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt();
-
+        let (lo, hi) = crate::wilson_bounds(self.later_organic, self.later_launches)?;
         let to_bps = |v: f64| {
             #[expect(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
-                reason = "clamped to a proportion before scaling"
+                reason = "already a proportion in [0, 1] before scaling"
             )]
-            let out = (v.clamp(0.0, 1.0) * 10_000.0).round() as u64;
+            let out = (v * 10_000.0).round() as u64;
             out
         };
-        Some((to_bps(centre - half), to_bps(centre + half)))
+        Some((to_bps(lo), to_bps(hi)))
     }
 
     /// Whether this group's interval sits entirely above another's.

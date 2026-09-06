@@ -115,6 +115,55 @@ The numbers a consumer should read are in
 [`data/0024-base-rates.json`](../docs/research/data/0024-base-rates.json), each
 carrying the date it was measured.
 
+## The learning loop has an instrument, and it has not been run yet
+
+**Built 2026-09-05, plan 0007 items 1 and 2.** `radar features` writes one row
+per succeeded launch with twenty-three features, every value observed at or
+before T = launch + 6,000 slots and accepted through `AsOf::accept`, so a
+feature computed from something that had not happened yet is a build error
+rather than a column. `radar edge` runs the walk-forward protocol over that
+file: five contiguous windows by launch slot, the first three fitted as one,
+purged and embargoed by twenty-four hours, and a stratum is `Found` only if it
+clears the bar on **both** remaining folds with at least a hundred rows each and
+a Wilson lower bound above a half.
+
+**The trades table is empty, and that halves the table.** Read on the box on
+2026-09-06: `~/radar/data/store/trades` was created on 2026-08-23 and has never
+been written to. Twelve of the twenty-three features are trade-derived, and they
+are **absent** rather than zero — decided from the trades table's own partition
+coverage, so they become measurements again the day the recorder writes one,
+with no code change. Nine features remain: the creator's record, the launch
+metadata, the dev buy, and what the decision lane recorded. Getting the recorder
+to write trades is the highest-value repair available to this work and it is not
+part of it.
+
+**No result exists.** Neither command has been run against the production
+store — that needs a Linux binary on the box, and this workstation has no store
+to run them against. So the honest state of the number is unchanged: research
+0017 measures the selection edge at **0 bps** against a bar of about **456**,
+and nothing here has moved it. What exists is the instrument that could.
+
+**Design 0010 §6.1 is superseded on the cost, and this file is why.** The
+design charged a `by_notional` band and then asked for 456 bps on top. The
+reconciliation table above says those are the same measurement in two bands, so
+that charges one number twice; and it says these rows — fresh launches — belong
+to the 850 cohort, which 0019 declined to lower because a cost rounded down
+launders a trade past the gate. The harness charges **850** by default, offers a
+band for sensitivity, and accepts a stratum on three conditions: at least a
+hundred rows, a net **measurably** above zero, and more than half the rows
+paying at the Wilson lower bound. That is stricter than the design's rule, not
+looser.
+
+Two more things the protocol does that design 0010 §6.2 did not say, both found
+by a test rather than argued (plan 0007 Q3): the fitting-period row floor is scaled
+up from the smallest test fold, because a stratum too narrow to hold a hundred
+rows in a test fold can never be accepted and fitting on it displaces one that
+could have been; and the fit-fold winner is chosen under a one-standard-error
+rule with the Wilson bound breaking ties, because taking the highest median
+alone preferred a refinement fitted to noise and dropped a planted 3,000 bps
+edge on the floor. `an_engineered_edge_is_found` is the test that failed twice
+and made both changes.
+
 ## The round trip is three numbers, and they are not in conflict
 
 Three figures circulate in this repository and **no document reconciled them
@@ -440,9 +489,13 @@ against the chain and append-only against its own log.
   LEARNINGS 27 paid for.
 
   Two consequences worth knowing. `radar-asof`'s `Observed<T>` and `LookAhead`
-  now have **no caller** — the deleted cache was the only one — so `radar-asof`
-  is `AsOf` plus two types nothing uses. And AGENTS.md rule 3 no longer claims
-  a type-system half; it was describing that cache.
+  lost their only caller when that cache went, and **they have one again since
+  2026-09-05**: `radar-research`'s feature table takes every value as an
+  `Observed<f64>` and accepts it against `AsOf(T)`, so a feature computed from
+  something that had not happened yet is a build error rather than a plausible
+  column. That is design 0010 §8.1 row 3 settled in the direction of keeping
+  them. And AGENTS.md rule 3 no longer claims a type-system half; it was
+  describing that cache.
 
   The economics that actually run for *pricing* are a separate, static cost model in
   [`radar-instruments`](../crates/radar-instruments/src/spec.rs), where each

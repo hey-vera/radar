@@ -465,6 +465,30 @@ The stats document needs `population.json`, which the creator-index job now
 writes beside the index; until the box runs that binary the endpoint answers
 404 and the site shows its dated fixture.
 
+**The public site is five pages as of 2026-09-06** (plan 0008 item 1): home,
+leaderboard, prize pool, tokenomics and about, still static files with no
+runtime of its own. What changed beyond the redesign is what is now *checked*.
+`index.html` carried the sentence "checked by the same test that checks the
+rendered page" and no such test existed, so the `<noscript>` figures — the copy
+crawlers and link unfurlers read — were the copy nothing checked;
+`figures.test.ts` now derives them from `stats.json` through the same functions
+the page uses, and pins that fixture's band, cost and aftermath blocks to
+`0024-base-rates.json`. The fixture itself was refreshed from the box's creator
+index at slot 444,637,451, and the tokenomics page's fee ladder is asserted
+against `radar-pumpfun`'s own decoder from that crate, because the capture is
+hex and a TypeScript copy of the fee parser would be a second answer to get
+wrong. Every URL on the site is now built by a function in `honesty.ts` that
+can refuse, rather than by string template in a component.
+
+**The account's handle is not recorded anywhere in this repository, and the
+site refuses to guess it.** `deploy/README.md` uses `CabalHunter` in a `curl`
+example for looking up the numeric id; the analyst identifies the account by
+`RADAR_X_USER_ID`; and on 2026-09-06 the production analyst's post log still
+said `no publisher configured: this instance cannot post`. So the summon box
+and every link to the account are gated on `VITE_X_HANDLE` at build time and
+render an honest sentence when it is absent — rule 8, in the interface. Setting
+it is an operator step, and until it is set the site has no outbound link to X.
+
 Nothing here touches the store, the signer or `Policy::CLOSED`. It is read-only
 against the chain and append-only against its own log.
 

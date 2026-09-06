@@ -10,11 +10,21 @@
 //! nothing. Neither is true, both are what a reader takes away, and neither
 //! would fail a test that only checked the page rendered.
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { About } from "./About";
+import { Home } from "./Home";
 import { Leaderboard } from "./Leaderboard";
 import { Pool } from "./Pool";
+import { Token } from "./Token";
+import { Summon } from "./ui";
 
 /** No endpoint, which is exactly production today. */
 function withNoServer() {
@@ -124,5 +134,125 @@ describe("the prize pool before a token exists", () => {
     expect(text).toMatch(/\$30;/);
     expect(text).toMatch(/\$300\./);
     expect(text).not.toMatch(/\$3;/);
+  });
+});
+
+describe("the tokenomics page before any token exists", () => {
+  it("says no token exists, in words, rather than showing a zero", async () => {
+    render(<Token />);
+    expect(screen.getByText(/No token exists/i)).toBeTruthy();
+    expect(screen.getByText(/any address claiming to be this token is not/i))
+      .toBeTruthy();
+  });
+
+  it("puts no valuation of its own token on the page", () => {
+    // ADR 0013 constraint 5 forbids the *bot* from stating the token's price or
+    // market capitalisation. A marketing page printing what the bot is
+    // forbidden to say would make the constraint decorative, so the same line
+    // is held here -- by a test, because this is the page where the pressure to
+    // add a number will come from.
+    //
+    // The check is a dollar figure, not the words. A first version banned
+    // "market cap" outright and failed on the fee table, whose rows are keyed
+    // on market capitalisation -- of whichever coin is being traded, not of
+    // this token. Describing somebody else's fee schedule is not valuing your
+    // own token, and a check that cannot tell those apart fires on a correct
+    // page. Every figure here is in basis points or SOL, and a dollar sign is
+    // how a valuation would arrive.
+    const { container } = render(<Token />);
+    const text = container.textContent ?? "";
+    expect(text).not.toMatch(/\$\s?[\d.]/);
+    // And it still says, in words, that the bot will not state the price.
+    expect(text).toMatch(/never states the token's price/i);
+  });
+
+  it("renders the fee ladder it imports rather than a summary of it", async () => {
+    render(<Token />);
+    // The row that matters: 95 bps immediately after graduation is where the
+    // prize actually comes from, and it is the row a reader is most likely to
+    // be surprised by.
+    // getAllBy: 95 and 420 each appear in the prose above the table as well as
+    // in the row itself, which is the page working rather than a duplicate.
+    expect(screen.getAllByText("95").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/420 SOL/).length).toBeGreaterThan(0);
+  });
+});
+
+describe("no page delivers a verdict", () => {
+  // The bot is forbidden from saying a coin is a scam or that it is safe.
+  // `forbidden.rs` enforces that on every reply. The site is the same product
+  // speaking to the same strangers, and nothing enforced it here at all.
+  //
+  // Word-bounded, so "safety" and "farmer" do not fire, and applied to rendered
+  // text rather than to source, so a word arriving through a fixture is caught
+  // too.
+  const FORBIDDEN = [
+    "scam",
+    "rug",
+    "fraud",
+    "sybil",
+    "fake",
+    "legit",
+    "safe",
+    "guaranteed",
+  ];
+
+  const pages: readonly [string, () => React.ReactElement][] = [
+    ["home", () => <Home />],
+    ["leaderboard", () => <Leaderboard />],
+    ["pool", () => <Pool />],
+    ["token", () => <Token />],
+    ["about", () => <About />],
+  ];
+
+  for (const [name, page] of pages) {
+    it(`${name} says none of them`, async () => {
+      const { container } = render(page());
+      await waitFor(() => expect(container.textContent).toBeTruthy());
+      const text = (container.textContent ?? "").toLowerCase();
+      for (const word of FORBIDDEN) {
+        expect(
+          new RegExp(`\b${word}\b`).test(text),
+          `${name} contains the word "${word}"`,
+        ).toBe(false);
+      }
+    });
+  }
+});
+
+describe("the summon box", () => {
+  it("says so plainly when the account's handle is not configured", () => {
+    // Production today: no VITE_X_HANDLE, and no file in the repository records
+    // the handle as a fact. Rendering a guessed one would send a stranger to
+    // somebody else's profile.
+    render(<Summon handle={null} />);
+    expect(screen.getByText(/not announced here yet/i)).toBeTruthy();
+    expect(screen.queryByPlaceholderText(/mint address/i)).toBe(null);
+  });
+
+  it("builds a prefilled post once a real address is typed", () => {
+    // fireEvent rather than user-event: one controlled input does not justify
+    // another devDependency, and the component reads `e.target.value` either
+    // way. The comment in ui/index.tsx about not installing a library before a
+    // component needs one applies to test libraries too.
+    render(<Summon handle="CabalHunter" />);
+    const box = screen.getByPlaceholderText(/mint address/i);
+
+    // Nothing typed: no link, so the button is absent rather than dead.
+    expect(screen.queryByRole("link")).toBe(null);
+
+    // Something that is not an address: the reader is told here, before it
+    // costs them a public post that gets no answer.
+    fireEvent.change(box, { target: { value: "not an address" } });
+    expect(screen.getByText(/not shaped like a Solana address/i)).toBeTruthy();
+    expect(screen.queryByRole("link")).toBe(null);
+
+    // A real one: the intent link, with the mint encoded into it.
+    const mint = "HWvHqvfFVQdLZ1K3kMygpvhivVZEcrzVShgJFgtXpump";
+    fireEvent.change(box, { target: { value: mint } });
+    const link = screen.getByRole("link");
+    expect(link.getAttribute("href")).toBe(
+      `https://x.com/intent/post?text=%40CabalHunter%20${mint}`,
+    );
   });
 });

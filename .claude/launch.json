@@ -5,8 +5,21 @@
       "name": "radar-web",
       "cwd": "web",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 5273
+    },
+    {
+      "name": "cabal-hunter-site",
+      "cwd": "site",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "port": 5373
     }
   ]
 }

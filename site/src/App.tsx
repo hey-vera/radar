@@ -4,10 +4,12 @@
 import { Link, Route, Switch, useLocation } from "wouter";
 
 import { About } from "./About";
+import { account, handleHref } from "./honesty";
 import { Home } from "./Home";
 import { Leaderboard } from "./Leaderboard";
 import { Pool } from "./Pool";
 import { nav } from "./routes";
+import { Token } from "./Token";
 
 function Header() {
   const [location] = useLocation();
@@ -47,6 +49,7 @@ function Header() {
 }
 
 function Footer() {
+  const handle = account();
   return (
     <footer className="relative z-10 border-t border-[var(--color-line)]">
       <div className="mx-auto max-w-5xl px-6 py-10 text-sm text-[var(--color-faint)]">
@@ -61,6 +64,25 @@ function Footer() {
             What this is, who runs it, and what it will never say
           </Link>
         </p>
+        {/* The two appointments the whole contest runs on. A reader who wants
+            to enter needs to know when the week ends before they need anything
+            else on this site. */}
+        <p className="mt-4 text-xs">
+          The week closes <strong>Mondays at 00:00 UTC</strong>. The account
+          posts what it found seven days later, at 12:00 UTC.
+        </p>
+        {handle !== null && (
+          <p className="mt-4 text-xs">
+            <a
+              href={handleHref(handle) ?? "#"}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline hover:text-[var(--color-dim)]"
+            >
+              @{handle} on X
+            </a>
+          </p>
+        )}
       </div>
     </footer>
   );
@@ -75,6 +97,7 @@ export function App() {
           <Route path="/" component={Home} />
           <Route path="/leaderboard" component={Leaderboard} />
           <Route path="/pool" component={Pool} />
+          <Route path="/token" component={Token} />
           <Route path="/about" component={About} />
           <Route>
             {/* Static hosting serves index.html for any path, so an unknown one

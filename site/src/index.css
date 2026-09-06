@@ -43,16 +43,47 @@
      rare and should look it. */
   --color-good: oklch(0.76 0.13 158);
 
-  /* Type. A variable font would be one more dependency and one more request;
-     the system stack renders instantly, matches the reader's own device, and on
-     a page that is mostly numbers the difference is small. Revisit if the
-     identity needs it -- that is a design judgement, not a technical one. */
+  /* Type.
+
+     The earlier note here said a variable font would be one more dependency and
+     one more request, that the system stack renders instantly, and that on a
+     page that is mostly numbers the difference is small -- and it ended by
+     saying to revisit it when the identity needed it, because that is a design
+     judgement rather than a technical one. The identity needs it. This page is
+     the product's face and the system stack gives it the face of a settings
+     dialog.
+
+     **The display face is used for headings and the wordmark only.** Body text
+     and every figure stay on the system stack, and that is the important half
+     of this decision. `.tnum` below asks for tabular numerals, and whether a
+     given face actually has them is a property of the face; swapping the font
+     under every number on a page whose entire argument is a column of numbers
+     risks silently losing the alignment that `.tnum` exists to guarantee. The
+     headings carry the character, the figures keep the guarantee, and the cost
+     is one 29.4 kB woff2 for the latin subset -- measured, not estimated.
+
+     `swap` rather than `block`: the heading is legible in the fallback face
+     immediately and reflows once. A reader on a slow phone gets the argument
+     before they get the typography, which is the right way round. */
+  --font-display:
+    "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue",
     Arial, sans-serif;
   --font-mono:
     ui-monospace, "SF Mono", "Cascadia Mono", "Roboto Mono", Menlo, Consolas,
     monospace;
+
+  /* A fluid scale, so nothing has to be re-chosen at a breakpoint.
+
+     `clamp` with a `vw` middle term means the headline is sized by the screen
+     rather than by a guess about which screen. The floors matter more than the
+     ceilings here: the whole distribution is a link in a reply on a phone, so
+     the small end is the design and the large end is the accommodation. */
+  --text-display: clamp(2.25rem, 1.35rem + 4.2vw, 4.25rem);
+  --text-act: clamp(1.5rem, 1.15rem + 1.6vw, 2.25rem);
+  --text-lead: clamp(1.0625rem, 1rem + 0.35vw, 1.25rem);
 }
 
 html {
@@ -143,4 +174,61 @@ body {
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Headings and the wordmark, and nothing else. See the note in @theme. */
+.display {
+  font-family: var(--font-display);
+  font-optical-sizing: auto;
+  letter-spacing: -0.022em;
+}
+
+/* An act's number: the numbered argument down the page.
+
+   The argument is the order, so the order is visible. A reader who scrolls past
+   act 03 knows they skipped something, which a page of undifferentiated
+   sections cannot tell them. */
+.act-no {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  letter-spacing: 0.18em;
+  color: var(--color-signal-dim);
+}
+
+/* The launch block, drawn as what it is: a row of squares, one per account
+   paid in the very first block of a coin's life. Three squares against twelve
+   is the site's whole claim, and it is the one claim a reader can check with
+   their eyes before reading a single number. */
+.blocks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.blocks rect {
+  /* Filled by the component; declared here so a reduced-motion reader and a
+     printed page get the same shape. */
+  shape-rendering: crispEdges;
+}
+
+/* A reply, shown as a receipt rather than as a quote.
+
+   The bot's replies are the product. A quotation mark frames one as an opinion;
+   a receipt frames it as a record, which is what it is -- and it is the shape
+   people already screenshot. Monospace, tabular, and it scrolls inside itself
+   rather than pushing the page sideways. */
+.receipt {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Wide content scrolls inside its own box. The page body never scrolls
+   sideways -- on a 375px screen that reads as broken rather than as wide. */
+.scroll-x {
+  overflow-x: auto;
 }

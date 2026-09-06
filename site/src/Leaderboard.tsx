@@ -19,9 +19,9 @@
 import { useEffect, useState } from "react";
 
 import { leaderboard as fetchLeaderboard, type Leaderboard as Data } from "./api";
-import { count, measuredAgo } from "./honesty";
+import { count, measuredAgo, safeHref } from "./honesty";
 import { useTitle } from "./title";
-import { Card, Heading, Measured, Nothing, Section } from "./ui";
+import { Card, Heading, Measured, Nothing, Section, Steps } from "./ui";
 
 /** The scoring rule, published in full because the prize is real money. */
 function TheRule() {
@@ -44,6 +44,10 @@ function TheRule() {
           · Excluded: the operator, accounts under 30 days old, and anyone the
           admission gate refused that week.
         </li>
+        <li>
+          · One win in any four weeks. A winner sits out the next three, so the
+          pool cannot be farmed by one account.
+        </li>
         <li>· Entry is free. You never need to hold anything to enter or to win.</li>
       </ul>
       <p className="mt-4 text-xs text-[var(--color-faint)]">
@@ -51,6 +55,67 @@ function TheRule() {
         publication of every score make that visible rather than impossible. If
         a winner is obviously bought, the rule changes and the change is
         recorded.
+      </p>
+    </Card>
+  );
+}
+
+/**
+ * How a winner actually gets paid.
+ *
+ * **This was written down nowhere a winner could read it.** The mechanism
+ * exists in `radar-analyst` and in design 0007 §6.2, and a winner's only view
+ * of it was a reply naming them by URL. A prize nobody knows how to claim is a
+ * prize that rolls over, and the rollover looks identical to a contest that
+ * pays nobody.
+ *
+ * Step 3 is the one that matters and it is stated as a warning rather than as
+ * an instruction: the claim is a reply **to the account's claim post**, and a
+ * mention that is not a reply to it is read as an ordinary summons. Pasting an
+ * address anywhere else does not claim anything.
+ */
+function HowToClaim() {
+  return (
+    <Card>
+      <h3 className="font-semibold text-[var(--color-text)]">
+        If you win, how to claim
+      </h3>
+      <div className="mt-4">
+        <Steps
+          steps={[
+            {
+              what: "The week closes and the account posts what it found.",
+              when: "Mondays, 00:00 UTC",
+            },
+            {
+              what: "Under the winning reply, the account posts a claim prompt addressed to the winner.",
+            },
+            {
+              what: (
+                <>
+                  Reply to <strong>that post</strong> with a Solana wallet
+                  address, from the same account that asked the question.
+                </>
+              ),
+              when: "Within seven days",
+            },
+            {
+              what: "The payout runs once a day: one transaction, the whole pool above the vault's rent reserve, signature published here.",
+              when: "Daily, 01:00 UTC",
+            },
+            {
+              what: "Unclaimed after seven days, the pool rolls into next week.",
+            },
+          ]}
+        />
+      </div>
+      <p className="mt-4 text-sm text-[var(--color-dim)]">
+        No wallet to connect, no login, no form. The reply is the proof, because
+        X has already proved who you are.
+      </p>
+      <p className="mt-3 text-xs text-[var(--color-faint)]">
+        Paste a wallet address, not a coin. An address you do not control is an
+        address the prize goes to.
       </p>
     </Card>
   );
@@ -84,9 +149,9 @@ function Table({ data }: { data: Data }) {
                 {e.mint ? `${e.mint.slice(0, 8)}…` : "no coin resolved"}
               </td>
               <td className="py-3 pr-4">
-                {e.reply_url ? (
+                {safeHref(e.reply_url ?? "", ["x.com"]) ? (
                   <a
-                    href={e.reply_url}
+                    href={safeHref(e.reply_url ?? "", ["x.com"]) ?? undefined}
                     rel="noopener noreferrer nofollow"
                     target="_blank"
                     className="text-[var(--color-signal)] underline underline-offset-4"
@@ -178,7 +243,10 @@ export function Leaderboard() {
             <Measured ago={measuredAgo(data.measured_at)} />
           )}
         </div>
-        <TheRule />
+        <div className="space-y-8">
+          <TheRule />
+          <HowToClaim />
+        </div>
       </div>
     </Section>
   );

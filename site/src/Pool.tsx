@@ -28,11 +28,12 @@
 //! the token's own economics, which is the safe direction and still wrong.
 
 import { useEffect, useState } from "react";
+import { Link } from "wouter";
 
 import { pool as fetchPool, sol, type Pool as Data } from "./api";
-import { measuredAgo } from "./honesty";
+import { measuredAgo, solscanTx } from "./honesty";
 import { useTitle } from "./title";
-import { Card, Heading, Measured, Nothing, Section } from "./ui";
+import { Card, Heading, Measured, Nothing, Section, Steps } from "./ui";
 
 function Economics() {
   return (
@@ -64,6 +65,41 @@ function Economics() {
         is the point — a memecoin that lies about its economics is the thing this
         bot exists to expose.
       </p>
+      <p className="mt-4 text-sm">
+        <Link
+          href="/token"
+          className="text-[var(--color-signal)] underline underline-offset-4 hover:text-[var(--color-text)]"
+        >
+          The full fee ladder, read off the chain, and the six rules →
+        </Link>
+      </p>
+    </Card>
+  );
+}
+
+/** The week, as the appointments it actually keeps. */
+function Week() {
+  return (
+    <Card>
+      <h3 className="font-semibold text-[var(--color-text)]">The week</h3>
+      <div className="mt-4">
+        <Steps
+          steps={[
+            { what: "Ask it about a coin. That is an entry.", when: "Any time" },
+            {
+              what: "The week closes and every reply that week is scored.",
+              when: "Mondays, 00:00 UTC",
+            },
+            {
+              what: "The account posts the result and a claim prompt under the winning reply.",
+            },
+            {
+              what: "The winner replies with a wallet address, and the pool is paid in one transaction.",
+              when: "Daily, 01:00 UTC",
+            },
+          ]}
+        />
+      </div>
     </Card>
   );
 }
@@ -95,14 +131,23 @@ function Winners({ data }: { data: Data }) {
                   {/* The signature, always. A prize nobody can verify was paid
                       is a claim, and this page is built so that every claim on
                       it can be checked by a stranger. */}
-                  <a
-                    href={`https://solscan.io/tx/${w.signature}`}
-                    rel="noopener noreferrer nofollow"
-                    target="_blank"
-                    className="font-mono text-xs text-[var(--color-signal)] underline underline-offset-4"
-                  >
-                    {w.signature.slice(0, 12)}…
-                  </a>
+                  {solscanTx(w.signature) ? (
+                    <a
+                      href={solscanTx(w.signature) ?? undefined}
+                      rel="noopener noreferrer nofollow"
+                      target="_blank"
+                      className="font-mono text-xs text-[var(--color-signal)] underline underline-offset-4"
+                    >
+                      {w.signature.slice(0, 12)}…
+                    </a>
+                  ) : (
+                    // Not a signature. Rendering it as a link would send a
+                    // reader somewhere on the strength of a field this site
+                    // does not write.
+                    <span className="font-mono text-xs text-[var(--color-faint)]">
+                      not a signature
+                    </span>
+                  )}
                 </td>
               </tr>
             ))}
@@ -189,7 +234,10 @@ export function Pool() {
             </p>
           )}
         </div>
-        <Economics />
+        <div className="space-y-8">
+          <Economics />
+          <Week />
+        </div>
       </div>
       <p className="mt-10 max-w-2xl text-xs text-[var(--color-faint)]">
         Prizes are shown in SOL because that is the unit the fee is paid in. A

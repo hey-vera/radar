@@ -107,7 +107,48 @@ The weekly teardown and the daily "seven days later" can be cross-posted to a
 Telegram channel later at zero marginal cost — that is broadcast, not a lane,
 and it does not consume a chain read or divert a summon.
 
-## 6. Where this is weakest
+## 6. The better alternative Josh raised, and why it is not settled
+
+Asked immediately after the above: **why Telegram at all, rather than an X
+Community plus an X group DM with the bot in it?**
+
+It is the better instinct, and if it works it makes this whole document moot.
+A community post is still a post: public, on the record, carrying
+`public_metrics`, screenshotable, and **scoreable for the contest**. It keeps
+every summon on the surface that feeds the loop instead of draining it. Section
+4's objection to Telegram does not apply to it at all.
+
+**The group DM half is not the answer.** A DM is private, so it carries no
+public metrics, is not a contest entry, and cannot be shared -- the same flaw as
+Telegram with a more restricted API on top.
+
+**The community half may not be reachable by the API**, and the evidence points
+that way. Two reports on X's own developer forum, both from 2026:
+
+- `POST /2/tweets` returns **403 Forbidden** when the payload carries
+  `community_id`, on the pay-per-use tier, while timeline-only posts succeed
+  ([devcommunity, 2026-02-17](https://devcommunity.x.com/t/api-v2-403-forbidden-on-community-posting-community-id-payload-despite-pay-per-use-tier-and-prior-functionality-feb-17-2026/257434)).
+- Community posts are reported as **filtered out of API endpoints**, with
+  developers asking whether it is "no longer possible to retrieve community
+  posts (and replies to community posts) via the api"
+  ([devcommunity](https://devcommunity.x.com/t/community-posts-from-broken-in-api/238960)).
+
+The second is the fatal one: if a mention inside a community never reaches
+`GET /2/users/:id/mentions`, the bot cannot see it, and people summoning it
+there would watch it sit silent. That is worse than having no community.
+
+Both are forum reports rather than documentation, and both may be stale.
+**The test is five minutes and definitive:** create the community, post in it
+mentioning the bot with a mint, and read whether it reached the mentions poll.
+Plan 0009 Phase 0.6 already reserves (e) for this.
+
+If it reaches: build the community, and **delete the Telegram lane** rather
+than leave dead code -- the free-lane question is answered better on X. If it
+does not: the community is still worth having for people, the bot cannot serve
+it, and the free-lane question returns to Telegram-or-nothing, where section 5's
+answer is nothing.
+
+## 7. Where this is weakest
 
 **The retention argument is not answered.** A person the X gate refuses gets
 nothing today. With Telegram they get an answer, and might come back to X
@@ -132,7 +173,7 @@ is speculation on the account's attention, and no document in this repository
 says that in one sentence. That is a bigger question than Telegram and it
 deserves its own document.
 
-## 7. What this changes if accepted
+## 8. What this changes if accepted
 
 Nothing is built or deleted. Two lines are not added to
 `/etc/radar/analyst.env`, and [plan 0009](../plans/0009-the-evidence-the-rule-and-the-voice.md)'s

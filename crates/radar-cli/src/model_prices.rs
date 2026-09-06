@@ -319,6 +319,20 @@ mod tests {
     }
 
     #[test]
+    fn no_arguments_prints_usage_without_reaching_the_network() {
+        // The guard that returns before the fetch, and the only part of `run`
+        // that can be exercised offline -- which is exactly why it is worth a
+        // test rather than an exclusion.
+        //
+        // Re-apply by flipping `==` to `!=` in `run`: an empty invocation goes
+        // to the catalog for a request that was never valid, and reaches the
+        // `unreachable!` past it. As written this call touches no network at
+        // all, which is the property being asserted.
+        let why = run(&args(&[])).expect_err("nothing was named");
+        assert!(why.starts_with("usage: radar model-prices"), "{why}");
+    }
+
+    #[test]
     fn listing_takes_no_model_and_ignores_the_environment() {
         assert_eq!(asked(&args(&["--list"]), Some("gpt-5.6-luna")), Asked::List);
         assert_eq!(asked(&args(&["--list", "--check"]), Some("x")), Asked::List);

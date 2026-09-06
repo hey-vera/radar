@@ -13,7 +13,7 @@
 //! commands compose and the file a research note cites is the file that was
 //! measured.
 
-use radar_research::edge::{self, Candidate, Enumeration, Horizon, Options, Reading, Report};
+use radar_research::edge::{self, Candidate, Cost, Enumeration, Horizon, Options, Reading, Report};
 use radar_roast::BaseRates;
 
 use crate::flag;
@@ -44,7 +44,9 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("cannot read {path}: {e}"))?;
     let options = Options {
         horizon,
-        cost_band: flag(args, "--cost-band").unwrap_or_else(|| edge::DEFAULT_COST_BAND.to_owned()),
+        // Unset charges the fresh-launch cohort's measured round trip, which
+        // is the population these rows belong to. A band is a sensitivity run.
+        cost: flag(args, "--cost-band").map_or(Cost::FreshLaunch, Cost::Band),
         budget: flag(args, "--budget")
             .and_then(|v| v.parse().ok())
             .unwrap_or(edge::DEFAULT_BUDGET),
@@ -62,12 +64,16 @@ fn present(report: &Report) {
     println!("horizon      : {}", report.horizon.label());
     println!("labelled rows: {}", report.labelled_rows);
     println!(
-        "cost band    : {} at {:.0} bps round trip (snapshot of {})",
-        report.cost_band, report.round_trip_bps, report.rates_measured_on
+        "charged      : {:.0} bps round trip -- {} (snapshot of {})",
+        report.round_trip_bps, report.cost_source, report.rates_measured_on
     );
+    // Printed, and held to by nothing. It is the same measurement as the line
+    // above read in the $20-$200 band, so requiring it beside the charge would
+    // charge one number twice -- plan 0007 Q2, answered in `edge::Cost`.
     println!(
-        "bar          : {:.0} bps gross, and {:.0} before a position above about $59",
-        report.bar_bps, report.bar_beside_bps
+        "for context  : {:.0} bps is that measurement in the $20-$200 band, which
+                        circulates as \"the bar\". It is not a second hurdle here.",
+        report.band_bar_bps
     );
     println!("\nfolds (the first {} are fitted as one):", edge::FIT_FOLDS);
     for (index, fold) in report.folds.iter().enumerate() {
@@ -92,7 +98,7 @@ fn present(report: &Report) {
 
     println!("\nfitted:");
     match &report.fitted {
-        Some(candidate) => print_candidate(candidate, report.bar_bps),
+        Some(candidate) => print_candidate(candidate),
         None => println!(
             "  nothing in the grammar held enough of the fitting period to be\n  \
              testable, which is a fact about the table rather than a result"
@@ -101,7 +107,7 @@ fn present(report: &Report) {
 
     println!("\nfixed, not fitted:");
     for candidate in &report.fixed {
-        print_candidate(candidate, report.bar_bps);
+        print_candidate(candidate);
     }
 
     println!();
@@ -122,8 +128,8 @@ fn present(report: &Report) {
 }
 
 /// Prints one stratum's fit and test readings.
-fn print_candidate(candidate: &Candidate, bar: f64) {
-    for line in candidate_lines(candidate, bar) {
+fn print_candidate(candidate: &Candidate) {
+    for line in candidate_lines(candidate) {
         println!("{line}");
     }
 }
@@ -133,18 +139,18 @@ fn print_candidate(candidate: &Candidate, bar: f64) {
 /// Built rather than printed so the two decisions in here can be tested: a
 /// fitted stratum's name already *is* its description and must not be printed
 /// twice, and a fold with too few rows says so rather than showing a figure.
-fn candidate_lines(candidate: &Candidate, bar: f64) -> Vec<String> {
+fn candidate_lines(candidate: &Candidate) -> Vec<String> {
     let mut lines = vec![format!("  {}", candidate.stratum.name)];
     let described = candidate.stratum.describe();
     if candidate.stratum.name != described {
         lines.push(format!("    {described}"));
     }
     if let Some(fit) = &candidate.fit {
-        lines.push(format!("    fit   {}", reading(fit, bar)));
+        lines.push(format!("    fit   {}", reading(fit)));
     }
     for (index, test) in candidate.tests.iter().enumerate() {
         lines.push(match test {
-            Some(r) => format!("    test{index} {}", reading(r, bar)),
+            Some(r) => format!("    test{index} {}", reading(r)),
             // Rule 9: too few rows is not a bad result, it is no result, and a
             // dash must not be read as a zero return.
             None => format!("    test{index} -- no rows"),
@@ -162,7 +168,7 @@ fn candidate_lines(candidate: &Candidate, bar: f64) -> Vec<String> {
 }
 
 /// One reading, on one line.
-fn reading(r: &Reading, bar: f64) -> String {
+fn reading(r: &Reading) -> String {
     format!(
         "n={:>6}  gross={:>9.1}  net={:>9.1}  paid={:>5}/{:<6} wilson>={:.3}  {}",
         r.n,
@@ -171,7 +177,7 @@ fn reading(r: &Reading, bar: f64) -> String {
         r.positive,
         r.n,
         r.wilson_lower,
-        if r.clears(bar) { "clears" } else { "short" }
+        if r.clears() { "clears" } else { "short" }
     )
 }
 
@@ -214,7 +220,7 @@ mod tests {
             tests: vec![Some(reading_of(200))],
             found: true,
         };
-        let lines = candidate_lines(&candidate, 456.0);
+        let lines = candidate_lines(&candidate);
         assert_eq!(
             lines.iter().filter(|l| l.contains(&described)).count(),
             1,
@@ -233,7 +239,7 @@ mod tests {
             tests: vec![None],
             found: false,
         };
-        let lines = candidate_lines(&candidate, 456.0);
+        let lines = candidate_lines(&candidate);
         assert!(lines[0].contains("refused: launching too fast"));
         assert!(lines[1].contains("launch_traders >= 3"), "{lines:?}");
         assert!(

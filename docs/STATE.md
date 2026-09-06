@@ -133,8 +133,19 @@ to run them against. So the honest state of the number is unchanged: research
 0017 measures the selection edge at **0 bps** against a bar of about **456**,
 and nothing here has moved it. What exists is the instrument that could.
 
-Two things the protocol does that design 0010 §6.2 did not say, both found by a
-test rather than argued (plan 0007 Q3): the fitting-period row floor is scaled
+**Design 0010 §6.1 is superseded on the cost, and this file is why.** The
+design charged a `by_notional` band and then asked for 456 bps on top. The
+reconciliation table above says those are the same measurement in two bands, so
+that charges one number twice; and it says these rows — fresh launches — belong
+to the 850 cohort, which 0019 declined to lower because a cost rounded down
+launders a trade past the gate. The harness charges **850** by default, offers a
+band for sensitivity, and accepts a stratum on three conditions: at least a
+hundred rows, a net **measurably** above zero, and more than half the rows
+paying at the Wilson lower bound. That is stricter than the design's rule, not
+looser.
+
+Two more things the protocol does that design 0010 §6.2 did not say, both found
+by a test rather than argued (plan 0007 Q3): the fitting-period row floor is scaled
 up from the smallest test fold, because a stratum too narrow to hold a hundred
 rows in a test fold can never be accepted and fitting on it displaces one that
 could have been; and the fit-fold winner is chosen under a one-standard-error

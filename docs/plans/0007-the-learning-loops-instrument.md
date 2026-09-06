@@ -133,18 +133,34 @@ fact the bot later wants to state has the pass it must go through first.
 
 - Q1 (2026-09-05): the bar for E3 is 456 bps with 850 reported beside it,
   per research 0022. Assumed unless changed.
-- Q2 (2026-09-05), **found while building item 1**: this plan says the label is
-  net of the band's round trip *and* that `Found` needs the median net return
-  at or above 456 bps. Read against research 0022 that is a double charge —
-  0022's `a ≈ 456` **is** the fee round trip, and its bar is on the gross edge
-  `r`, since profit is `s · (r − a − b·s)`. Charging the round trip in the
-  label and then requiring 456 on top charges it twice.
-  What item 2 does about it, unless Josh says otherwise: the row carries the
-  **gross** return, the harness computes the net beside it from the snapshot's
-  `by_notional` band, and `Found` requires **both** — median net at or above
-  zero *and* median gross at or above the bar. That is stricter than either
-  reading alone, so it cannot produce a `Found` that only one of them supports,
-  and every number is printed so a reader can apply whichever rule they hold.
+- Q2 (2026-09-05), **answered, and not Josh's to answer**: the plan said the
+  label is net of the band's round trip *and* that `Found` needs the median net
+  at or above 456 bps. That double-charges, and `docs/STATE.md`'s reconciliation
+  of the three cost figures says why in one sentence: **"250 and 456 are the
+  same measurement read in two different bands."** 456 **is**
+  `by_notional["$20-$200"]`. There is no second bar; the bar *is* the round
+  trip, and clearing it is exactly "the net pays for itself".
+
+  The same paragraph settled which round trip to charge, and the answer was not
+  the one the design gave. `by_notional` is 0019's table over **all** pump.fun
+  trades in an hour. These rows are **fresh launches**, which 0019 measured
+  separately at **850 bps** — a new associated token account is rent, and early
+  curve positions carry more slippage — and it **declined to lower the
+  constant** on that evidence, because the population is wrong and a cost
+  rounded down launders a trade past the gate that should have refused it.
+
+  So the harness charges 850 by default, `--cost-band` selects a `by_notional`
+  row for a sensitivity run, and acceptance is three conditions rather than
+  four: at least a hundred rows, the net **measurably** above zero — by more
+  than the standard error of its own median, since a median that only looks
+  positive inside its own noise has not been shown to be — and the Wilson lower
+  bound of the share that paid above a half.
+
+  Net effect: **stricter than what the double charge produced.** It required a
+  gross median of 456; this requires 850 plus a margin, and it requires it for
+  the right reason. Design 0010 §6.1 is superseded on this point and is not
+  edited — it decays by its own rule, and STATE.md carries the correction.
+
 - Q3 (2026-09-05), **two protocol changes item 2's tests forced**, both
   deviations from design 0010 §6.2 and both recorded here rather than made
   quietly:

@@ -173,30 +173,42 @@ fn an_engineered_edge_is_found() {
     );
     for reading in fitted.tests.iter().flatten() {
         assert!(
-            reading.median_gross >= report.bar_bps,
-            "a surviving fold must clear the bar: {reading:?}"
+            reading.median_net > reading.se_median,
+            "a surviving fold pays for its round trip by more than its own noise: {reading:?}"
         );
     }
 }
 
 #[test]
-fn the_bar_and_the_round_trip_come_from_the_snapshot() {
-    // Design 0010 §6.1: the round trip is a function of size and comes from the
-    // snapshot's `by_notional`, never from a constant in the harness. If this
-    // ever reads a number written in the code, the report will say one thing
-    // and charge another.
+fn the_cost_charged_is_the_fresh_launch_figure_and_comes_from_the_snapshot() {
+    // These rows are fresh launches, and 0019 measured that cohort at 850 --
+    // higher than any `by_notional` band, and it declined to lower the constant
+    // because rounding a cost down launders a trade past the gate. If this ever
+    // reads a number written in the code, the report will say one thing and
+    // charge another.
     let rates = rates();
     let table = table_of(|index, _| (pseudo(index, 99) - 0.5) * 4_000.0);
     let report = edge::run(&table, &rates, &Options::default()).expect("runs");
 
-    let band = rates
-        .cost_bands
-        .iter()
-        .find(|b| b.band == edge::DEFAULT_COST_BAND)
-        .expect("the snapshot names the band the harness charges at");
-    assert!((report.round_trip_bps - band.round_trip).abs() < f64::EPSILON);
-    assert!((report.bar_bps - rates.round_trip_bar).abs() < f64::EPSILON);
+    assert!((report.round_trip_bps - rates.round_trip_kernel).abs() < f64::EPSILON);
+    assert!(
+        report.round_trip_bps > rates.round_trip_bar,
+        "the fresh-launch cohort costs more than the band that circulates as the bar"
+    );
+    assert!((report.band_bar_bps - rates.round_trip_bar).abs() < f64::EPSILON);
     assert_eq!(report.rates_measured_on, rates.measured_on);
+
+    // A band is still selectable, for sensitivity.
+    let cheaper = edge::run(
+        &table,
+        &rates,
+        &Options {
+            cost: edge::Cost::Band(edge::A_NOTIONAL_BAND.to_owned()),
+            ..Options::default()
+        },
+    )
+    .expect("runs");
+    assert!(cheaper.round_trip_bps < report.round_trip_bps);
 }
 
 #[test]
@@ -210,7 +222,7 @@ fn a_band_the_snapshot_does_not_name_is_refused_rather_than_substituted() {
         &table,
         &rates,
         &Options {
-            cost_band: "$1,000,000+".to_owned(),
+            cost: edge::Cost::Band("$1,000,000+".to_owned()),
             ..Options::default()
         },
     );

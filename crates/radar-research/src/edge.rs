@@ -82,14 +82,78 @@ pub const EMBARGO_SLOTS: u64 = 216_000;
 /// Terms a stratum may conjoin.
 pub const MAX_TERMS: usize = 3;
 
-/// The notional band whose round trip the net return is charged at.
+/// A notional band from the snapshot's `by_notional` table, for sensitivity.
 ///
-/// A fifth of the ~$60 capacity research 0022 measures at the 1% impact budget
-/// — about twelve dollars — which is the row of 0022's table the current sizing
-/// actually sits in. Named as the snapshot spells it, and looked up rather than
-/// hard-coded as a number: design 0010 §6.1 says the round trip comes from the
-/// snapshot's `by_notional`, never from a constant in the harness.
-pub const DEFAULT_COST_BAND: &str = "$2-$20";
+/// Not the default. See [`Cost`] for why the fresh-launch figure is.
+pub const A_NOTIONAL_BAND: &str = "$2-$20";
+
+/// What round trip a stratum's return is charged.
+///
+/// # Why this is not simply a band from `by_notional`
+///
+/// Design 0010 §6.1 said the round trip comes from the snapshot's `by_notional`
+/// table, and plan 0007 Q2 asked whether charging a band *and* requiring 456 bps
+/// on top double-charges. `docs/STATE.md`'s reconciliation of the three cost
+/// figures answers both, and the answer is sharper than the question:
+///
+/// > 250 and 456 are the same measurement read in two different bands.
+///
+/// **456 is `by_notional["$20-$200"]`.** So requiring it beside a band's own
+/// round trip charges one measurement twice, against one position, in two
+/// bands at once. There is no second bar; the bar *is* the round trip, and
+/// clearing it is exactly "the net pays for itself".
+///
+/// The same paragraph settles which round trip. `by_notional` is 0019's table
+/// over **all** pump.fun trades in an hour. The rows this harness scores are
+/// **fresh launches**, and 0019 measured that cohort separately at 850 bps —
+/// a new associated token account is rent, and early curve positions carry more
+/// slippage. It **declined to lower the constant** on that evidence, because
+/// the population is wrong and the error direction is the dangerous one: a cost
+/// rounded down launders a trade past the gate that should have refused it.
+///
+/// So the default charges 850, the figure the kernel itself assumes, and a
+/// `by_notional` band is available for sensitivity rather than as the headline.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Cost {
+    /// The measured all-in round trip for the fresh-launch cohort — the
+    /// population these rows belong to. `round_trip_kernel` in the snapshot.
+    FreshLaunch,
+    /// One row of the snapshot's `by_notional` table, by name.
+    Band(String),
+}
+
+impl Cost {
+    /// The round trip in basis points, and how the report should name it.
+    ///
+    /// # Errors
+    ///
+    /// [`EdgeError::NoCostBand`] when the snapshot does not name the band. A
+    /// refusal rather than a fallback: charging a neighbouring band because the
+    /// named one was absent would make the report say one cost and charge
+    /// another.
+    pub fn resolve(&self, rates: &BaseRates) -> Result<(f64, String), EdgeError> {
+        match self {
+            Self::FreshLaunch => Ok((
+                rates.round_trip_kernel,
+                "the fresh-launch cohort (0019, the population these rows are)".to_owned(),
+            )),
+            Self::Band(name) => rates
+                .cost_bands
+                .iter()
+                .find(|b| b.band == *name)
+                .map(|b| (b.round_trip, format!("the {} notional band", b.band)))
+                .ok_or_else(|| EdgeError::NoCostBand {
+                    band: name.clone(),
+                    available: rates
+                        .cost_bands
+                        .iter()
+                        .map(|b| b.band.clone())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                }),
+        }
+    }
+}
 
 /// Strata to try before stopping and saying so.
 ///
@@ -278,21 +342,24 @@ pub struct Reading {
 impl Reading {
     /// Whether this reading clears the acceptance conditions.
     ///
-    /// Both charges, deliberately. Plan 0007 Q2: the plan said the label is net
-    /// of the round trip *and* that the median net must clear 456 bps, which
-    /// double-charges the cost — research 0022's `a ≈ 456` **is** the fee round
-    /// trip and its bar is on the gross edge `r`, since profit is
-    /// `s · (r − a − b·s)`. Rather than pick a reading and hide the choice, this
-    /// requires both halves: the net must pay for itself and the gross must
-    /// clear the bar. That is stricter than either reading alone, so no `Found`
-    /// can rest on only one of them, and every figure is printed so a reader can
-    /// apply whichever rule they hold.
+    /// Three of them, and no fourth. Plan 0007 Q2 asked whether charging a
+    /// band's round trip *and* requiring 456 bps on top double-charges the
+    /// cost. It does, and [`Cost`] carries the citation: 456 **is** the round
+    /// trip for one of the bands, so there is no second bar to clear. What is
+    /// left is the one condition that means anything — the return pays for the
+    /// round trip — with a margin and a shape:
+    ///
+    /// 1. **Enough rows.** A median over eleven is a story about eleven tokens.
+    /// 2. **The net is measurably above zero**, by more than the standard error
+    ///    of its own median. Zero exactly is a round trip that consumed the
+    ///    whole move, and a median that merely *looks* positive inside its own
+    ///    noise has not been shown to be.
+    /// 3. **More than half the rows paid**, at the Wilson lower bound. A median
+    ///    over a point mass at zero is a report about the point mass, which is
+    ///    what research 0017 found in its short-hold strata.
     #[must_use]
-    pub fn clears(&self, bar_bps: f64) -> bool {
-        self.n >= MIN_ROWS
-            && self.median_net >= 0.0
-            && self.median_gross >= bar_bps
-            && self.wilson_lower > 0.5
+    pub fn clears(&self) -> bool {
+        self.n >= MIN_ROWS && self.median_net > self.se_median && self.wilson_lower > 0.5
     }
 }
 
@@ -338,14 +405,14 @@ pub struct Report {
     pub watermark: Slot,
     /// Which return this was run against.
     pub horizon: Horizon,
-    /// The cost band charged, as the snapshot names it.
-    pub cost_band: String,
+    /// What was charged, in words, so the report says which cost it used.
+    pub cost_source: String,
     /// Its round trip, in basis points.
     pub round_trip_bps: f64,
-    /// The bar the gross median is held to.
-    pub bar_bps: f64,
-    /// The figure research 0022 reports beside it for a position above ~$59.
-    pub bar_beside_bps: f64,
+    /// `by_notional["$20-$200"]`, which circulates as "the bar". Printed for
+    /// context and held to by nothing: it is the same measurement as the round
+    /// trip above, read in a different band.
+    pub band_bar_bps: f64,
     /// When the snapshot the two came from was measured.
     pub rates_measured_on: String,
     /// Labelled rows the protocol ran over.
@@ -370,8 +437,8 @@ pub struct Report {
 pub struct Options {
     /// Which return to measure.
     pub horizon: Horizon,
-    /// The band whose round trip is charged.
-    pub cost_band: String,
+    /// What round trip to charge.
+    pub cost: Cost,
     /// Strata to try before stopping.
     pub budget: usize,
     /// When set, a uniform-noise feature is added to the grammar with this
@@ -383,7 +450,7 @@ impl Default for Options {
     fn default() -> Self {
         Self {
             horizon: Horizon::TwentyFourHours,
-            cost_band: DEFAULT_COST_BAND.to_owned(),
+            cost: Cost::FreshLaunch,
             budget: DEFAULT_BUDGET,
             noise_seed: None,
         }
@@ -431,20 +498,7 @@ pub fn run(
     rates: &BaseRates,
     options: &Options,
 ) -> Result<Report, EdgeError> {
-    let band = rates
-        .cost_bands
-        .iter()
-        .find(|b| b.band == options.cost_band)
-        .ok_or_else(|| EdgeError::NoCostBand {
-            band: options.cost_band.clone(),
-            available: rates
-                .cost_bands
-                .iter()
-                .map(|b| b.band.clone())
-                .collect::<Vec<_>>()
-                .join(", "),
-        })?;
-    let round_trip = band.round_trip;
+    let (round_trip, cost_source) = options.cost.resolve(rates)?;
 
     let points = points_of(table, options, round_trip);
     if points.len() < FOLDS * MIN_ROWS {
@@ -488,7 +542,6 @@ pub fn run(
         options.budget,
     );
 
-    let bar = rates.round_trip_bar;
     let test = |stratum: &Stratum| -> Vec<Option<Reading>> {
         test_rows
             .iter()
@@ -496,7 +549,7 @@ pub fn run(
             .collect()
     };
     let cleared = |readings: &[Option<Reading>]| -> bool {
-        !readings.is_empty() && readings.iter().all(|r| r.is_some_and(|r| r.clears(bar)))
+        !readings.is_empty() && readings.iter().all(|r| r.is_some_and(|r| r.clears()))
     };
 
     let fitted = best.map(|(stratum, fit)| {
@@ -527,10 +580,9 @@ pub fn run(
     Ok(Report {
         watermark: table.watermark,
         horizon: options.horizon,
-        cost_band: band.band.clone(),
+        cost_source,
         round_trip_bps: round_trip,
-        bar_bps: bar,
-        bar_beside_bps: rates.round_trip_kernel,
+        band_bar_bps: rates.round_trip_bar,
         rates_measured_on: rates.measured_on.clone(),
         labelled_rows: points.len(),
         folds,
@@ -1893,13 +1945,13 @@ mod tests {
     fn a_reading_needs_every_condition_and_not_merely_a_good_median() {
         let clearing = Reading {
             n: MIN_ROWS,
-            median_gross: 500.0,
+            median_gross: 900.0,
             median_net: 10.0,
             positive: MIN_ROWS,
             wilson_lower: 0.96,
             se_median: 5.0,
         };
-        assert!(clearing.clears(456.0));
+        assert!(clearing.clears());
 
         // Each condition, removed alone.
         assert!(
@@ -1907,7 +1959,7 @@ mod tests {
                 n: MIN_ROWS - 1,
                 ..clearing
             }
-            .clears(456.0),
+            .clears(),
             "too few rows"
         );
         assert!(
@@ -1915,24 +1967,32 @@ mod tests {
                 median_net: -1.0,
                 ..clearing
             }
-            .clears(456.0),
-            "the net must pay for itself"
+            .clears(),
+            "the net must pay for the round trip"
         );
         assert!(
             !Reading {
-                median_gross: 455.0,
+                median_net: 5.0,
                 ..clearing
             }
-            .clears(456.0),
-            "the gross must clear the bar"
+            .clears(),
+            "a net of exactly one standard error is inside its own noise"
         );
         assert!(
             !Reading {
                 wilson_lower: 0.5,
                 ..clearing
             }
-            .clears(456.0),
+            .clears(),
             "a half is not above a half: a median over a point mass at zero is a report about the point mass"
+        );
+        assert!(
+            Reading {
+                median_gross: 1.0,
+                ..clearing
+            }
+            .clears(),
+            "there is no separate bar on the gross figure -- 456 is the round              trip read in another band, and charging it here would charge one              measurement twice"
         );
     }
 

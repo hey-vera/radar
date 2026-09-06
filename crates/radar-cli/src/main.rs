@@ -76,9 +76,12 @@ commands:
   edge --features <file> [--rates <file>] [--horizon 6h|24h]
        [--cost-band <name>] [--budget N] [--noise-seed N]
                                  the walk-forward protocol: does any stratum
-                                 clear the bar out of sample, on two folds it
-                                 was not fitted on. Purged and embargoed;
-                                 prints how many strata were tried beside every
+                                 pay for its round trip out of sample, on two
+                                 folds it was not fitted on. Charges the
+                                 fresh-launch cohort's measured cost unless
+                                 --cost-band names a notional band for a
+                                 sensitivity run. Purged and embargoed; prints
+                                 how many strata were tried beside every
                                  verdict, because a winner chosen from many is
                                  expected to regress
   study --store <dir> [--pivot N]

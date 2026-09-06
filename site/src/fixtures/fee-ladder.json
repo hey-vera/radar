@@ -1,0 +1,61 @@
+{
+  "_comment": [
+    "The fee a trade pays, which is where the prize comes from.",
+    "",
+    "NOT TYPED IN. Every row below was decoded from the captured fee-config",
+    "account in crates/radar-pumpfun/tests/fixtures/pumpswap_fees.json by the",
+    "parser in radar-pumpfun's fees.rs, and a test in that crate --",
+    "the_site_publishes_the_ladder_this_crate_decodes.rs -- asserts this file",
+    "still equals what that parser reads. The check lives on the Rust side on",
+    "purpose: the capture is hex, and decoding it here would be a second copy of",
+    "the fee arithmetic in a language that cannot be asked to agree with the",
+    "first. The decoder disposes; this file only publishes.",
+    "",
+    "Research 0028 is the note that asked the chain. The venue's help centre",
+    "described a ladder nobody had read; the schedule has twenty-five rows keyed",
+    "on market capitalisation, and two live swaps paid a row further down than",
+    "their pool's cap selects -- that disagreement is 0028's open question and is",
+    "not resolved here.",
+    "",
+    "creator_bps is the row that matters to a reader: it is the fee that reaches",
+    "the vault, and ADR 0013 makes all of it the weekly prize. 30 bps on the",
+    "curve, 95 immediately after graduation, then down to 5 at the top.",
+    "",
+    "EVERY NUMBER HERE HAS A DATE ON IT AND IS EXPECTED TO MOVE."
+  ],
+  "captured": "2026-09-05",
+  "source": "Solana mainnet, fee_config seeded with the PumpSwap program id, slot 444505805",
+  "curve": {
+    "creator_bps": 30,
+    "note": "Before graduation there is one tier and no liquidity providers."
+  },
+  "after_graduation": {
+    "rows": [
+      { "from_sol": 0, "lp_bps": 2, "protocol_bps": 93, "creator_bps": 30 },
+      { "from_sol": 420, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 95 },
+      { "from_sol": 1470, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 90 },
+      { "from_sol": 2460, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 85 },
+      { "from_sol": 3440, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 80 },
+      { "from_sol": 4420, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 75 },
+      { "from_sol": 9820, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 70 },
+      { "from_sol": 14740, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 65 },
+      { "from_sol": 19650, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 60 },
+      { "from_sol": 24560, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 55 },
+      { "from_sol": 29470, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 50 },
+      { "from_sol": 34380, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 45 },
+      { "from_sol": 39300, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 40 },
+      { "from_sol": 44210, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 35 },
+      { "from_sol": 49120, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 30 },
+      { "from_sol": 54030, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 28 },
+      { "from_sol": 58940, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 25 },
+      { "from_sol": 63860, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 23 },
+      { "from_sol": 68770, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 20 },
+      { "from_sol": 73681, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 18 },
+      { "from_sol": 78590, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 15 },
+      { "from_sol": 83500, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 13 },
+      { "from_sol": 88400, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 10 },
+      { "from_sol": 93330, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 8 },
+      { "from_sol": 98240, "lp_bps": 20, "protocol_bps": 5, "creator_bps": 5 }
+    ]
+  }
+}

@@ -14,9 +14,16 @@ import {
   count,
   graduated,
   measuredAgo,
+  handleHref,
+  mintShaped,
   mostCoordinated,
   pct,
+  safeHref,
   share,
+  solscanAccount,
+  solscanTx,
+  summonIntent,
+  userHref,
   type Stats,
 } from "./honesty";
 
@@ -45,22 +52,27 @@ describe("share", () => {
 
 describe("the figures the landing page leads with", () => {
   it("matches what was measured on the box", () => {
-    // Checked against the creator index summed on the production box at slot
-    // 444,374,676 on 2026-09-04: 506,991 measured, 8,999 organic, 5,230
-    // instant, 116,427 stillborn.
+    // Checked against the creator index on the production box at slot
+    // 444,637,451, built 2026-09-05T22:55:16Z: 527,490 measured, 9,431 organic,
+    // 5,708 instant, 119,318 stillborn.
     //
-    // This is the test that would have caught the reply bug shipped the same
-    // day: a figure looked up by the wrong key published a cost 6.7x the real
-    // one, and only running it against production data found it.
-    expect(pct(graduated(stats.watched))).toBe("2.81%");
+    // This is the test that would have caught the reply bug shipped on
+    // 2026-09-04: a figure looked up by the wrong key published a cost 6.7x the
+    // real one, and only running it against production data found it.
+    //
+    // It earned its keep again on the refresh above. The strings below were
+    // predicted before the fixture moved and one of them was predicted wrong --
+    // 1.79% was read as the *instant* share, which is 1.08%, and it is the
+    // organic one. The prediction was discarded and these three are what the
+    // code prints. That is the whole arrangement: nobody's arithmetic gets to
+    // decide what this page says.
+    expect(pct(graduated(stats.watched))).toBe("2.87%");
     expect(pct(share(stats.watched.stillborn, stats.watched.measured))).toBe(
-      "23.0%",
+      "22.6%",
     );
-    // 8,999 of 506,991 is 1.774983%, which rounds down. Written as 1.78 first,
-    // from arithmetic done in my head rather than by the code -- the exact
-    // habit this file exists to refuse.
+    // 9,431 of 527,490 is 1.787902%.
     expect(pct(share(stats.watched.organic, stats.watched.measured))).toBe(
-      "1.77%",
+      "1.79%",
     );
   });
 
@@ -144,5 +156,97 @@ describe("cost", () => {
     expect(cost(456)).not.toContain("+");
     // And a cost handed in already negative is still a cost, not a gain.
     expect(cost(-456)).toBe("4.6%");
+  });
+});
+
+describe("links", () => {
+  // Refusals first, because a link helper that never returns null is a link
+  // helper that is not doing anything.
+
+  it("refuses a scheme that is not https", () => {
+    // The one that matters. React warns on this and does not block it.
+    expect(safeHref("javascript:alert(1)", ["x.com"])).toBe(null);
+    expect(safeHref("data:text/html,<script>", ["x.com"])).toBe(null);
+    expect(safeHref("http://x.com/a", ["x.com"])).toBe(null);
+  });
+
+  it("refuses a host that only looks like the allowed one", () => {
+    // Every hand-rolled version of this check is a prefix match, and every one
+    // of them passes this case.
+    expect(safeHref("https://evil.example/#@x.com", ["x.com"])).toBe(null);
+    expect(safeHref("https://x.com.evil.example/a", ["x.com"])).toBe(null);
+    expect(safeHref("https://notx.com/a", ["x.com"])).toBe(null);
+    expect(safeHref("not a url at all", ["x.com"])).toBe(null);
+  });
+
+  it("allows the host it was given", () => {
+    expect(safeHref("https://x.com/CabalHunter", ["x.com"])).toBe(
+      "https://x.com/CabalHunter",
+    );
+  });
+
+  it("refuses a sixteenth character in a handle", () => {
+    // X's own bound. A 16-character handle renders as a link to a profile that
+    // does not exist, on the page introducing the account.
+    expect(handleHref("a".repeat(15))).toBe(`https://x.com/${"a".repeat(15)}`);
+    expect(handleHref("a".repeat(16))).toBe(null);
+    expect(handleHref("")).toBe(null);
+    expect(handleHref("has space")).toBe(null);
+    expect(handleHref("has-dash")).toBe(null);
+    expect(handleHref("@leading")).toBe(null);
+  });
+
+  it("refuses anything but digits in a user id", () => {
+    expect(userHref("1234567890")).toBe("https://x.com/i/user/1234567890");
+    expect(userHref("12a")).toBe(null);
+    expect(userHref("")).toBe(null);
+    expect(userHref("../../evil")).toBe(null);
+  });
+
+  it("refuses a signature with a character base58 does not have", () => {
+    // '0' is excluded from base58 precisely because it is confusable with 'O',
+    // and a signature containing one did not come off a chain.
+    const good = "5".repeat(88);
+    expect(solscanTx(good)).toBe(`https://solscan.io/tx/${good}`);
+    expect(solscanTx(`0${"5".repeat(87)}`)).toBe(null);
+    expect(solscanTx("5".repeat(85))).toBe(null);
+    expect(solscanTx("5".repeat(89))).toBe(null);
+  });
+
+  it("reads a mint the way the bot's own parser does", () => {
+    // 32 to 44, bounds exact -- mention.rs MIN_ADDRESS and MAX_ADDRESS. A
+    // reader whose paste this rejects would have been refused by the bot too,
+    // and the summon box should say so before it costs them a post.
+    expect(mintShaped("a".repeat(32))).toBe(true);
+    expect(mintShaped("a".repeat(44))).toBe(true);
+    expect(mintShaped("a".repeat(31))).toBe(false);
+    expect(mintShaped("a".repeat(45))).toBe(false);
+    expect(mintShaped(`  ${"a".repeat(32)}  `)).toBe(true);
+    expect(mintShaped(`0${"a".repeat(31)}`)).toBe(false);
+    expect(solscanAccount("a".repeat(44))).toBe(
+      `https://solscan.io/account/${"a".repeat(44)}`,
+    );
+    expect(solscanAccount("not an address")).toBe(null);
+  });
+
+  it("builds a summons only when both halves are real", () => {
+    const mint = "a".repeat(43);
+    expect(summonIntent("CabalHunter", mint)).toBe(
+      `https://x.com/intent/post?text=%40CabalHunter%20${mint}`,
+    );
+    // A button that posts "@undefined <mint>" is worse than no button.
+    expect(summonIntent("", mint)).toBe(null);
+    expect(summonIntent("a".repeat(16), mint)).toBe(null);
+    expect(summonIntent("CabalHunter", "not an address")).toBe(null);
+  });
+
+  it("encodes the mint rather than pasting it into a query string", () => {
+    // The mint is address-shaped by the time it reaches here, so nothing needs
+    // escaping today. The encoding is asserted anyway: the day this function
+    // takes a ticker instead, '$' and '&' arrive with it.
+    const url = summonIntent("CabalHunter", "a".repeat(32));
+    expect(url).not.toBe(null);
+    expect(url).toContain("%40");
+    expect(url).not.toContain("@");
   });
 });

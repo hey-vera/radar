@@ -13,8 +13,8 @@ benefit of the doubt on everything else.
 
 ## Index
 
-**21 of these 29 name something mechanical that would catch a
-recurrence. 8 name only a habit, and say so** — which is this file's opening
+**21 of these 30 name something mechanical that would catch a
+recurrence. 9 name only a habit, and say so** — which is this file's opening
 standard rather than a gap in it. The habit-only rows are the ones worth reading
 twice; nothing will stop those repeating except somebody remembering.
 
@@ -54,6 +54,7 @@ quietly absent.
 | [27](#27-half-a-cache-key-left-to-the-caller-to-remember) | Half a cache key, left to the caller to remember | *habit only* |
 | [28](#28-a-mutant-that-killed-the-machine-so-the-check-could-not-report) | A mutant that killed the machine, so the check could not report | *habit only* |
 | [29](#29-a-sentence-that-was-false-on-the-day-it-was-written-in-two-documents-at-once) | A sentence that was false on the day it was written, in two documents at once | `repo-conformance`'s `the_documented_dependency_claims_are_true`,… |
+| [30](#30-an-operators-file-that-named-a-variable-its-own-service-does-not-read) | An operator's file that named a variable its own service does not read | *habit only* |
 
 ---
 
@@ -1424,3 +1425,38 @@ thing that looked like a check and was a comment.
 all three statements rather than the prose describing them, and
 `one_test_file_is_accounted_for_by_one_document`, which stops two documents
 owning one account in the first place.
+
+## 30. An operator's file that named a variable its own service does not read
+
+**Found:** 2026-09-06, by the operator setting the credential up, one command
+before it would have mattered.
+
+`deploy/analyst.env.example` told an operator to set `RADAR_RPC_URL`. The
+analyst reads **`RADAR_RPC`** — `radar_onchain::RpcClient::from_vars`.
+`RADAR_RPC_URL` is the **payout** binary's variable, and the block had been
+copied from `deploy/payout.env.example` along with its name.
+
+**What it would have cost.** Nothing visible. `from_vars` falls back to the free
+public endpoint when the variable is absent, so the analyst would have started,
+answered mentions, and quietly used a rate-limited node that cannot reach the
+history a launch lookup needs — against a paid endpoint sitting configured in
+the file, unread. `RpcClient::endpoint` exists and is public *precisely* so an
+operator can be told which endpoint is running; the mutation testing note on it
+describes this exact failure. It still happened, in the one place that accessor
+cannot see: the file the operator types into.
+
+**The shape.** A template copied from a sibling service carries the sibling's
+vocabulary, and every reader of the new file is reading a claim about a binary
+nobody checked it against. Entry 29's shape — a sentence true of one thing and
+written about another — moved from prose into configuration, where it fails
+silently instead of loudly.
+
+**What catches a recurrence:** *habit only* for now, and the mechanism is
+written down rather than built: `deploy/*.service` already links an env file to
+its binary through `EnvironmentFile=` and `ExecStart=`, so a check could derive
+which crate must read each documented variable and refuse one that no crate in
+that binary's dependency closure reads. That needs a transitive manifest walk,
+which is real work; the alternative — a hand-written map from example file to
+crate — is a second thing to keep in sync and would fail in the direction that
+reports success. Until it exists, a copied env block is checked by reading the
+crate.

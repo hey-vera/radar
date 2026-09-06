@@ -670,6 +670,41 @@ roughly 0% CPU — neither appears in the top consumers on a box also running
 Cortex and Pulse. The systemd units are for restart-on-failure and boot
 persistence, not for resource containment.
 
+## The public site: the Cloudflare Pages project
+
+Design 0008 K1: the public pages are a **separate `site/` app** served as static
+files by Cloudflare Pages, not by the VPS. The operator console stays behind
+Cloudflare Access on the box and shares nothing with this. A viral spike hits
+Cloudflare's edge rather than a 4 GB machine that is also recording the chain.
+
+Create the project from the GitHub repository, and set:
+
+| field | value |
+|---|---|
+| framework preset | **Vite** — it only prefills the two fields below; **None** with the same two values is identical |
+| build command | `npm run build` |
+| build output directory | `dist` |
+| root directory | `site` |
+
+**There is no Node version field.** Pages takes it from the environment, and it
+must be said somewhere or the build runs on whatever the platform defaults to
+that month — while CI runs on 22, which is the drift this repository spends its
+conformance checks refusing. Two ways, and both are in place:
+
+- `site/.node-version` is committed and says `22`. Pages reads it, and so does
+  `actions/setup-node`, so the two cannot disagree.
+- If the dashboard still needs telling, add a **build environment variable**
+  `NODE_VERSION=22`. That is a second place to keep in sync, so prefer the file.
+
+`npm audit` is **not** run by Pages. `just site` runs it and the `site` check
+gates `main`, so a build that reaches Pages has already had it. Pages is a
+deployment surface, not a gate.
+
+Then point `cabalhunter.org` at the project. Until the X account and the token
+exist, the leaderboard and the pool are honest empty pages — design 0008 §11
+item 1 says so, and an empty page that says a week has not run is the correct
+output rather than a placeholder.
+
 ## The public analyst
 
 `radar-analyst` answers mentions with what Radar measured. It is the one service

@@ -700,6 +700,39 @@ fn announce_week(
 /// In a dry run the post is recorded and not published, no id comes back,
 /// `claim_prompt` stays `None`, and no claim can land -- correct, because no
 /// winning reply was published for anyone to have seen either.
+/// The post the claim prompt replies to.
+///
+/// **The winner's own summons, not the bot's winning reply.**
+///
+/// Since 2026-02-23 X accepts an API reply only when the author of the post
+/// being replied to mentioned or quoted the bot in that post. A summons did
+/// exactly that by definition, so this is the one reply the platform
+/// guarantees. Replying under the account's own post relies instead on an
+/// exemption reported by a blog and a developer forum and documented nowhere
+/// -- and if it is not real, the winner is never told they won and finds out
+/// when the pool rolls over unclaimed.
+///
+/// It also lands where they will see it: the summons is their own post, so the
+/// prompt reaches their notifications rather than a thread they left.
+///
+/// The winning reply is the fallback, for weeks closed before mention ids were
+/// recorded. Those are the weeks the exemption has to hold for, and there is
+/// exactly one of them.
+///
+/// Split out of [`prompt_claim_if_due`] because the match on the winning reply
+/// is the whole of it and it is one character from being wrong: CI turned the
+/// `==` into a `!=`, which posts the prompt under **a losing entrant's**
+/// summons, and nothing failed -- the only test that reached this code had one
+/// entrant, so the winner and the first non-winner were the same row.
+fn claim_target(ranking: &radar_contest::Ranking, winning_reply: &str) -> String {
+    ranking
+        .ranked
+        .iter()
+        .find(|r| r.entry.reply_id == winning_reply)
+        .and_then(|r| r.entry.mention_id.clone())
+        .unwrap_or_else(|| winning_reply.to_owned())
+}
+
 fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Paths) {
     let at = now();
     let Some(record) = crate::contest::prompt_due(&paths.contest_dir, at) else {
@@ -712,29 +745,7 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
         return;
     };
 
-    // **Under the winner's own summons, not under the bot's winning reply.**
-    //
-    // Since 2026-02-23 X accepts an API reply only when the author of the post
-    // being replied to mentioned or quoted the bot in that post. A summons did
-    // exactly that by definition, so this is the one reply the platform
-    // guarantees. Replying under the account's own post relies instead on an
-    // exemption reported by a blog and a developer forum and documented
-    // nowhere -- and if it is not real, the winner is never told they won and
-    // finds out when the pool rolls over unclaimed.
-    //
-    // It also lands where they will see it: the summons is their own post, so
-    // the prompt reaches their notifications rather than a thread they left.
-    //
-    // The winning reply is the fallback, for weeks closed before mention ids
-    // were recorded. Those are the weeks the exemption has to hold for, and
-    // there is exactly one of them.
-    let under = record
-        .ranking
-        .ranked
-        .iter()
-        .find(|r| r.entry.reply_id == winner.reply_id)
-        .and_then(|r| r.entry.mention_id.clone())
-        .unwrap_or_else(|| winner.reply_id.clone());
+    let under = claim_target(&record.ranking, &winner.reply_id);
 
     let Ok(reservation) = spend.authorize(Cost::Reply, day_of(at)) else {
         eprintln!(
@@ -1019,6 +1030,74 @@ pub fn tick(
 
 #[cfg(test)]
 mod tests {
+
+    /// One entrant, with the summons the claim prompt should reply to.
+    fn entrant(reply_id: &str, mention_id: &str) -> radar_contest::Ranked {
+        radar_contest::Ranked {
+            entry: radar_contest::Entry {
+                reply_id: reply_id.to_owned(),
+                summoner: format!("s{reply_id}"),
+                mention_id: Some(mention_id.to_owned()),
+                handle: None,
+                mint: "M".to_owned(),
+                at: 0,
+                metrics: radar_contest::Metrics::default(),
+            },
+            score: 0,
+        }
+    }
+
+    #[test]
+    fn the_claim_prompt_goes_under_the_winners_summons_and_nobody_elses() {
+        // CI turned this `==` into a `!=` and nothing failed, because the only
+        // test reaching the code had one entrant -- so the winner and the first
+        // non-winner were the same row. With two, the inverted match posts the
+        // prompt under a *loser's* summons: the winner is never told, and the
+        // pool rolls over unclaimed while somebody who did not win is invited
+        // to claim it.
+        let ranking = radar_contest::Ranking {
+            ranked: vec![
+                entrant("won", "winners-summons"),
+                entrant("lost", "someone-elses"),
+            ],
+            excluded: Vec::new(),
+        };
+        assert_eq!(claim_target(&ranking, "won"), "winners-summons");
+
+        // The order does not decide it either: the winner is matched by reply
+        // id, not by being first.
+        let reversed = radar_contest::Ranking {
+            ranked: vec![
+                entrant("lost", "someone-elses"),
+                entrant("won", "winners-summons"),
+            ],
+            excluded: Vec::new(),
+        };
+        assert_eq!(claim_target(&reversed, "won"), "winners-summons");
+    }
+
+    #[test]
+    fn a_week_closed_before_mention_ids_falls_back_to_the_winning_reply() {
+        // The one week that exists. Its entries have no mention id, so the
+        // prompt goes under the bot's own reply and relies on the undocumented
+        // exemption -- which is the situation this fallback exists to describe,
+        // not to prefer.
+        let mut only = entrant("won", "unused");
+        only.entry.mention_id = None;
+        let ranking = radar_contest::Ranking {
+            ranked: vec![only],
+            excluded: Vec::new(),
+        };
+        assert_eq!(claim_target(&ranking, "won"), "won");
+
+        // And a winner who is not in the ranking at all -- which should not
+        // happen -- gets the reply id rather than a stranger's summons.
+        let others = radar_contest::Ranking {
+            ranked: vec![entrant("lost", "someone-elses")],
+            excluded: Vec::new(),
+        };
+        assert_eq!(claim_target(&others, "won"), "won");
+    }
     #[test]
     fn the_operator_set_always_holds_the_bots_own_id_and_drops_empty_ones() {
         use super::operator_ids_from;

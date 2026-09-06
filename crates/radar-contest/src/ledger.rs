@@ -111,6 +111,40 @@ pub enum Refusal {
         /// The signature of the payment that was made.
         signature: String,
     },
+    /// The operator voided this week. It pays nobody and the pool rolls over.
+    Voided {
+        /// Their reason, as published.
+        reason: String,
+    },
+}
+
+/// A week the operator voided, and why.
+///
+/// # Why a lever exists at all
+///
+/// Design 0007 §6.2 promised that *"if the first winner is obviously bought,
+/// the rule changes and the change is recorded."* Changing a rule takes a
+/// deploy and an argument; the prize is claimable in seven days. Without this
+/// the only options in that week are pay a farm or let the week look
+/// unclaimed, and the second is a lie a reader cannot see through.
+///
+/// # Why it is visible rather than quiet
+///
+/// A voided week **says so on the page, with the operator's reason in their own
+/// words**. Design 0011's whole argument is that an exclusion at payout is a
+/// private correction to a public error; this is the same principle applied to
+/// the one action that is unavoidably a judgement. It cannot be used to tidy a
+/// week away, because using it publishes the fact that it was used.
+///
+/// It does not rewrite the ranking. The scores stand, the evidence stands, the
+/// winner is still named — the week simply pays nobody and the pool rolls over.
+/// A reader who disagrees can see exactly what the operator saw.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Voided {
+    /// When the operator voided it, seconds since the epoch.
+    pub at: u64,
+    /// Why, in the operator's own words. Published verbatim.
+    pub reason: String,
 }
 
 /// The creator vault, as last read from the chain.
@@ -181,6 +215,12 @@ pub struct Record {
     pub claim_prompt: Option<String>,
     /// The winner's claim, once made.
     pub claim: Option<Claim>,
+    /// The operator voided this week, and why.
+    ///
+    /// `None` is the ordinary case. `Some` means the week pays nobody whatever
+    /// the ranking says, and the reason is published beside the evidence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voided: Option<Voided>,
     /// The rule this week was scored under.
     ///
     /// **Written into the record rather than looked up**, because the rule
@@ -216,6 +256,7 @@ impl Record {
             winner,
             claim_prompt: None,
             claim: None,
+            voided: None,
             rule: Some(rule.clone()),
             payout: None,
         }
@@ -304,6 +345,15 @@ impl Payout {
                 signature: paid.signature.clone(),
             });
         }
+        // Checked before the winner, the claim and the amount, because a
+        // voided week is not a week with a problem to work around -- it is a
+        // week the operator has already decided pays nobody. Reporting
+        // `Unclaimed` for it would send somebody looking for a claim.
+        if let Some(voided) = &record.voided {
+            return Err(Refusal::Voided {
+                reason: voided.reason.clone(),
+            });
+        }
         if record.winner.is_none() {
             return Err(Refusal::NoWinner);
         }
@@ -326,6 +376,76 @@ mod tests {
     use crate::score::{Entry, Metrics, Ranked};
 
     const WEEK: Week = Week(2958);
+
+    #[test]
+    fn a_voided_week_pays_nobody_and_says_so_before_anything_else() {
+        // Checked ahead of the winner, the claim and the amount. A voided week
+        // is not a week with a problem to work around -- the operator has
+        // already decided it pays nobody -- and reporting `Unclaimed` for one
+        // would send somebody looking for a claim that is not the point.
+        //
+        // Re-apply by moving the check below the claim: an unclaimed voided
+        // week reports `Unclaimed` and the reason never reaches anybody.
+        let mut record = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
+        record.voided = Some(Voided {
+            at: 1_788_000_000,
+            reason: "every point came from six accounts made that morning".to_owned(),
+        });
+
+        // No claim at all: still Voided, not Unclaimed.
+        match Payout::permitted(&record, "somebody", 1, 1_000) {
+            Err(Refusal::Voided { reason }) => {
+                assert!(reason.contains("six accounts"), "{reason}");
+            }
+            other => panic!("expected Voided, got {other:?}"),
+        }
+
+        // And with a perfectly good claim, it still pays nobody.
+        record.claim = Some(Claim {
+            address: "somebody".to_owned(),
+            at: 1_788_000_100,
+            reply_id: "r9".to_owned(),
+        });
+        assert!(matches!(
+            Payout::permitted(&record, "somebody", 1, 1_000),
+            Err(Refusal::Voided { .. })
+        ));
+    }
+
+    #[test]
+    fn a_week_that_was_already_paid_reports_that_rather_than_the_void() {
+        // Order between the two. Money that already left is the more useful
+        // fact, and it is the one that cannot be undone by editing a file.
+        let mut record = Record::close(WEEK, ranking_with_winner(), &Rules::published(["op"]));
+        record.payout = Some(Payout {
+            recipient: "somebody".to_owned(),
+            lamports: 10,
+            signature: "sig".to_owned(),
+            at: 1_788_000_000,
+        });
+        record.voided = Some(Voided {
+            at: 1_788_000_100,
+            reason: "too late".to_owned(),
+        });
+        assert!(matches!(
+            Payout::permitted(&record, "somebody", 1, 1_000),
+            Err(Refusal::AlreadyPaid { .. })
+        ));
+    }
+
+    #[test]
+    fn a_record_written_before_the_veto_existed_is_not_voided() {
+        // Rule 9's direction here is the cheap one: absent means the operator
+        // never voided it, which is true of every week closed before today.
+        let old = Record::close(WEEK, Ranking::default(), &Rules::published(["op"]));
+        let json = old.to_json().expect("json");
+        assert!(
+            !json.contains("voided"),
+            "an unvoided week does not carry an empty field: {json}"
+        );
+        let back: Record = serde_json::from_str(&json).expect("reads");
+        assert_eq!(back.voided, None);
+    }
 
     #[test]
     fn only_a_numbered_json_file_in_the_directory_is_a_record() {

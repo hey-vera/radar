@@ -32,17 +32,36 @@ pub fn run(args: &[String]) -> Result<(), String> {
         .and_then(|w| w.parse::<u64>().ok())
         .map(Week)
         .ok_or("--week <n> is required")?;
+    let contest_dir =
+        crate::flag(args, "--contest-dir").unwrap_or_else(|| "data/contest".to_owned());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+
+    // Voiding reads and writes one file. It touches no chain and no creator
+    // wallet, so it must not require the flags that do: an operator voiding a
+    // bought week has enough to think about without looking up a creator
+    // address to satisfy an argument parser. Handled before those are read,
+    // which is also what makes it testable without a chain.
+    if sub == Some("void") {
+        let reason = crate::flag(args, "--reason")
+            .ok_or("--reason <words> is required, and it is published verbatim")?;
+        let record = radar_analyst::contest::void_week(&contest_dir, week, &reason, now)?;
+        let voided = record.voided.as_ref().ok_or("the week was not voided")?;
+        println!(
+            "week {}: voided, pays nobody, the pool rolls over.
+reason, published verbatim: {}",
+            week.0, voided.reason
+        );
+        return Ok(());
+    }
+
     let creator: Address = crate::flag(args, "--creator")
         .ok_or("--creator <address> is required: the wallet that launched the token")?
         .parse()
         .map_err(|e| format!("--creator: {e}"))?;
     let rpc = crate::flag(args, "--rpc").ok_or("--rpc <url> is required (direct RPC, rule 7)")?;
-    let contest_dir =
-        crate::flag(args, "--contest-dir").unwrap_or_else(|| "data/contest".to_owned());
     let chain = Rpc::new(rpc);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
 
     match sub {
         Some("pay") => {
@@ -77,7 +96,7 @@ pub fn run(args: &[String]) -> Result<(), String> {
             Ok(())
         }
         _ => Err(
-            "radar contest <pay --dry-run | record-payout --signature <sig>> --week <n> --creator <address> --rpc <url>"
+            "radar contest <pay --dry-run | record-payout --signature <sig> | void --reason <words>> --week <n> --creator <address> --rpc <url>"
                 .to_owned(),
         ),
     }
@@ -127,5 +146,83 @@ mod tests {
                 .expect_err("flags")
                 .contains("--week")
         );
+    }
+
+    /// The command name plus the words, the way `main` passes them.
+    fn voidargs(words: &[&str]) -> Vec<String> {
+        std::iter::once("contest")
+            .chain(words.iter().copied())
+            .map(str::to_owned)
+            .collect()
+    }
+
+    #[test]
+    fn voiding_a_week_needs_no_chain_and_no_creator_wallet() {
+        // It reads and writes one file. Requiring `--creator` and `--rpc` for
+        // it -- which the dispatch did until 2026-09-06, because the arm was
+        // bolted onto a command that pays -- means an operator voiding a bought
+        // week has to look up a creator address first, at the moment they have
+        // the least patience for it.
+        //
+        // CI's mutants deleted the whole `Some("void")` arm and nothing failed,
+        // because the arm was unreachable from a test for exactly that reason.
+        // Re-apply by deleting it now: this fails on the usage string.
+        let dir = std::env::temp_dir().join(format!("radar-cli-void-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.to_string_lossy().into_owned();
+
+        let rules = radar_contest::Rules::published(["op"]);
+        let record =
+            radar_contest::Record::close(Week(2957), radar_contest::Ranking::default(), &rules);
+        radar_analyst::contest::write_record(&path, &record).expect("write");
+
+        run(&voidargs(&[
+            "void",
+            "--week",
+            "2957",
+            "--reason",
+            "every point came from six accounts made that morning",
+            "--contest-dir",
+            &path,
+        ]))
+        .expect("voided with no chain flags");
+
+        let back = radar_contest::records_in(std::path::Path::new(&path));
+        assert_eq!(
+            back[0].voided.as_ref().expect("voided").reason,
+            "every point came from six accounts made that morning"
+        );
+    }
+
+    #[test]
+    fn voiding_still_needs_a_week_and_a_reason() {
+        // The two things it cannot invent. A missing reason in particular:
+        // the reason is the mechanism, and a void nobody can read is the
+        // private correction design 0011 rejects.
+        let dir = std::env::temp_dir().join(format!("radar-cli-void2-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        let path = dir.to_string_lossy().into_owned();
+
+        let no_reason = run(&voidargs(&[
+            "void",
+            "--week",
+            "2957",
+            "--contest-dir",
+            &path,
+        ]))
+        .expect_err("no reason");
+        assert!(no_reason.contains("--reason"), "{no_reason}");
+
+        let no_week = run(&voidargs(&[
+            "void",
+            "--reason",
+            "x",
+            "--contest-dir",
+            &path,
+        ]))
+        .expect_err("no week");
+        assert!(no_week.contains("--week"), "{no_week}");
     }
 }

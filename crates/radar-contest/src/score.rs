@@ -39,7 +39,69 @@ pub const QUOTE_WEIGHT: u64 = 3;
 /// Weight of a like in the score.
 pub const LIKE_WEIGHT: u64 = 1;
 /// Weight of a reply in the score.
+///
+/// **Zero under the verified rule, and the reason is the whole point of that
+/// rule.** A reply is conversation rather than spread, one account can post
+/// unlimited replies to the same post, and the account's own claim prompt is a
+/// reply to its own winning reply. It is kept as a constant, and kept in the
+/// raw score, because the raw score is published as evidence beside the
+/// verified one and a reader comparing the two needs both formulas to be
+/// stated.
 pub const REPLY_WEIGHT: u64 = 1;
+
+/// What a verified scan found: engagement that cost somebody something.
+///
+/// # Why the raw metrics cannot be the rule
+///
+/// On X a single account can quote or reply to the same post **without limit**.
+/// Only a repost and a like are one-per-account. So under
+/// `3·reposts + 3·quotes + 1·likes + 1·replies` over `public_metrics`, one
+/// account can take the top of the leaderboard, and the week's prize, for
+/// nothing at all. Research 0029, S16.
+///
+/// # What this can and cannot do
+///
+/// It cannot make farming unprofitable. Likes sell from about $2 per hundred
+/// and reposts from about $1.50, from aged accounts with bios and posting
+/// histories, and the prize is tens of dollars — so no engagement rule prices a
+/// determined farm out. What it does is make each point cost **dollars instead
+/// of nothing**: count only what is one-per-account, count only accounts old
+/// enough to cost money to fake, and publish every number so a bought week is
+/// visible to anybody reading the page.
+///
+/// Design 0011 argued for publishing the measurement and never a verdict, and
+/// that is kept exactly: these are counts. Nothing here says "botted".
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Verified {
+    /// Distinct accounts that reposted, old enough to count.
+    pub reposts: u64,
+    /// Distinct accounts that quoted, old enough to count.
+    ///
+    /// **Accounts, not quotes.** Ten quotes from one account are one quoter,
+    /// which is the difference between this and `Metrics::quotes`.
+    pub quoters: u64,
+    /// Distinct accounts that liked, old enough to count.
+    pub likes: u64,
+    /// How many distinct accounts were seen across all three reads.
+    pub engagers: u64,
+    /// How many of those were younger than the rule's floor.
+    ///
+    /// Published as a count beside the score. It is evidence a reader weighs,
+    /// never a threshold that excludes anybody: design 0011 phase 2 makes a
+    /// cluster measurement into a rule only by ADR, after four closed weeks.
+    pub engagers_under_age: u64,
+}
+
+impl Verified {
+    /// The verified score. Replies weigh nothing; see [`REPLY_WEIGHT`].
+    #[must_use]
+    pub const fn score(&self) -> u64 {
+        self.reposts
+            .saturating_mul(REPOST_WEIGHT)
+            .saturating_add(self.quoters.saturating_mul(QUOTE_WEIGHT))
+            .saturating_add(self.likes.saturating_mul(LIKE_WEIGHT))
+    }
+}
 
 /// The public metrics of one of the bot's own replies, read at week close.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -52,16 +114,45 @@ pub struct Metrics {
     pub likes: u64,
     /// Replies to the reply.
     pub replies: u64,
+    /// What the engager scan found, when this entry was scanned.
+    ///
+    /// `None` means the scan did not reach this entry -- the walk stops as soon
+    /// as arithmetic says nothing below can win (`close_if_due`), so most
+    /// entries in a busy week are never scanned and are correctly scored raw.
+    /// It is **not** "nobody engaged", which would be a `Some` full of zeroes.
+    /// Rule 9, and the distinction decides the ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verified: Option<Verified>,
 }
 
 impl Metrics {
-    /// The published score.
+    /// The score that ranks this entry.
+    ///
+    /// Verified when the scan reached it, raw otherwise. Mixing the two in one
+    /// ranking is sound because **raw is always at least verified**: the raw
+    /// formula counts every account and adds replies, the verified one counts a
+    /// subset of accounts and drops replies. That inequality is what makes the
+    /// walk's stopping rule correct, and it is asserted below rather than
+    /// assumed.
+    #[must_use]
+    pub const fn score(&self) -> u64 {
+        match self.verified {
+            Some(v) => v.score(),
+            None => self.raw_score(),
+        }
+    }
+
+    /// The published metrics scored as they come off the platform.
+    ///
+    /// Kept, and published beside the verified score as evidence. This is the
+    /// number that can be farmed from one account for nothing, which is why it
+    /// no longer decides anything on its own.
     ///
     /// Saturating, because a score is compared and never summed onward, and
     /// an overflow that wrapped to a small number would rank a viral reply
     /// last.
     #[must_use]
-    pub const fn score(&self) -> u64 {
+    pub const fn raw_score(&self) -> u64 {
         self.reposts
             .saturating_mul(REPOST_WEIGHT)
             .saturating_add(self.quotes.saturating_mul(QUOTE_WEIGHT))
@@ -122,6 +213,17 @@ pub struct Rules {
     pub operators: BTreeSet<String>,
     /// Accounts younger than this at week close do not count.
     pub min_account_age_days: u32,
+    /// An engager younger than this is not counted toward a verified score.
+    ///
+    /// The same floor entrants already meet, applied symmetrically -- an
+    /// account too new to enter is too new to vote. Published, so it is a rule
+    /// a reader can check rather than a filter they have to trust.
+    ///
+    /// `serde(default)` reads a record written before the verified rule
+    /// existed; zero there is correct, because those weeks were scored with no
+    /// engager floor at all and the record must say what actually happened.
+    #[serde(default)]
+    pub min_engager_age_days: u32,
     /// A winner cannot win again until this many further weeks have closed.
     ///
     /// Three means one win in any four consecutive weeks: the winner of week
@@ -147,6 +249,7 @@ impl Rules {
         Self {
             operators: operators.into_iter().map(Into::into).collect(),
             min_account_age_days: 30,
+            min_engager_age_days: 30,
             cooldown_weeks: 3,
         }
     }
@@ -327,15 +430,16 @@ mod tests {
                 quotes,
                 likes,
                 replies,
+                verified: None,
             }
-            .score()
+            .raw_score()
         };
         assert_eq!(one(1, 0, 0, 0), 3, "a repost is worth three");
         assert_eq!(one(0, 1, 0, 0), 3, "a quote is worth three");
         assert_eq!(one(0, 0, 1, 0), 1, "a like is worth one");
         assert_eq!(one(0, 0, 0, 1), 1, "a reply is worth one");
         assert_eq!(one(2, 1, 5, 3), 6 + 3 + 5 + 3);
-        assert_eq!(Metrics::default().score(), 0);
+        assert_eq!(Metrics::default().raw_score(), 0);
     }
 
     #[test]
@@ -345,8 +449,19 @@ mod tests {
             quotes: u64::MAX,
             likes: 0,
             replies: 0,
+            verified: None,
         };
         assert_eq!(m.score(), u64::MAX);
+        assert_eq!(
+            Verified {
+                reposts: u64::MAX,
+                quoters: u64::MAX,
+                ..Verified::default()
+            }
+            .score(),
+            u64::MAX,
+            "and the verified score saturates the same way"
+        );
     }
 
     #[test]
@@ -600,5 +715,160 @@ mod tests {
             (REPOST_WEIGHT, QUOTE_WEIGHT, LIKE_WEIGHT, REPLY_WEIGHT),
             (3, 3, 1, 1)
         );
+    }
+
+    #[test]
+    fn one_account_can_farm_the_raw_rule_for_nothing_and_not_the_verified_one() {
+        // Research 0029, S16, and the whole reason `Verified` exists. On X a
+        // single account can quote or reply to the same post without limit;
+        // only a repost and a like are one-per-account. So under the raw rule
+        // one account with thirty quotes beats a reply that ten real people
+        // reposted, and it costs nothing.
+        //
+        // Re-apply by making `score()` return `raw_score()` unconditionally:
+        // the farm wins and this fails.
+        let farm = Metrics {
+            reposts: 0,
+            quotes: 30,
+            likes: 0,
+            replies: 30,
+            // One account, so one quoter, and it reposted and liked nothing.
+            verified: Some(Verified {
+                reposts: 0,
+                quoters: 1,
+                likes: 0,
+                engagers: 1,
+                engagers_under_age: 0,
+            }),
+        };
+        let real = Metrics {
+            reposts: 10,
+            quotes: 0,
+            likes: 0,
+            replies: 0,
+            verified: Some(Verified {
+                reposts: 10,
+                quoters: 0,
+                likes: 0,
+                engagers: 10,
+                engagers_under_age: 0,
+            }),
+        };
+
+        assert!(
+            farm.raw_score() > real.raw_score(),
+            "the raw rule is the thing being fixed: {} vs {}",
+            farm.raw_score(),
+            real.raw_score()
+        );
+        assert!(
+            real.score() > farm.score(),
+            "the verified rule ranks ten reposters above one prolific quoter: {} vs {}",
+            real.score(),
+            farm.score()
+        );
+    }
+
+    #[test]
+    fn a_verified_score_is_never_above_the_raw_one_it_came_from() {
+        // The inequality the walk's stopping rule rests on. `close_if_due`
+        // scans down the ranking and stops when the best verified score is at
+        // least the next entry's RAW score -- which is only sound if raw is an
+        // upper bound on verified. It is, structurally: raw counts every
+        // account and adds replies, verified counts a subset and drops them.
+        //
+        // Asserted over a spread of shapes rather than argued, because the day
+        // somebody adds a weight to the verified side without adding it to raw
+        // is the day the ranking silently stops being correct.
+        for (reposts, quotes, likes, replies) in
+            [(0, 0, 0, 0), (1, 0, 0, 0), (10, 30, 100, 50), (7, 3, 0, 9)]
+        {
+            // The most generous scan possible: every raw repost was a distinct
+            // old account, every raw quote a distinct old quoter, every like
+            // real. Nothing a real scan returns can exceed this.
+            let m = Metrics {
+                reposts,
+                quotes,
+                likes,
+                replies,
+                verified: Some(Verified {
+                    reposts,
+                    quoters: quotes,
+                    likes,
+                    engagers: reposts + quotes + likes,
+                    engagers_under_age: 0,
+                }),
+            };
+            assert!(
+                m.score() <= m.raw_score(),
+                "verified {} exceeded raw {} for {reposts}/{quotes}/{likes}/{replies}",
+                m.score(),
+                m.raw_score()
+            );
+        }
+    }
+
+    #[test]
+    fn an_unscanned_entry_is_scored_raw_and_an_empty_scan_is_not_the_same_thing() {
+        // Rule 9 in the place it decides a ranking. The walk stops as soon as
+        // arithmetic says nothing below can win, so most entries in a busy week
+        // are never scanned -- `None` means "not looked at", and scoring those
+        // as zero would rank every unscanned entry last.
+        //
+        // A scan that ran and found nobody is `Some` full of zeroes, and that
+        // really is a score of zero.
+        let raw = Metrics {
+            reposts: 2,
+            quotes: 1,
+            likes: 5,
+            replies: 3,
+            verified: None,
+        };
+        assert_eq!(raw.score(), raw.raw_score());
+        assert_eq!(raw.score(), 6 + 3 + 5 + 3);
+
+        let scanned_empty = Metrics {
+            verified: Some(Verified::default()),
+            ..raw
+        };
+        assert_eq!(
+            scanned_empty.score(),
+            0,
+            "a scan that found nobody is a zero, not a fallback to raw"
+        );
+        assert_eq!(
+            scanned_empty.raw_score(),
+            raw.raw_score(),
+            "and the raw numbers are still published beside it as evidence"
+        );
+    }
+
+    #[test]
+    fn the_published_rule_carries_both_age_floors() {
+        // An account too new to enter is too new to vote. Applied
+        // symmetrically, and published, so it is a rule a reader can check
+        // rather than a filter they have to trust.
+        let rules = Rules::published(["1"]);
+        assert_eq!(rules.min_account_age_days, 30);
+        assert_eq!(rules.min_engager_age_days, 30);
+    }
+
+    #[test]
+    fn a_record_written_before_the_verified_rule_still_reads() {
+        // The migration. `min_engager_age_days` is absent from every week
+        // closed before 2026-09-06, and zero is the honest value there: those
+        // weeks were scored with no engager floor at all, and the record has to
+        // say what happened rather than what the rule says now.
+        let old = r#"{"operators":["1","2"],"min_account_age_days":30,"cooldown_weeks":3}"#;
+        let rules: Rules = serde_json::from_str(old).expect("an old record still reads");
+        assert_eq!(rules.min_engager_age_days, 0);
+        assert_eq!(rules.min_account_age_days, 30);
+
+        // And a metrics blob from before the scan existed reads as unscanned,
+        // not as scanned-and-empty.
+        let m: Metrics = serde_json::from_str(r#"{"reposts":2,"quotes":1,"likes":5,"replies":3}"#)
+            .expect("an old entry still reads");
+        assert_eq!(m.verified, None);
+        assert_eq!(m.score(), m.raw_score());
     }
 }

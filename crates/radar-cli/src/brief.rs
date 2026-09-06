@@ -2184,6 +2184,7 @@ mod tests {
         let mut old = radar_contest::Record::close(
             radar_contest::Week(2956),
             radar_contest::Ranking::default(),
+            &radar_contest::Rules::published(["op"]),
         );
         old.winner = Some(radar_contest::Winner {
             summoner: "a".to_owned(),
@@ -2206,6 +2207,7 @@ mod tests {
         let mut latest = radar_contest::Record::close(
             radar_contest::Week(2957),
             radar_contest::Ranking::default(),
+            &radar_contest::Rules::published(["op"]),
         );
         latest.winner = Some(radar_contest::Winner {
             summoner: "b".to_owned(),

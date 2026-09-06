@@ -354,7 +354,7 @@ mod tests {
             },
             radar_contest::Excluded::Unscored,
         ));
-        Record::close(WEEK, ranking)
+        Record::close(WEEK, ranking, &radar_contest::Rules::published(["radar"]))
     }
 
     fn vault() -> Vault {

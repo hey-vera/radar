@@ -158,7 +158,11 @@ mod tests {
     }
 
     fn record(week: u64, claimed: bool, paid: bool) -> Record {
-        let mut r = Record::close(Week(week), Ranking::default());
+        let mut r = Record::close(
+            Week(week),
+            Ranking::default(),
+            &radar_contest::Rules::published(["op"]),
+        );
         if claimed {
             r.claim = Some(Claim {
                 address: "A".to_owned(),

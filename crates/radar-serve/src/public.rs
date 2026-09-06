@@ -453,6 +453,7 @@ mod tests {
                 }],
                 excluded: Vec::new(),
             },
+            &radar_contest::Rules::published(["op"]),
         )
     }
 

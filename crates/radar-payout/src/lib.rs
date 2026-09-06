@@ -660,7 +660,7 @@ mod tests {
             },
             score: 3,
         });
-        let mut record = Record::close(WEEK, ranking);
+        let mut record = Record::close(WEEK, ranking, &radar_contest::Rules::published(["op"]));
         assert!(record.winner.is_some());
         if claimed {
             record.claim = Some(Claim {
@@ -774,7 +774,11 @@ mod tests {
             }))
         );
         // No winner.
-        let none = Record::close(WEEK, Ranking::default());
+        let none = Record::close(
+            WEEK,
+            Ranking::default(),
+            &radar_contest::Rules::published(["op"]),
+        );
         assert_eq!(
             plan(&none, &creator, full, &BLOCKHASH).err(),
             Some(PayError::Refused(Refusal::NoWinner))

@@ -5,6 +5,7 @@ import { Link, Route, Switch, useLocation } from "wouter";
 
 import { About } from "./About";
 import { account, handleHref } from "./honesty";
+import { History } from "./History";
 import { Home } from "./Home";
 import { Leaderboard } from "./Leaderboard";
 import { Pool } from "./Pool";
@@ -60,7 +61,10 @@ function Footer() {
           to buy or sell anything.
         </p>
         <p className="mt-4">
-          <Link href="/about" className="underline hover:text-[var(--color-dim)]">
+          <Link
+            href="/about"
+            className="underline hover:text-[var(--color-dim)]"
+          >
             What this is, who runs it, and what it will never say
           </Link>
         </p>
@@ -97,6 +101,7 @@ export function App() {
           <Route path="/" component={Home} />
           <Route path="/leaderboard" component={Leaderboard} />
           <Route path="/pool" component={Pool} />
+          <Route path="/history" component={History} />
           <Route path="/token" component={Token} />
           <Route path="/about" component={About} />
           <Route>

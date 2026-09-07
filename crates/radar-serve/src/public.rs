@@ -100,6 +100,13 @@ pub async fn leaderboard() -> Response {
     respond(&paths, StatusCode::OK, doc)
 }
 
+/// `GET /v1/public/weeks`.
+pub async fn weeks() -> Response {
+    let paths = Paths::from_env();
+    let doc = weeks_in(&paths, radar_analyst::daemon::now());
+    respond(&paths, StatusCode::OK, doc)
+}
+
 /// `GET /v1/public/pool`.
 pub async fn pool() -> Response {
     let paths = Paths::from_env();
@@ -305,6 +312,189 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
     })
 }
 
+/// Every closed week, newest first, with the evidence behind each one.
+///
+/// Design 0009 item 5, and Josh's ask in four parts: who won, whether they
+/// collected, whether they were paid, and what any of that can be checked
+/// against.
+///
+/// # Why this is a separate document from the leaderboard
+///
+/// The leaderboard is one week and it changes every minute. This is every week
+/// and it changes when a week closes. They cache differently, and a reader
+/// wants them at different moments -- "who is winning" and "was the last one
+/// actually paid" are not the same question.
+///
+/// # What is named and what is only counted
+///
+/// A **winner** is named: they were paid, or are owed, public money out of a
+/// pool the public is told is theirs, and that has to be checkable against a
+/// person. Everybody else is a **count**. An entrant excluded for being thirty
+/// days too new does not need that published beside their handle, and the
+/// counts by reason are enough for a reader to check the rule was applied --
+/// which is the only thing the exclusions are published for.
+///
+/// # Every state is stated, and none is inferred
+///
+/// A missing payout and a week that paid nobody are different, so the document
+/// never leaves a reader to guess: a week with no payment says *why* there was
+/// none, in `payout.state`. `rule` is `null` on a week closed before the rule
+/// was recorded -- unknown, not "the current rule", which matters to anybody
+/// disputing a placing (rule 9).
+///
+/// # The winner's account age is not here
+///
+/// It decided their admission and it is **not on the record**: `Standing`
+/// carries it at close and nothing writes it down. Publishing an age read
+/// today would be a different number about a different moment, so the document
+/// omits the field rather than filling it. Said plainly because the ask named
+/// it.
+#[must_use]
+pub fn weeks_in(paths: &Paths, now: u64) -> Value {
+    let mut records = records(&paths.contest_dir);
+    // Newest first: a reader opens this to check the most recent week.
+    records.sort_by_key(|r| std::cmp::Reverse(r.week));
+    json!({
+        "measured_at": timestamp_from_seconds(now),
+        "weeks": records.iter().map(|r| week_doc(r, now)).collect::<Vec<_>>(),
+    })
+}
+
+/// One week, in the site's shape.
+fn week_doc(record: &Record, now: u64) -> Value {
+    let mut reasons: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for (_, why) in &record.ranking.excluded {
+        *reasons.entry(reason_name(why)).or_default() += 1;
+    }
+    json!({
+        "week": monday_of(record.week),
+        "opened_at": timestamp_from_seconds(record.opened_at),
+        "closed_at": timestamp_from_seconds(record.closed_at),
+        "entries": record.ranking.ranked.len(),
+        "excluded": {
+            "count": record.ranking.excluded.len(),
+            "reasons": reasons,
+        },
+        "winner": winner_doc(record),
+        "rule": rule_doc(record.rule.as_ref()),
+        "voided": record.voided.as_ref().map(|v| json!({
+            "at": timestamp_from_seconds(v.at),
+            "reason": v.reason,
+        })),
+        "claim": claim_doc(record, now),
+        "payout": payout_doc(record, now),
+    })
+}
+
+/// The winner, with the evidence their score was built from.
+fn winner_doc(record: &Record) -> Value {
+    let Some(winner) = record.winner.as_ref() else {
+        return Value::Null;
+    };
+    // The winning entry, for the engagement the score was computed from. Found
+    // by reply id rather than by position, so it stays right if the ranking is
+    // ever ordered differently from the winner field.
+    let entry = record
+        .ranking
+        .ranked
+        .iter()
+        .find(|r| r.entry.reply_id == winner.reply_id)
+        .map(|r| &r.entry);
+    json!({
+        "summoner": winner.summoner,
+        // Null, never a name: with no handle the site links by id rather than
+        // rendering `@1234567890` at a reader as though somebody chose it (S4).
+        "handle": winner.handle,
+        "reply_url": reply_url(&winner.reply_id),
+        "score": winner.score,
+        "mint": entry.map(|e| e.mint.clone()),
+        // The counts the score was computed from, so a reader can redo the
+        // arithmetic instead of trusting it. `null` when the week's scan never
+        // reached this entry -- which is not "nobody engaged" (rule 9).
+        "verified": entry.and_then(|e| e.metrics.verified.as_ref()).map(|v| json!({
+            "reposts": v.reposts,
+            "quoters": v.quoters,
+            "likes": v.likes,
+            "engagers": v.engagers,
+            "engagers_under_age": v.engagers_under_age,
+        })),
+    })
+}
+
+/// The rule the week was scored under, or `null` when nothing recorded it.
+fn rule_doc(rule: Option<&radar_contest::Rules>) -> Value {
+    rule.map_or(Value::Null, |rule| {
+        json!({
+            // A count, not the ids: which other accounts the operator holds is
+            // the operator's business, and the number is what a reader checks.
+            "operators": rule.operators.len(),
+            "min_account_age_days": rule.min_account_age_days,
+            "min_engager_age_days": rule.min_engager_age_days,
+            "cooldown_weeks": rule.cooldown_weeks,
+        })
+    })
+}
+
+/// Whether the winner collected, and by when they must.
+fn claim_doc(record: &Record, now: u64) -> Value {
+    if let Some(claim) = record.claim.as_ref() {
+        return json!({
+            "state": "claimed",
+            "at": timestamp_from_seconds(claim.at),
+            "address": claim.address,
+            "reply_url": reply_url(&claim.reply_id),
+        });
+    }
+    if record.winner.is_none() {
+        return json!({ "state": "no_winner" });
+    }
+    // The window is seven days from the close, and its two sides are different
+    // facts: one is a deadline somebody can still meet, the other is money that
+    // has already rolled into the next week.
+    if record.accepts_claim_at(now) {
+        return json!({
+            "state": "open",
+            "closes_at": timestamp_from_seconds(record.claim_window_closes_at()),
+        });
+    }
+    json!({
+        "state": "rolled_over",
+        "closed_at": timestamp_from_seconds(record.claim_window_closes_at()),
+    })
+}
+
+/// Whether the prize was paid, or the reason it was not.
+///
+/// Never a bare absence. "Not paid" has four causes and they say very different
+/// things about the operator: nobody won, the winner never claimed, the week
+/// was voided, or the payment is simply still owed. A reader who cannot tell
+/// them apart has to trust rather than check, which is the whole thing this
+/// page exists to avoid.
+fn payout_doc(record: &Record, now: u64) -> Value {
+    if let Some(payout) = record.payout.as_ref() {
+        return json!({
+            "state": "paid",
+            "lamports": payout.lamports,
+            "recipient": payout.recipient,
+            "signature": payout.signature,
+            "at": timestamp_from_seconds(payout.at),
+        });
+    }
+    // Voided first, and deliberately: a voided week pays nobody whatever the
+    // claim says, so a winner who had already claimed must not read as "owed".
+    if record.voided.is_some() {
+        return json!({ "state": "voided" });
+    }
+    if record.winner.is_none() {
+        return json!({ "state": "no_winner" });
+    }
+    match claim_doc(record, now)["state"].as_str() {
+        Some("claimed") => json!({ "state": "owed" }),
+        Some("rolled_over") => json!({ "state": "unclaimed" }),
+        _ => json!({ "state": "awaiting_claim" }),
+    }
+}
+
 /// The prize pool, in the site's shape.
 ///
 /// `vault` and `lamports` are `null` until the vault reading exists, which is
@@ -497,6 +687,186 @@ mod tests {
             },
             &radar_contest::Rules::published(["op"]),
         )
+    }
+
+    /// A record on disk, so `records_in` finds it.
+    fn write_record(paths: &Paths, record: &Record) {
+        std::fs::create_dir_all(&paths.contest_dir).expect("mkdir");
+        radar_analyst::contest::write_record(&paths.contest_dir, record).expect("write");
+    }
+
+    #[test]
+    fn the_weeks_document_says_why_a_week_paid_nobody_rather_than_leaving_it_blank() {
+        // The four causes of "not paid" say very different things about the
+        // operator, and a reader who cannot tell them apart has to trust
+        // rather than check. Re-apply the bug by collapsing any two of these
+        // arms in `payout_doc`.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let closed = WEEK.closes_at();
+
+        // 1. Won, claimed, not yet paid: owed.
+        let mut owed = a_record(WEEK);
+        owed.claim = Some(Claim {
+            address: "So11111111111111111111111111111111111111112".to_owned(),
+            reply_id: "c1".to_owned(),
+            at: closed + 60,
+        });
+        write_record(&paths, &owed);
+
+        // 2. Won and never claimed, past the window: unclaimed, rolled over.
+        let mut lapsed = a_record(Week(WEEK.0 - 1));
+        lapsed.claim = None;
+        for (n, why) in [
+            (1u8, radar_contest::Excluded::AccountTooNew { days: 3 }),
+            (2, radar_contest::Excluded::AccountTooNew { days: 9 }),
+            (3, radar_contest::Excluded::Operator),
+        ] {
+            let mut entry = a_record(WEEK).ranking.ranked[0].entry.clone();
+            entry.reply_id = format!("x{n}");
+            entry.summoner = format!("s{n}");
+            lapsed.ranking.excluded.push((entry, why));
+        }
+        write_record(&paths, &lapsed);
+
+        // 3. Voided: pays nobody whatever the ranking said.
+        let mut voided = a_record(Week(WEEK.0 - 2));
+        voided.voided = Some(radar_contest::ledger::Voided {
+            at: closed,
+            reason: "every point came from six accounts made that morning".to_owned(),
+        });
+        write_record(&paths, &voided);
+
+        // 4. Nobody counted at all.
+        let mut nobody = a_record(Week(WEEK.0 - 3));
+        nobody.ranking = Ranking::default();
+        nobody.winner = None;
+        write_record(&paths, &nobody);
+
+        let doc = weeks_in(&paths, closed + 3600);
+        let weeks = doc["weeks"].as_array().expect("weeks");
+        assert_eq!(weeks.len(), 4);
+        // Newest first: a reader opens this for the most recent week.
+        assert_eq!(weeks[0]["week"], monday_of(WEEK));
+        assert_eq!(weeks[3]["week"], monday_of(Week(WEEK.0 - 3)));
+
+        assert_eq!(weeks[0]["payout"]["state"], "owed");
+        assert_eq!(weeks[0]["claim"]["state"], "claimed");
+        assert_eq!(weeks[1]["payout"]["state"], "unclaimed");
+        assert_eq!(weeks[1]["claim"]["state"], "rolled_over");
+        // Two excluded for the SAME reason, so the counter is counting rather
+        // than being set. CI turned the `+=` into `-=` and `*=` and nothing
+        // failed, because every reason appeared once and 1 is a fixed point of
+        // all three. Re-apply either and this reads something other than 2.
+        assert_eq!(weeks[1]["excluded"]["reasons"]["account_too_new"], 2);
+        assert_eq!(weeks[1]["excluded"]["count"], 3);
+        assert_eq!(weeks[1]["excluded"]["reasons"]["operator"], 1);
+
+        assert_eq!(weeks[2]["payout"]["state"], "voided");
+        assert_eq!(
+            weeks[2]["voided"]["reason"],
+            "every point came from six accounts made that morning"
+        );
+        assert_eq!(weeks[3]["payout"]["state"], "no_winner");
+        assert_eq!(weeks[3]["winner"], Value::Null);
+    }
+
+    #[test]
+    fn a_voided_week_that_was_already_claimed_still_reads_as_voided() {
+        // The ordering in `payout_doc`, and it is the one that matters: a
+        // winner who claimed before the operator voided the week must not read
+        // as "owed", because they are owed nothing. Re-apply by moving the
+        // `voided` arm below the claim check.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let mut record = a_record(WEEK);
+        record.claim = Some(Claim {
+            address: "So11111111111111111111111111111111111111112".to_owned(),
+            reply_id: "c1".to_owned(),
+            at: WEEK.closes_at() + 60,
+        });
+        record.voided = Some(radar_contest::ledger::Voided {
+            at: WEEK.closes_at() + 120,
+            reason: "bought".to_owned(),
+        });
+        write_record(&paths, &record);
+
+        let doc = weeks_in(&paths, WEEK.closes_at() + 3600);
+        assert_eq!(doc["weeks"][0]["payout"]["state"], "voided");
+        // And the claim is still shown: it happened, and hiding it would be
+        // the private correction design 0011 rejects.
+        assert_eq!(doc["weeks"][0]["claim"]["state"], "claimed");
+    }
+
+    #[test]
+    fn a_paid_week_carries_everything_a_reader_needs_to_check_it_themselves() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let closed = WEEK.closes_at();
+        let mut record = a_record(WEEK);
+        record.ranking.ranked[0].entry.metrics.verified = Some(radar_contest::score::Verified {
+            reposts: 4,
+            quoters: 1,
+            likes: 6,
+            engagers: 9,
+            engagers_under_age: 2,
+        });
+        record.claim = Some(Claim {
+            address: "So11111111111111111111111111111111111111112".to_owned(),
+            reply_id: "c1".to_owned(),
+            at: closed + 60,
+        });
+        record.payout = Some(Payout {
+            recipient: "So11111111111111111111111111111111111111112".to_owned(),
+            lamports: 3_000_000_000,
+            signature: "sig1".to_owned(),
+            at: closed + 120,
+        });
+        write_record(&paths, &record);
+
+        let week = &weeks_in(&paths, closed + 3600)["weeks"][0];
+        assert_eq!(week["payout"]["state"], "paid");
+        assert_eq!(week["payout"]["lamports"], 3_000_000_000u64);
+        assert_eq!(week["payout"]["signature"], "sig1");
+        // The winner is named and every claim about them is a link.
+        assert_eq!(week["winner"]["handle"], "alice_h");
+        assert_eq!(week["winner"]["reply_url"], reply_url("r1"));
+        assert_eq!(week["claim"]["reply_url"], reply_url("c1"));
+        // The evidence, so the score can be recomputed rather than trusted.
+        assert_eq!(week["winner"]["verified"]["reposts"], 4);
+        assert_eq!(week["winner"]["verified"]["engagers_under_age"], 2);
+        // And the rule the week was actually scored under.
+        assert_eq!(week["rule"]["min_account_age_days"], 30);
+        assert_eq!(week["rule"]["cooldown_weeks"], 3);
+    }
+
+    #[test]
+    fn a_week_closed_before_the_rule_was_recorded_says_unknown_and_not_the_current_rule() {
+        // Rule 9 on the page a reader disputes a placing from. Re-apply by
+        // making `rule_doc` fall back to `Rules::published`, and this passes a
+        // rule the week was not scored under.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let mut record = a_record(WEEK);
+        record.rule = None;
+        record.claim = None;
+        write_record(&paths, &record);
+
+        let week = &weeks_in(&paths, WEEK.closes_at() + 60)["weeks"][0];
+        assert_eq!(week["rule"], Value::Null);
+        // Inside the window, the claim is a deadline rather than a verdict.
+        assert_eq!(week["claim"]["state"], "open");
+        assert_eq!(week["payout"]["state"], "awaiting_claim");
+    }
+
+    #[test]
+    fn with_no_closed_weeks_the_document_is_empty_rather_than_absent() {
+        // The site renders "no week has closed yet" from this. A 404 would
+        // give it an error to show instead, which is a different claim.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let doc = weeks_in(&paths_in(dir.path()), WEEK.opens_at());
+        assert_eq!(doc["weeks"].as_array().expect("weeks").len(), 0);
+        assert_eq!(doc["measured_at"], "2026-09-07T00:00:00Z");
     }
 
     #[test]

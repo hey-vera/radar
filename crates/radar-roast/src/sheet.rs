@@ -228,26 +228,39 @@ impl FactSheet {
             if launch.dev_buy_lamports.is_some_and(|l| l > 0) {
                 signals.push(Signal::CreatorBoughtOwnLaunch);
             }
-            // **The fact that makes one reply differ from another.** Everything
-            // above is about the block; three coins launched in the same minute
-            // produce the same sentences, because the cost line is a constant
-            // and most launches sit in the same recipient band. What this
-            // creator did before is the part that is about *this* coin, and it
-            // is the thing Radar has that nobody else does.
-            if let Some(index) = creators {
-                let creator = launch.creator.to_string();
-                push_creator(&mut facts, &mut unknown, &creator, index);
-                // Measured and none organic. A creator whose launches have not
-                // been measured has no record to hold against them.
-                if let Some(record) = index.get(&creator)
-                    && record.measured > 0
-                    && record.organic == 0
-                {
-                    signals.push(Signal::CreatorNeverGraduatedOrganically);
-                }
-            }
         } else {
             unknown.push("the launch block could not be read".to_owned());
+        }
+
+        // **The fact that makes one reply differ from another.** The launch
+        // block is about the block; three coins launched in the same minute
+        // produce the same sentences from it, because the cost line is a
+        // constant and most launches sit in the same recipient band. What this
+        // creator did before is the part that is about *this* coin, and it is
+        // the thing Radar has that nobody else does.
+        //
+        // **Outside the launch-block arm, and that is the whole point.** It sat
+        // inside until 2026-09-06, so a coin whose launch block is past the
+        // signature-page budget got no creator history at all -- and that is
+        // every coin with real history, which is every coin somebody bothers to
+        // ask about. The curve account carries the creator regardless of age,
+        // so the launch block is preferred and the curve is the fallback.
+        let creator = dossier
+            .launch
+            .as_ref()
+            .map(|l| l.creator)
+            .or_else(|| dossier.curve.as_ref().map(|c| c.creator));
+        if let (Some(index), Some(address)) = (creators, creator) {
+            let creator = address.to_string();
+            push_creator(&mut facts, &mut unknown, &creator, index);
+            // Measured and none organic. A creator whose launches have not been
+            // measured has no record to hold against them.
+            if let Some(record) = index.get(&creator)
+                && record.measured > 0
+                && record.organic == 0
+            {
+                signals.push(Signal::CreatorNeverGraduatedOrganically);
+            }
         }
 
         if let Some(curve) = &dossier.curve {
@@ -671,6 +684,24 @@ fn push_curve(facts: &mut Vec<Fact>, curve: &radar_onchain::CurveFacts) {
         rendered: if curve.complete { "yes" } else { "no" }.to_owned(),
         values: Vec::new(),
     });
+    // A graduated coin has an empty curve *because it left*, and the two
+    // remaining curve facts are both false about it: the capacity is not zero,
+    // it is elsewhere, and the curve's fee schedule is not the fee the coin
+    // pays. "cannot size into this at all" about a coin trading on an AMM is
+    // rule 9 read backwards -- absent taken for zero -- and it is the worst
+    // line the sheet could carry, because a graduated coin is exactly the kind
+    // of coin people ask the bot about.
+    if curve.complete {
+        facts.push(Fact {
+            about: About::Measurement,
+            label: "exit capacity".to_owned(),
+            rendered: "graduated off the curve; it trades on the AMM, which Radar does not price. \
+                       NOT zero, and NOT 'cannot size into this'."
+                .to_owned(),
+            values: Vec::new(),
+        });
+        return;
+    }
     match curve.capacity_lamports {
         Some(l) => facts.push(Fact::exact(
             "SOL that can be bought before price moves 1% -- this is RADAR'S OWN \
@@ -907,6 +938,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_graduated_coin_still_gets_its_creators_history_and_says_where_it_trades() {
+        // The shape of every coin worth asking about: enough signatures that
+        // `oldest_launch` refuses to guess a launch block, and a curve that has
+        // graduated. Until 2026-09-06 this produced the worst sheet in the
+        // system -- no creator history at all, because the lookup sat inside
+        // the launch-block arm, and "exit capacity: none, cannot size into this
+        // at all" about a coin trading perfectly well on an AMM.
+        //
+        // Re-apply either half to see this fail: move the `creator` lookup back
+        // inside `if let Some(launch)`, or delete `push_curve`'s early return.
+        let mut d = dossier_for([7u8; 32]);
+        d.launch = None;
+        d.curve = Some(radar_onchain::CurveFacts {
+            creator: radar_types::Address::new([9u8; 32]),
+            complete: true,
+            real_sol_reserves: 0,
+            capacity_lamports: None,
+            fees: None,
+        });
+        d.unavailable.push(radar_onchain::dossier::Unavailable {
+            fact: "launch block",
+            why: "this token has more history than the page budget allows".to_owned(),
+        });
+
+        let sheet = FactSheet::build(&d, None, Some(&index_with(record(150, 0))), None);
+        let rendered = sheet.render();
+
+        // The creator's record survived the missing launch block.
+        assert!(rendered.contains("150"), "no creator history: {rendered}");
+        assert!(
+            sheet
+                .signals
+                .contains(&Signal::CreatorNeverGraduatedOrganically),
+            "the signal was lost with the launch block: {:?}",
+            sheet.signals
+        );
+        // And the curve says where the coin went rather than that it is stuck.
+        assert!(rendered.contains("trades on the AMM"), "{rendered}");
+        // The claim, not the word: the replacement line names the old phrasing
+        // in order to forbid it, so a bare substring would match itself.
+        assert!(
+            !rendered.contains("none -- cannot size into this at all"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("venue fee"), "{rendered}");
+    }
+
     /// A dossier about one mint and nothing else, so what the sheet says is
     /// decided by the mint alone.
     fn dossier_for(mint: [u8; 32]) -> Dossier {
@@ -1124,6 +1203,7 @@ mod tests {
         // published reply -- an absence that reads as fine.
         let mut dossier = dossier_for([3u8; 32]);
         dossier.curve = Some(radar_onchain::CurveFacts {
+            creator: radar_types::Address::new([9u8; 32]),
             complete: false,
             real_sol_reserves: 6_186_150_833,
             capacity_lamports: Some(303_000_000),
@@ -1139,6 +1219,7 @@ mod tests {
         // Graduated, and no depth at all: both are statements, not blanks.
         let mut done = dossier_for([3u8; 32]);
         done.curve = Some(radar_onchain::CurveFacts {
+            creator: radar_types::Address::new([9u8; 32]),
             complete: true,
             real_sol_reserves: 0,
             capacity_lamports: None,

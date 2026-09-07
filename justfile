@@ -257,10 +257,11 @@ export MIN_WEB_TESTS := "173"
 # existed, so the copy of the figures that crawlers and link unfurlers read was
 # the copy nothing checked.
 #
-# 49 -> 56 on 2026-09-06 with the history page. Its empty state is the one that
-# ships today, and its wrong version looks right: an empty table there says a
-# week ran and nobody entered it.
-export MIN_SITE_TESTS := "56"
+# 49 -> 58 on 2026-09-06: 56 with the history page, then 58 once it landed on
+# top of the evidence columns, whose two tests merged in beside it. The history
+# page's empty state is the one that ships today, and its wrong version looks
+# right: an empty table there says a week ran and nobody entered it.
+export MIN_SITE_TESTS := "58"
 
 # The interface: install exactly the locked dependencies, check them for known
 # advisories, type-check, test, and build.

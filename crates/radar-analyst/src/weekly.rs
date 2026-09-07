@@ -509,6 +509,7 @@ mod tests {
                 ContestEntry {
                     reply_id: format!("r-{id}"),
                     summoner: id.to_owned(),
+                    mention_id: Some(format!("m-{id}")),
                     handle: Some(handle.to_owned()),
                     mint: "M".to_owned(),
                     at: WEEK.opens_at() + 30,

@@ -17,7 +17,7 @@ key to a host running Cortex and Pulse would put those services one workflow
 compromise away from a stranger, and the benefit is saving one `scp`. The
 artifact is downloaded and placed by whoever already has that access.
 
-## Verifying the deployment (checked 2026-08-25)
+## Verifying the deployment (checked 2026-09-06)
 
 Every claim here is checkable with one command, and the command is given rather
 than the answer.
@@ -33,15 +33,24 @@ host's state has a half-life. One that states how to ask does not.
 ssh guardian-vps-tail 'systemctl list-unit-files "radar*" --no-pager'
 ```
 
-Expected, and true on 2026-08-25:
+Expected, and true on 2026-09-06:
 
 | unit | state |
 |---|---|
 | `radar-serve.service` | enabled, active |
 | `radar-follow.service` | enabled, active |
+| `radar-analyst.service` | enabled, active — **the X account is live** |
 | `radar-brief.timer` | enabled, active |
 | `radar-brief.service` | static — the timer starts it |
+| `radar-creator-index.timer` | enabled, active |
+| `radar-seven-days.timer` | **not installed** — the daily post cannot run without it |
+| `radar-payout.timer` | **not installed**, and correct: there is no token, so there is no vault |
 | `/etc/systemd/system/radar-hosted.service` | disabled, and **not Radar** — see below |
+
+The two absences are different states and the table says which. The payout
+timer is absent because the thing it pays out of does not exist. The
+seven-days timer is absent because nobody has installed it, and until somebody
+does, the first "seven days later" post finds no file and posts nothing.
 
 `radar-serve` should be in the system slice with its sandbox applied:
 
@@ -757,6 +766,21 @@ install -m755 dist/radar-analyst ~/bin/radar-analyst
 mkdir -p ~/radar/data/analyst
 sudo systemctl daemon-reload
 sudo systemctl enable --now radar-analyst
+```
+
+**Set `RADAR_RPC` in `/etc/radar/analyst.env` before enabling the unit.** The
+variable is `RADAR_RPC`, not `RADAR_RPC_URL` — the payout uses the second name
+and the analyst reads the first (`RpcClient::from_vars`), so a name copied from
+the payout section silently leaves the analyst on the free public endpoint.
+That is not theoretical: measured on 2026-09-06, **7 of 10 reads came back 429**
+against the public node, and 10 of 10 succeeded against a Helius free-tier
+endpoint. A 429 is a reply the bot does not send.
+
+The unit prints what it is on start — the posture, the commit it was built
+from, and how many accounts the contest excludes:
+
+```bash
+ssh guardian-vps-tail 'journalctl -u radar-analyst -n 40 --no-pager | head -20'
 ```
 
 ### The two files it reads, and what happens without them

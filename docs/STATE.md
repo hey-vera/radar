@@ -322,20 +322,34 @@ it deliberately, and not as a side effect of something else. Note that opening i
 before the funnel has been exercised with a real proposal would be opening a path
 nothing has ever tested.
 
-## The public analyst, as of 2026-09-04
+## The public analyst, as of 2026-09-06
 
-**Code-complete and posting nothing.** `radar dossier`, `radar roast` and
-`radar analyst --mentions <file>` run offline; `radar-analyst` is also a daemon
-under `deploy/radar-analyst.service` that polls mentions, answers them, meters
-what it spends and logs every reply beside the fact sheet it was built from.
+**Live.** `radar-analyst` runs on the box under `deploy/radar-analyst.service`,
+polls mentions, answers them, meters what it spends and logs every reply beside
+the fact sheet it was built from. The account is
+[@thecabalhunter](https://x.com/thecabalhunter) and it has posted publicly.
+`radar dossier`, `radar roast` and `radar analyst --mentions <file>` still run
+offline against the same code.
 
-**The only thing between it and a public account is a credential and a
-decision.** `RADAR_X_BEARER` and `RADAR_X_USER_ID` is the switch; with either
-absent the publisher is the dry run and nothing can be posted. The four prices
-have **no defaults**, so an instance that has not been told what it is charged
-answers nothing rather than spending an unmetered amount — which is what makes
-the two unverified X billing figures a line in a config file rather than a
-blocker.
+**This section said "code-complete and posting nothing" until 2026-09-06.** The
+credential landed and the switch was thrown the same day; the sentence is
+replaced rather than annotated, because a runbook's claim about a remote host
+has a half-life and this file is read as current.
+
+`RADAR_X_BEARER` and `RADAR_X_USER_ID` is still the switch: with either absent
+the publisher is the dry run and nothing can be posted. The prices have **no
+defaults**, so an instance that has not been told what it is charged answers
+nothing rather than spending an unmetered amount. There are **six** of them now
+— the sixth, `RADAR_X_PRICE_USER_READ`, arrived with the verified scan — and
+`Prices::from_vars` is all-or-nothing, so **adding a seventh takes the analyst
+silent until the box is told the new number.** That is rule 8 working, and it
+is the failure mode worth knowing before you add one.
+
+**The endpoint it reads.** `RADAR_RPC`, and the name matters: the payout reads
+`RADAR_RPC_URL` and the analyst reads `RADAR_RPC`, so a name copied between them
+leaves the analyst on the free public node. Measured on 2026-09-06 against that
+node: **7 of 10 reads returned 429**. Against a Helius free-tier endpoint, 10 of
+10 and no 429s. It is configured.
 
 **The voice, as of 2026-09-06.** "Meters what it spends" was an overclaim until
 that date: `Cost::ModelCall` was priced and never authorised, so the model call —
@@ -350,10 +364,27 @@ Three metered providers are compiled in and **exactly one may be configured**;
 two is refused at start-up with both named. `RADAR_MODEL_OPENAI_KEY` speaks Chat
 Completions, `RADAR_MODEL_API_KEY` speaks Anthropic's Messages shape
 (`claude-sonnet-5` and its siblings), and `RADAR_MODEL_CODEX` is the
-subscription CLI, private use only and not for this account. The endpoint, the
+subscription CLI, and **[ADR 0014](adr/0014-the-public-account-runs-on-an-api-key-never-a-subscription.md)
+says it must never be configured on the box that runs the public account**:
+plan sign-in is the vendor's documented pathway for interactive work and an API
+key is theirs for automation, the quota is shared with whatever else the
+account holder is doing in a browser, and a rate limit reached is silence rather
+than a refusal the meter can see. The endpoint, the
 model name and the two prices are shared, so moving between vendors is an env
-edit and a restart. **No key is on the box yet**, so every reply in the log is
-still the deterministic template.
+edit and a restart. **The OpenAI key is on the box**, so replies are written by
+a model and checked back against the fact sheet, with the deterministic template
+as the fallback whenever the provider is absent, unreachable or refused.
+
+`radar model-prices` reads the models.dev catalogue and prints the configured
+model's rates beside the ones in the environment, so the two prices are a thing
+to check rather than a thing to remember.
+
+**The model fabricated a figure and the prompt was fixed, not the checker.**
+Four calls out of four invented the same literal — a share computed by
+subtracting a stated share from a hundred. `fidelity::check` caught every one
+and shipped the template instead, which is the system working; the prompt now
+forbids arithmetic on the sheet's numbers in those words, and there have been
+none in the thirteen calls since. The count is small and is stated as small.
 
 Three properties are load-bearing and each is pinned by a test that was verified
 by re-applying the bug it prevents:
@@ -500,12 +531,33 @@ running with the rule off; unset means no token is special, which is the right
 configuration until the token exists.
 
 **The contest crate exists, as of 2026-09-05, and is pure** (design 0007 C1,
-design 0009 M3): weeks that open Monday 00:00 UTC; the published score,
-three per repost and quote and one per like and reply, over the bot's own
-replies; every exclusion returned with its reason; a winner with a three-week
-cooldown; the seven-day claim window; one JSON record per week; the payout
-policy as one function with three refusals; and the hunter tally with the
-daily cap applied again so volume cannot win. No clock, no network, no key.
+design 0009 M3): weeks that open Monday 00:00 UTC; every exclusion returned with
+its reason; a winner with a three-week cooldown; the seven-day claim window; one
+JSON record per week; the payout policy as one function; and the hunter tally
+with the daily cap applied again so volume cannot win. No clock, no network, no
+key.
+
+**The rule changed on 2026-09-06 and the sentence above changed with it.** It
+said "three per repost and quote and one per like and reply", which is the raw
+`public_metrics` score — and on X one account can quote or reply to the same
+post without limit, so a single account could farm the top score for nothing
+(finding S16). The score now prefers **verified** engagement: distinct accounts
+that reposted, quoted or liked, each counted once and each old enough to meet
+the same floor an entrant meets. The raw metrics stay on the record beside it as
+evidence, and where the scan never reached an entry the raw score still decides
+— which is `None`, not a row of zeroes.
+
+Two more things are on the record for the same reason. **The rule each week was
+scored under** is written into that week's record, because a closed week has to
+stay checkable against the rule that actually decided it rather than against
+today's. And **a voided week** carries the operator's reason verbatim: the one
+action that is unavoidably a judgement cannot be used to tidy a week away,
+because using it publishes the fact that it was used.
+
+The payout policy has **six** refusals now, ordered so the most urgent answer is
+the one returned: already paid, voided, no winner, unclaimed, wrong recipient,
+above what was collected, and last of all below the floor
+(`RADAR_PAYOUT_FLOOR_LAMPORTS`, unset meaning none).
 **Its callers are not built yet** — the public leaderboard endpoint reads its
 record, the week-close job writes one, `radar-payout` asks its policy — and
 plan 0006 lands them in that order. **The first landed the same day**: the

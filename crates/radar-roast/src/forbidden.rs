@@ -196,6 +196,27 @@ pub const RULES: &[Rule] = &[
     },
 ];
 
+/// The account's own site, which the "cabal" rule would otherwise refuse.
+///
+/// The rule refuses "cabal" because a reply must not imply an identity the
+/// recipient count cannot see (research 0012), and it is right to. The side
+/// effect was that **no post could carry its own address**: the weekly result
+/// ended "Rule and leaderboard: on the site" with no link, and a reader who
+/// wanted to check the rule had to go and find it.
+///
+/// Masked before the scan rather than added as an exception to the rule, which
+/// is the difference between "this exact domain is allowed" and "any 'cabal'
+/// near a dot is allowed". Every other use of the word is still refused,
+/// including `cabalhunter.org.evil.example` -- the mask consumes the literal
+/// and the surrounding text is scanned as it stands.
+const OWN_DOMAIN: &str = "cabalhunter.org";
+
+/// What the domain becomes for the scan.
+///
+/// Same length, so a violation's position in the text is unchanged, and made
+/// of characters no rule contains.
+const MASK: &str = "...............";
+
 /// A phrase that must not be published, found in a reply.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
@@ -210,7 +231,7 @@ pub struct Violation {
 /// Case-insensitive, because a capitalised accusation is the same accusation.
 #[must_use]
 pub fn check(reply: &str) -> Vec<Violation> {
-    let lower = reply.to_lowercase();
+    let lower = reply.to_lowercase().replace(OWN_DOMAIN, MASK);
     RULES
         .iter()
         .filter(|r| lower.contains(r.phrase))
@@ -224,6 +245,26 @@ pub fn check(reply: &str) -> Vec<Violation> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_account_can_name_its_own_site_and_nothing_else_that_says_cabal() {
+        // The rule refuses "cabal" for a good reason (0012) and the side
+        // effect was that no post could carry its own address -- the weekly
+        // result ended "Rule and leaderboard: on the site" with no link.
+        //
+        // Re-apply by deleting the mask in : the first two assertions
+        // fail. The rest are what stops the mask being a hole.
+        assert!(check("Rule and leaderboard: cabalhunter.org/history").is_empty());
+        assert!(check("CabalHunter.org/leaderboard").is_empty());
+
+        // Every other cabal is still refused, including one dressed as a
+        // hostname. The mask consumes the literal and the rest is scanned as
+        // it stands, so the leading "a cabal" here is still found.
+        assert!(!check("a cabal ran it").is_empty());
+        assert!(!check("the cabal is cabalhunter.org").is_empty());
+        assert!(!check("cabalhunters.org").is_empty());
+        assert_eq!(check("a cabal ran it")[0].phrase, "cabal");
+    }
 
     #[test]
     fn a_verdict_about_a_project_is_refused() {

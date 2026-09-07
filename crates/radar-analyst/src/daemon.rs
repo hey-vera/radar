@@ -652,6 +652,19 @@ fn announce_week(
         }
     }
 
+    // The hunters, from the board the week close already wrote beside the
+    // record. Read rather than recomputed: the board on disk is the one the
+    // public endpoint serves, and a post naming a different three would be a
+    // second answer to the same question.
+    let board: Vec<radar_contest::hunter::Placing> =
+        std::fs::read_to_string(crate::contest::hunter_path(&paths.contest_dir, record.week))
+            .ok()
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or_default();
+    if let Some(post) = crate::weekly::hunters(record, &board) {
+        posts.push(post);
+    }
+
     // One top-level post and up to one reply, priced as such. Refused by the
     // meter means recorded and not said, like everything else here.
     let today = day_of(at);

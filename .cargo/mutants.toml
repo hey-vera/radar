@@ -277,6 +277,30 @@ exclude_re = [
     # `the_latest_measurement_of_a_mint_is_the_one_that_counts`.
     'replace > with >= in build',
 
+    # The public site's route handlers -- `weeks` and `hunters` -- replaced with
+    # `Default::default()`, which is an empty 200.
+    #
+    # Category 1 by the same argument as `X::from_env` above, and it is worth
+    # being precise about *which* part is untestable. Each handler is three
+    # lines: read `Paths::from_env()`, call the `_in` twin, wrap the answer in
+    # `respond`. The decision is entirely in the twin, and the twins are tested
+    # directly -- `weeks_in` at five states of a week, `hunters_in` at the empty
+    # board and a written one. That split is why the `_in` twins exist at all,
+    # and `public.rs`'s own module comment says so.
+    #
+    # What is left is `Paths::from_env`, which reads process-wide variables. A
+    # test that made these mutants fail would have to set them, and
+    # `std::env::set_var` is `unsafe` in edition 2024 against a workspace that
+    # forbids unsafe -- while these tests run in parallel threads where
+    # process-wide state is a race with unrelated tests.
+    #
+    # Narrow on purpose: these two names and this one replacement. The three
+    # older handlers of the same shape are not listed, because `just mutants
+    # origin/main` only mutates changed lines and they have never been
+    # reported -- adding them would be a claim nobody has checked.
+    'replace weeks -> Response with Default::default\(\)',
+    'replace hunters -> Response with Default::default\(\)',
+
     # --- category 2: unreachable in the mutation sandbox ---------------------
     #
     # `untracked_documents` shells out to `git ls-files --others`. It is covered

@@ -717,6 +717,16 @@ mod tests {
         // 2. Won and never claimed, past the window: unclaimed, rolled over.
         let mut lapsed = a_record(Week(WEEK.0 - 1));
         lapsed.claim = None;
+        for (n, why) in [
+            (1u8, radar_contest::Excluded::AccountTooNew { days: 3 }),
+            (2, radar_contest::Excluded::AccountTooNew { days: 9 }),
+            (3, radar_contest::Excluded::Operator),
+        ] {
+            let mut entry = a_record(WEEK).ranking.ranked[0].entry.clone();
+            entry.reply_id = format!("x{n}");
+            entry.summoner = format!("s{n}");
+            lapsed.ranking.excluded.push((entry, why));
+        }
         write_record(&paths, &lapsed);
 
         // 3. Voided: pays nobody whatever the ranking said.
@@ -744,6 +754,14 @@ mod tests {
         assert_eq!(weeks[0]["claim"]["state"], "claimed");
         assert_eq!(weeks[1]["payout"]["state"], "unclaimed");
         assert_eq!(weeks[1]["claim"]["state"], "rolled_over");
+        // Two excluded for the SAME reason, so the counter is counting rather
+        // than being set. CI turned the `+=` into `-=` and `*=` and nothing
+        // failed, because every reason appeared once and 1 is a fixed point of
+        // all three. Re-apply either and this reads something other than 2.
+        assert_eq!(weeks[1]["excluded"]["reasons"]["account_too_new"], 2);
+        assert_eq!(weeks[1]["excluded"]["count"], 3);
+        assert_eq!(weeks[1]["excluded"]["reasons"]["operator"], 1);
+
         assert_eq!(weeks[2]["payout"]["state"], "voided");
         assert_eq!(
             weeks[2]["voided"]["reason"],

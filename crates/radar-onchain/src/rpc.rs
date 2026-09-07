@@ -143,6 +143,7 @@ struct AccountEnvelope {
 #[derive(Deserialize)]
 struct AccountValue {
     data: Vec<String>,
+    owner: Option<String>,
 }
 
 /// How a JSON-RPC body gets to a node and back.
@@ -337,6 +338,41 @@ impl RpcClient {
         decode_base64(encoded)
             .ok_or_else(|| RpcError::Malformed("account data was not base64".to_owned()))
             .map(Some)
+    }
+
+    /// Which program owns an address, or `None` when nothing is there.
+    ///
+    /// # Why a payout path needs this
+    ///
+    /// A Solana address is 32 bytes of base58 and **a wallet looks exactly like
+    /// a coin's mint**. The only way to tell them apart is to ask the chain who
+    /// owns the account: a wallet is owned by the system program, or does not
+    /// exist yet; a mint is owned by the token program; a token account, a PDA
+    /// and a program are owned by something else again.
+    ///
+    /// `None` for an address with no account is **correct and is a wallet**. A
+    /// keypair that has never received lamports has no account on chain, and
+    /// refusing to pay one would refuse a legitimate winner who generated a
+    /// fresh address for the prize -- which is the sensible thing to do with a
+    /// public payout.
+    ///
+    /// # Errors
+    ///
+    /// [`RpcError`] when the node cannot be reached or answers with something
+    /// this cannot read. **Never treat an error as "it is a wallet"**: the
+    /// caller refuses, because an unreadable owner is an unknown one and rule 9
+    /// says unknown is not safe.
+    pub fn owner_of(
+        &self,
+        budget: &mut Budget,
+        address: &Address,
+    ) -> Result<Option<String>, RpcError> {
+        let result: AccountEnvelope = self.call(
+            budget,
+            "getAccountInfo",
+            &serde_json::json!([address.to_string(), { "encoding": "base64" }]),
+        )?;
+        Ok(result.value.and_then(|a| a.owner))
     }
 
     /// Walks back through an address's signatures to the oldest one.

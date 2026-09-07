@@ -116,6 +116,16 @@ pub enum Refusal {
         /// Their reason, as published.
         reason: String,
     },
+    /// The claimed address is not a wallet.
+    ///
+    /// Defence in depth: `try_claim` already refuses one at claim time, where
+    /// the winner can act on it. This is the second check, at the last moment
+    /// before a signature, because a mint and a wallet are the same shape and
+    /// what is on the other side of this is money leaving.
+    NotAWallet {
+        /// What owns it, or `None` when the owner could not be read.
+        owner: Option<String>,
+    },
 }
 
 /// A week the operator voided, and why.
@@ -482,6 +492,7 @@ mod tests {
                 entry: Entry {
                     reply_id: "r1".to_owned(),
                     summoner: "alice".to_owned(),
+                    mention_id: None,
                     handle: Some("alice_h".to_owned()),
                     mint: "M".to_owned(),
                     at: WEEK.opens_at() + 10,
@@ -634,6 +645,7 @@ mod tests {
             Entry {
                 reply_id: "r9".to_owned(),
                 summoner: "radar".to_owned(),
+                mention_id: None,
                 handle: None,
                 mint: "M".to_owned(),
                 at: WEEK.opens_at() + 5,

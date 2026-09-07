@@ -69,8 +69,10 @@ fn authorise_date(authorised: &mut Vec<f64>, date: &str) {
 /// nothing to require a claim to be a reply *to*, so it accepted any
 /// mint-shaped string in any mention by the winner -- see that function.
 ///
-/// Posted as a reply under the account's own winning reply, so it lands in the
-/// thread the winner is already in.
+/// Posted as a reply under the **winner's own summons**, which is the one reply
+/// X guarantees to accept (its author mentioned the bot, by definition) and the
+/// one that reaches their notifications. `daemon::prompt_claim_if_due` chooses
+/// the parent; this function only writes the words.
 ///
 /// Every numeral is authorised: the date's three parts, the score, and the two
 /// zeros in "00:00 UTC".
@@ -331,6 +333,7 @@ mod tests {
                 entry: ContestEntry {
                     reply_id: "1963012345678901234".to_owned(),
                     summoner: "9001".to_owned(),
+                    mention_id: None,
                     handle: None,
                     mint: "MintOne".to_owned(),
                     at: WEEK.opens_at() + 10,
@@ -347,6 +350,7 @@ mod tests {
             ContestEntry {
                 reply_id: "r2".to_owned(),
                 summoner: "9002".to_owned(),
+                mention_id: None,
                 handle: None,
                 mint: "MintTwo".to_owned(),
                 at: WEEK.opens_at() + 20,

@@ -168,6 +168,26 @@ pub struct Entry {
     pub reply_id: String,
     /// Who summoned it. The entrant, as the numeric account id.
     pub summoner: String,
+    /// The post that summoned it -- the entrant's own mention.
+    ///
+    /// **This is where the claim prompt goes.** Since 2026-02-23 X accepts an
+    /// API reply only when the author of the post being replied to mentioned or
+    /// quoted the bot in that post, and a summons did exactly that by
+    /// definition. A reply under the bot's own winning reply relies instead on
+    /// an exemption reported by a blog and a developer forum and stated nowhere
+    /// in X's documentation -- and if that exemption is not real, the winner is
+    /// never told they won and finds out when the pool rolls over.
+    ///
+    /// It also lands better: the summons is the winner's own post, so a reply
+    /// to it reaches their notifications rather than a thread they may have
+    /// left.
+    ///
+    /// Defaulted, for the reason `handle` is: a record that fails to parse is
+    /// skipped rather than reported, so a field added without one deletes
+    /// history quietly. `None` on a week closed before 2026-09-06, where the
+    /// prompt falls back to the bot's own reply.
+    #[serde(default)]
+    pub mention_id: Option<String>,
     /// The entrant's handle, when the week close read one.
     ///
     /// Defaulted for the reason [`crate::ledger::Winner::handle`] gives at
@@ -396,6 +416,7 @@ mod tests {
         Entry {
             reply_id: id.to_owned(),
             summoner: summoner.to_owned(),
+            mention_id: None,
             handle: None,
             mint: "M".to_owned(),
             at,

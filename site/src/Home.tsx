@@ -272,8 +272,8 @@ function Ask({ handle }: { handle: string | null }) {
             creator's whole history — and answers in the thread.
           </p>
           <p className="mt-4 text-[var(--color-dim)]">
-            It only ever answers when it is asked. It does not post about coins
-            unprompted, and it does not decide what you should do.
+            It never picks a coin to post about. Every coin it names, somebody
+            asked it about — and it does not decide what you should do.
           </p>
           <div className="mt-6">
             <Summon handle={handle} />

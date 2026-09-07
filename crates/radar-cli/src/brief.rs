@@ -206,6 +206,17 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
 /// narrower and always true when things are well: the file on disk is the file
 /// in memory.
 fn binaries(manifest: &str) -> Check {
+    binaries_with(manifest, &running_exe)
+}
+
+/// The same, with the process lookup supplied.
+///
+/// Split out because the decision is the whole of this check and `/proc` is
+/// Linux's -- the shape `RpcClient` already uses for its transport and
+/// `Prices::from_vars` for the environment, and for the same reason: CI
+/// reported five survivors here in one run, every one of them inside a
+/// function nothing could call without a running daemon.
+fn binaries_with(manifest: &str, exe_of: &dyn Fn(&str) -> Option<String>) -> Check {
     let listed = match std::fs::read_to_string(manifest) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -235,7 +246,7 @@ fn binaries(manifest: &str) -> Check {
     let mut stale = Vec::new();
     let mut running = 0usize;
     for unit in UNITS {
-        match running_exe(unit) {
+        match exe_of(unit) {
             // The half-done deploy: the file was replaced under a live process.
             Some(path) if path.ends_with(" (deleted)") => {
                 running += 1;
@@ -1297,6 +1308,88 @@ fn humanise(seconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A manifest with one real-looking sha line, so the check gets past its
+    /// two `Unknown` guards and reaches the decision.
+    fn a_manifest() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("radar-brief-m{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("BUILD-INFO.txt");
+        std::fs::write(
+            &path,
+            "commit: abc\n0000000000000000000000000000000000000000000000000000000000000000  radar-serve\n",
+        )
+        .expect("write");
+        path
+    }
+
+    #[test]
+    fn a_binary_replaced_under_a_live_process_is_the_one_state_worth_an_alarm() {
+        // The half-done deploy: the install ran and the restart did not. It
+        // caught us twice, and from outside it is indistinguishable from the
+        // code being wrong -- `systemctl status` reports a five-day-old
+        // process as active either way.
+        //
+        // CI mutated the two `running += 1`, the `running == 0` guard and both
+        // predicates in `running_exe`, and all five survived: nothing could
+        // call this without a live daemon. The lookup is injected now.
+        let manifest = a_manifest();
+        let path = manifest.to_string_lossy().into_owned();
+
+        let stale = binaries_with(&path, &|unit| {
+            (unit == "radar-analyst").then(|| "/usr/local/bin/radar-analyst (deleted)".to_owned())
+        });
+        assert!(matches!(stale.status, Status::Fail), "{}", stale.detail);
+        assert!(stale.detail.contains("radar-analyst"), "{}", stale.detail);
+        assert!(stale.detail.contains("old build"), "{}", stale.detail);
+
+        // Running and not replaced is ok, and the count is a count. `+=`
+        // mutated to `-=` or `*=` reads 0 or 1 here rather than 2.
+        let fine = binaries_with(&path, &|unit| {
+            ["radar-serve", "radar-analyst"]
+                .contains(&unit)
+                .then(|| format!("/usr/local/bin/{unit}"))
+        });
+        assert!(matches!(fine.status, Status::Ok), "{}", fine.detail);
+        assert!(fine.detail.contains("2 running"), "{}", fine.detail);
+
+        // Nothing running is Unknown, never ok. `running == 0` mutated to `!=`
+        // reports the running box as unreadable and the empty one as fine --
+        // both directions wrong, and the second is the dangerous one.
+        let none = binaries_with(&path, &|_| None);
+        assert!(matches!(none.status, Status::Unknown), "{}", none.detail);
+        assert!(none.status.is_alarm());
+
+        // One stale among several running still alarms: the count must not
+        // wash it out.
+        let mixed = binaries_with(&path, &|unit| {
+            Some(if unit == "radar-signer" {
+                format!("/usr/local/bin/{unit} (deleted)")
+            } else {
+                format!("/usr/local/bin/{unit}")
+            })
+        });
+        assert!(matches!(mixed.status, Status::Fail), "{}", mixed.detail);
+        assert!(mixed.detail.contains("radar-signer"), "{}", mixed.detail);
+    }
+
+    #[test]
+    fn the_lookup_reads_this_processes_own_name_off_proc_where_there_is_one() {
+        // `running_exe` is the impure edge, and the two predicates CI mutated
+        // live in it: the pid filter and the name comparison. Both are
+        // reachable here on Linux by asking for a name nothing is running
+        // under -- inverting either makes the walk return some *other*
+        // process's executable instead of `None`.
+        //
+        // Skipped where there is no `/proc`, which is this repository's own
+        // workstation. Said rather than silently passing: a test that reports
+        // ok because it could not look is the failure `Status::Unknown` exists
+        // to avoid, and the same rule applies to tests.
+        if !std::path::Path::new("/proc/self/comm").exists() {
+            return;
+        }
+        assert_eq!(running_exe("definitely-not-a-running-process"), None);
+    }
 
     #[test]
     fn the_binaries_check_says_unknown_rather_than_ok_when_it_cannot_look() {

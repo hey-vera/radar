@@ -76,3 +76,24 @@ pub use money::MicroUsd;
 pub use mutability::{Latch, LatchReopened, Mutability, Revalidation};
 pub use provenance::{EvidenceTier, Provenance, SourceId, Trust};
 pub use slot::{Slot, SlotDelta};
+
+#[cfg(test)]
+mod build_tests {
+    use super::{build_sha, build_sha_or_unknown};
+
+    #[test]
+    fn a_build_outside_release_ci_says_unknown_rather_than_a_blank_or_a_hash() {
+        // Every test build is a build outside release CI: nothing sets
+        // `RADAR_BUILD_SHA` except the one workflow step that produces the
+        // artifact. So this is the value an operator sees on a hand-built
+        // binary, and it has to be a word rather than an empty string -- a
+        // blank reads as neither "I cannot say" nor a commit.
+        //
+        // CI turned `build_sha` into `Some("")` and `Some("xyzzy")` and
+        // `build_sha_or_unknown` into `""` and `"xyzzy"`, and all four
+        // survived. Re-apply any of them: this fails.
+        assert_eq!(build_sha(), None, "a test build has no RADAR_BUILD_SHA");
+        assert_eq!(build_sha_or_unknown(), "unknown");
+        assert!(!build_sha_or_unknown().is_empty());
+    }
+}

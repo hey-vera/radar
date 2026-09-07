@@ -419,6 +419,37 @@ mod tests {
     const WEEK: Week = Week(2958);
 
     #[test]
+    fn the_floor_is_below_and_not_at_or_below_and_not_equal_to() {
+        // Three operators produce three different rules and CI proved two of
+        // them survive: `<=` withholds a prize from a week that reached the
+        // bar exactly, and `==` refuses only the single amount equal to the
+        // floor and pays everything under it -- the opposite of a floor.
+        //
+        // The three amounts either side are what tell them apart, and the
+        // radar-payout tests could not: they are in another crate, and
+        // `cargo mutants` runs each crate's own suite.
+        let record = claimed();
+        let floor = 1_000u64;
+        let at = |collected: u64| Payout::permitted(&record, "ADDR", collected, collected, floor);
+
+        assert!(
+            matches!(at(floor - 1), Err(Refusal::BelowFloor { .. })),
+            "a lamport short is below the floor"
+        );
+        // At the floor pays. `<=` fails here.
+        assert_eq!(at(floor), Ok(()), "exactly at the floor is not below it");
+        // And above it pays. `==` fails here only in company with the first
+        // assertion, which is why all three amounts are asserted.
+        assert_eq!(at(floor + 1), Ok(()));
+        // Zero collected is below any floor, and this is the case an operator
+        // meets every Monday morning right after a payout.
+        assert!(matches!(
+            at(0),
+            Err(Refusal::BelowFloor { collected: 0, .. })
+        ));
+    }
+
+    #[test]
     fn a_voided_week_pays_nobody_and_says_so_before_anything_else() {
         // Checked ahead of the winner, the claim and the amount. A voided week
         // is not a week with a problem to work around -- the operator has

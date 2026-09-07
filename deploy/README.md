@@ -609,6 +609,21 @@ ssh -t guardian-vps-tail '
   sha256sum /usr/local/bin/radar-serve'
 ```
 
+**Install `BUILD-INFO.txt` beside the binaries**, so the box carries the
+manifest and not only the files:
+
+```bash
+scp ./dist/BUILD-INFO.txt guardian-vps-tail:~/bin/BUILD-INFO.txt
+```
+
+`radar brief` reads it as the `binaries` check (`RADAR_BUILD_INFO` overrides the
+path). It reports **FAIL** when a running process is holding an executable that
+has since been replaced — a deploy that landed and was never restarted — and
+**????** when it cannot look at all, which is what it says on a workstation.
+It deliberately does not check *which* commit is running: a box legitimately
+runs something older than `main`, and alarming on that would fire on every
+deploy window.
+
 **Compare all three against `BUILD-INFO.txt`.** Verifying the download proves the
 artifact arrived; only this proves the artifact is what got installed, and the
 two came apart in exactly the way described above.
@@ -630,6 +645,21 @@ Then restart, and ask the service what it thinks it is running:
 ssh guardian-vps-tail '
   sudo systemctl restart radar-serve radar-follow &&
   sleep 3 && curl -sS localhost:8402/health'
+```
+
+`/health` carries the commit it was built from, so the answer to "is the running
+process the one I built" is a string rather than an inference from a timestamp:
+
+```bash
+ssh guardian-vps-tail "curl -s localhost:8402/health | grep -o '\"build\":\"[0-9a-f]*\"'"
+```
+
+`"unknown"` means the binary was not built by release CI — a local `cargo build`
+sets no `RADAR_BUILD_SHA` and says so rather than inventing one. The analyst
+prints the same commit on start, beside how many accounts the contest excludes:
+
+```bash
+ssh guardian-vps-tail 'journalctl -u radar-analyst -n 40 | grep "^.*build "'
 ```
 
 **This `sudo` prompts for a password.** `guardian`'s NOPASSWD sudoers list
@@ -972,12 +1002,29 @@ The key is the wallet that launched the token and nothing else: it holds no
 tokens (ADR 0013 constraint 2) and enough SOL for a transaction fee. Its blast
 radius is one week of creator fees. `RADAR_RPC_URL` unset means nothing is paid.
 
+**Stop the timer before paying by hand.** The timer and `record-payout` race
+(finding S29): the timer sees a claimed, unpaid week and pays it while you are
+signing your own transaction for the same week, and the vault funds whichever
+lands first. `sudo systemctl stop radar-payout.timer` before you start, and
+start it again after `record-payout` has written the record.
+
 **The fallback, when the unit cannot run:** `radar contest pay --week N
 --creator <wallet> --rpc <url> --dry-run` prints the exact unsigned transaction,
 base64; sign and send it elsewhere; then `radar contest record-payout --week N
 --creator <wallet> --rpc <url> --signature <sig>` reads it back through the same
 check the unit uses and records it. A transaction that paid anyone else, or a
 different amount, is refused by the same three lines.
+
+**Two weeks due at once pay in week order, earliest first.** Each payment is
+everything the vault holds above its reserve, so the earliest due week takes the
+vault and the later one waits for the next fees. Before 2026-09-06 the order was
+the contest directory's, which is the filesystem's opinion rather than the
+contest's (finding S18).
+
+**`RADAR_PAYOUT_FLOOR_LAMPORTS` is the smallest prize worth paying.** A week
+that collected less stays unpaid and its prize rolls into the next week; the
+history page says so. Unset means no floor, and the process prints which it is
+using on every run.
 
 ### The token: the launch checklist
 

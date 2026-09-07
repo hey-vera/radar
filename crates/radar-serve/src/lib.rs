@@ -515,6 +515,11 @@ async fn health(State(state): State<Arc<AppState>>) -> Json<Value> {
     Json(json!({
         "status": "ok",
         "version": env!("CARGO_PKG_VERSION"),
+        // The commit, so "is the running process the one I built" is a question
+        // the box can answer rather than one an operator has to infer from a
+        // timestamp. `"unknown"` for a build outside release CI, which is the
+        // honest answer and not a blank.
+        "build": radar_types::build_sha_or_unknown(),
         "instruments": state.registry.len(),
         // Null rather than zero for an empty store: "nothing recorded" and
         // "recorded up to genesis" are different states.

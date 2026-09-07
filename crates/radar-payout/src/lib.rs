@@ -127,6 +127,46 @@ pub enum PayError {
     Verify(String),
 }
 
+/// The payout floor, in lamports, from a getter.
+///
+/// Design 0007 J2 and design 0009 L4 both say a floor with rollover. Josh sets
+/// the number; 0.1 SOL is what both documents suggest, and this reads whatever
+/// is configured rather than choosing for him.
+///
+/// **Unset means no floor**, which pays out whatever a week collected. That
+/// looks like it breaks rule 8 -- deny by default when config is missing --
+/// and it does not: a floor is not a permission, it is a *threshold below
+/// which money is withheld from the person who won it*. The safe direction
+/// here is paying the winner, not keeping their prize in the vault because
+/// nobody typed a number. The refusals that actually bound the hot key are
+/// the five above it, and none of them defaults open.
+///
+/// A value that will not parse is **no floor**, not a floor of zero and not an
+/// error: both are the same behaviour, and the daemon says which it is using
+/// so a typo is visible rather than silent.
+#[must_use]
+pub fn floor_from(get: &impl Fn(&str) -> Option<String>) -> u64 {
+    get("RADAR_PAYOUT_FLOOR_LAMPORTS")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// What the run says about the floor it is using, on start.
+///
+/// A line rather than silence, because "no floor" and "0.1 SOL" produce very
+/// different runs and an operator who mistyped the variable would otherwise
+/// find out from a payment.
+#[must_use]
+pub fn floor_notice(floor: u64) -> String {
+    if floor == 0 {
+        "radar-payout: no floor (RADAR_PAYOUT_FLOOR_LAMPORTS unset or unreadable); \
+         a week pays out whatever it collected."
+            .to_owned()
+    } else {
+        format!("radar-payout: floor {floor} lamports; a week below it rolls over unpaid.")
+    }
+}
+
 /// Plans a week's payment from its record and the vault's balance. Pure.
 ///
 /// # Errors
@@ -139,6 +179,7 @@ pub fn plan(
     creator: &Address,
     vault_lamports: u64,
     blockhash: &[u8; 32],
+    floor: u64,
 ) -> Result<Plan, PayError> {
     let collected = collected(vault_lamports);
     // The recipient is the claim, never an argument. An unclaimed week has no
@@ -149,7 +190,7 @@ pub fn plan(
         .as_ref()
         .map(|c| c.address.clone())
         .unwrap_or_default();
-    Payout::permitted(record, &claimed, collected, collected).map_err(PayError::Refused)?;
+    Payout::permitted(record, &claimed, collected, collected, floor).map_err(PayError::Refused)?;
     if collected == 0 {
         return Err(PayError::NothingCollected {
             vault: vault_lamports,
@@ -418,6 +459,7 @@ pub fn pay(
     key: &SigningKey,
     now: u64,
     dry_run: bool,
+    floor: u64,
 ) -> Result<Outcome, PayError> {
     let creator = wallet_of(key);
     let record = read_record(contest_dir, week)?;
@@ -432,7 +474,7 @@ pub fn pay(
         },
     )?;
     let blockhash = chain.latest_blockhash().map_err(PayError::Chain)?;
-    let planned = plan(&record, &creator, vault_lamports, &blockhash)?;
+    let planned = plan(&record, &creator, vault_lamports, &blockhash, floor)?;
 
     // The claimed address is a wallet, or nothing is signed.
     //
@@ -514,11 +556,18 @@ pub fn record_payout(
         .as_ref()
         .map(|c| c.address.clone())
         .unwrap_or_default();
+    // **No floor here, and that is the point.** This reads back a payment the
+    // network has already accepted. Refusing to record one because the amount
+    // was below today's floor would leave the ledger saying a paid week is
+    // unpaid, which is the one thing this file exists to prevent -- and the
+    // next `--due` run would try to pay it again. The floor decides whether to
+    // send; it has no opinion about what already left.
     Payout::permitted(
         &record,
         &transfer.to.to_string(),
         transfer.lamports,
         could_have_held,
+        0,
     )
     .map_err(PayError::Refused)?;
     if transfer.from != *creator || transfer.to.to_string() != claimed {
@@ -685,6 +734,11 @@ pub fn transfers_of(tx: &serde_json::Value) -> Vec<Transfer> {
 
 #[cfg(test)]
 mod tests {
+
+    /// No floor: what these tests are about is the other five refusals, and a
+    /// floor would make every one of them depend on an amount that is not the
+    /// thing under test.
+    const NO_FLOOR: u64 = 0;
     use super::*;
     use radar_contest::{Claim, Entry, Metrics, Ranked, Ranking};
     use std::cell::RefCell;
@@ -780,6 +834,90 @@ mod tests {
     }
 
     #[test]
+    fn a_week_below_the_floor_refuses_and_rolls_over_rather_than_paying_dust() {
+        // Design 0007 J2 and design 0009 L4 both say a floor with rollover,
+        // and the code had none until 2026-09-06. Without it a week that
+        // collected a few thousand lamports pays them out: the transaction fee
+        // is a meaningful share of the prize, and the pool that should have
+        // been building is spent.
+        //
+        // Re-apply by deleting the `collected < floor` arm in `permitted`.
+        let creator = wallet_of(&key());
+        let floor = 100_000_000; // 0.1 SOL, the figure both documents name.
+        let thin = VAULT_RENT_RESERVE + floor - 1;
+
+        assert_eq!(
+            plan(&record(true), &creator, thin, &BLOCKHASH, floor).err(),
+            Some(PayError::Refused(Refusal::BelowFloor {
+                floor,
+                collected: floor - 1
+            }))
+        );
+        // Exactly at the floor pays: the refusal is "below", not "at or
+        // below", and a week that reaches the bar is not made to wait.
+        plan(
+            &record(true),
+            &creator,
+            VAULT_RENT_RESERVE + floor,
+            &BLOCKHASH,
+            floor,
+        )
+        .expect("at the floor is paid");
+        // And with no floor the same thin week pays, which is what an
+        // unconfigured instance does.
+        plan(&record(true), &creator, thin, &BLOCKHASH, NO_FLOOR).expect("no floor, paid");
+    }
+
+    #[test]
+    fn the_floor_is_checked_last_so_a_more_urgent_refusal_is_never_hidden() {
+        // Every other refusal is about whether the week may be paid at all;
+        // this one is only about whether it is worth paying yet. Reporting
+        // "below the floor" for a voided or already-paid week would send the
+        // operator to look at the vault instead of at the record.
+        //
+        // Re-apply by moving the floor check to the top of `permitted`.
+        let creator = wallet_of(&key());
+        let floor = 100_000_000;
+        let thin = VAULT_RENT_RESERVE + 1;
+
+        let mut voided = record(true);
+        voided.voided = Some(radar_contest::ledger::Voided {
+            at: 1_788_000_000,
+            reason: "bought".to_owned(),
+        });
+        assert!(matches!(
+            plan(&voided, &creator, thin, &BLOCKHASH, floor).err(),
+            Some(PayError::Refused(Refusal::Voided { .. }))
+        ));
+
+        assert!(matches!(
+            plan(&record(false), &creator, thin, &BLOCKHASH, floor).err(),
+            Some(PayError::Refused(Refusal::Unclaimed))
+        ));
+    }
+
+    #[test]
+    fn an_unset_or_unreadable_floor_is_no_floor_and_the_run_says_which() {
+        // Not rule 8's shape: a floor is not a permission, it is a threshold
+        // below which money is withheld from the person who won it, and the
+        // safe direction is paying them. What rule 8 does buy here is that the
+        // operator is told, so a typo is visible rather than silent.
+        assert_eq!(floor_from(&|_| None), 0);
+        assert_eq!(floor_from(&|_| Some("  not a number ".to_owned())), 0);
+        assert_eq!(
+            floor_from(&|k| (k == "RADAR_PAYOUT_FLOOR_LAMPORTS").then(|| " 100000000 ".to_owned())),
+            100_000_000
+        );
+
+        assert!(floor_notice(0).contains("no floor"), "{}", floor_notice(0));
+        assert!(
+            floor_notice(100_000_000).contains("rolls over unpaid"),
+            "{}",
+            floor_notice(100_000_000)
+        );
+    }
+
+    #[test]
     fn the_plan_pays_the_claim_everything_above_the_reserve_in_two_instructions() {
         let creator = wallet_of(&key());
         let p = plan(
@@ -787,6 +925,7 @@ mod tests {
             &creator,
             VAULT_RENT_RESERVE + 1_000_000,
             &BLOCKHASH,
+            NO_FLOOR,
         )
         .expect("a plan");
         assert_eq!(p.lamports, 1_000_000);
@@ -823,7 +962,7 @@ mod tests {
         let full = VAULT_RENT_RESERVE + 1_000;
         // Unclaimed.
         assert_eq!(
-            plan(&record(false), &creator, full, &BLOCKHASH).err(),
+            plan(&record(false), &creator, full, &BLOCKHASH, NO_FLOOR).err(),
             Some(PayError::Refused(Refusal::Unclaimed))
         );
         // Already paid.
@@ -835,7 +974,7 @@ mod tests {
             at: 1,
         });
         assert_eq!(
-            plan(&paid, &creator, full, &BLOCKHASH).err(),
+            plan(&paid, &creator, full, &BLOCKHASH, NO_FLOOR).err(),
             Some(PayError::Refused(Refusal::AlreadyPaid {
                 signature: "OLD".to_owned()
             }))
@@ -847,12 +986,19 @@ mod tests {
             &radar_contest::Rules::published(["op"]),
         );
         assert_eq!(
-            plan(&none, &creator, full, &BLOCKHASH).err(),
+            plan(&none, &creator, full, &BLOCKHASH, NO_FLOOR).err(),
             Some(PayError::Refused(Refusal::NoWinner))
         );
         // At the reserve: nothing to pay, and not a refusal.
         assert_eq!(
-            plan(&record(true), &creator, VAULT_RENT_RESERVE, &BLOCKHASH).err(),
+            plan(
+                &record(true),
+                &creator,
+                VAULT_RENT_RESERVE,
+                &BLOCKHASH,
+                NO_FLOOR
+            )
+            .err(),
             Some(PayError::NothingCollected {
                 vault: VAULT_RENT_RESERVE,
                 reserve: VAULT_RENT_RESERVE
@@ -862,7 +1008,7 @@ mod tests {
         let mut bad = record(true);
         bad.claim.as_mut().expect("claim").address = "not-an-address".to_owned();
         assert!(matches!(
-            plan(&bad, &creator, full, &BLOCKHASH).err(),
+            plan(&bad, &creator, full, &BLOCKHASH, NO_FLOOR).err(),
             Some(PayError::BadAddress(_))
         ));
     }
@@ -870,7 +1016,14 @@ mod tests {
     #[test]
     fn the_signature_is_over_the_message_and_verifies_under_the_creators_key() {
         let creator = wallet_of(&key());
-        let p = plan(&record(true), &creator, VAULT_RENT_RESERVE + 5, &BLOCKHASH).expect("a plan");
+        let p = plan(
+            &record(true),
+            &creator,
+            VAULT_RENT_RESERVE + 5,
+            &BLOCKHASH,
+            NO_FLOOR,
+        )
+        .expect("a plan");
         let signed = sign(&p.unsigned, &key()).expect("signed");
         assert_eq!(signed.len(), p.unsigned.len());
         assert_eq!(&signed[65..], &p.unsigned[65..], "the message is untouched");
@@ -893,6 +1046,7 @@ mod tests {
             &creator,
             VAULT_RENT_RESERVE + 500,
             &BLOCKHASH,
+            NO_FLOOR,
         )
         .expect("a plan");
         let planned = Transfer {
@@ -958,7 +1112,15 @@ mod tests {
             owner: Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA".to_owned()),
             ..Fake::default()
         };
-        match pay(&mint_owned, &d, WEEK, &key(), 1_788_000_000, false) {
+        match pay(
+            &mint_owned,
+            &d,
+            WEEK,
+            &key(),
+            1_788_000_000,
+            false,
+            NO_FLOOR,
+        ) {
             Err(PayError::Refused(Refusal::NotAWallet { owner })) => assert_eq!(
                 owner.as_deref(),
                 Some("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA")
@@ -973,7 +1135,7 @@ mod tests {
         // The dry run reports the same refusal rather than printing a
         // transaction the real run would refuse.
         assert!(matches!(
-            pay(&mint_owned, &d, WEEK, &key(), 1_788_000_000, true),
+            pay(&mint_owned, &d, WEEK, &key(), 1_788_000_000, true, NO_FLOOR),
             Err(PayError::Refused(Refusal::NotAWallet { .. }))
         ));
 
@@ -984,7 +1146,15 @@ mod tests {
             ..Fake::default()
         };
         assert!(matches!(
-            pay(&unreadable, &d, WEEK, &key(), 1_788_000_000, false),
+            pay(
+                &unreadable,
+                &d,
+                WEEK,
+                &key(),
+                1_788_000_000,
+                false,
+                NO_FLOOR
+            ),
             Err(PayError::Chain(_))
         ));
     }
@@ -1011,7 +1181,7 @@ mod tests {
             confirm_as_planned: true,
             ..Fake::default()
         };
-        let out = pay(&chain, &d, WEEK, &key(), 1_788_000_000, false).expect("paid");
+        let out = pay(&chain, &d, WEEK, &key(), 1_788_000_000, false, NO_FLOOR).expect("paid");
         let Outcome::Paid(payout) = out else {
             panic!("paid");
         };
@@ -1033,7 +1203,7 @@ mod tests {
         );
 
         // Paying again is refused as already paid, and nothing is sent.
-        let again = pay(&chain, &d, WEEK, &key(), 1_788_000_001, false);
+        let again = pay(&chain, &d, WEEK, &key(), 1_788_000_001, false, NO_FLOOR);
         assert!(matches!(
             again,
             Err(PayError::Refused(Refusal::AlreadyPaid { .. }))
@@ -1056,7 +1226,7 @@ mod tests {
             }]),
             ..Fake::default()
         };
-        let out = pay(&chain, &d, WEEK, &key(), 1, false);
+        let out = pay(&chain, &d, WEEK, &key(), 1, false, NO_FLOOR);
         assert!(matches!(out, Err(PayError::Verify(_))), "{out:?}");
         assert_eq!(read_record(&d, WEEK).expect("record").payout, None);
         assert_eq!(
@@ -1074,7 +1244,7 @@ mod tests {
             vault: VAULT_RENT_RESERVE + 300,
             ..Fake::default()
         };
-        let out = pay(&chain, &d, WEEK, &key(), 1, true).expect("planned");
+        let out = pay(&chain, &d, WEEK, &key(), 1, true, NO_FLOOR).expect("planned");
         assert!(matches!(out, Outcome::Planned(ref p) if p.lamports == 300));
         assert!(chain.sent.borrow().is_empty());
         assert!(std::path::Path::new(&format!("{d}/pool.json")).exists());
@@ -1159,7 +1329,14 @@ mod tests {
         // CI's mutants: `unsigned_base64` replaced by "xyzzy", and the length
         // bound in `sign` moved every way it can move.
         let creator = wallet_of(&key());
-        let p = plan(&record(true), &creator, VAULT_RENT_RESERVE + 5, &BLOCKHASH).expect("a plan");
+        let p = plan(
+            &record(true),
+            &creator,
+            VAULT_RENT_RESERVE + 5,
+            &BLOCKHASH,
+            NO_FLOOR,
+        )
+        .expect("a plan");
         let decoded = base64::engine::general_purpose::STANDARD
             .decode(p.unsigned_base64())
             .expect("base64");

@@ -384,6 +384,14 @@ pub fn run() -> ! {
         "{}",
         posture(x.is_some(), x.as_ref().is_some_and(X::can_post), publishing)
     );
+    // The commit and the operator set, beside the posture, because both are
+    // states an operator otherwise has to infer. The build sha closes the trap
+    // that caught us twice -- a change believed deployed, debugged against a
+    // process that predated it -- and the operator count is what makes Phase
+    // 0.3 checkable: a duplicated or mistyped `RADAR_CONTEST_OPERATORS` line
+    // silently leaves the managing account eligible to win the prize, and the
+    // only visible difference is this number.
+    eprintln!("{}", build_notice(operator_ids(x.as_ref()).len()));
 
     // The free lane, on its own token, its own switch, its own caps and its
     // own log (design 0009 L5). Same rule 8 shape as X: no token, nothing read.
@@ -786,6 +794,26 @@ fn prompt_claim_if_due(publisher: &dyn Publisher, spend: &mut Spend, paths: &Pat
     }
 }
 
+/// What the process says about itself on start: the commit, and how many
+/// accounts the contest excludes.
+///
+/// A function rather than an `eprintln!` inside `run`, for the reason
+/// [`unfunded_notice`] gives: `run` never returns and nothing inside it can be
+/// tested.
+///
+/// The count, never the ids. The ids are the operator's other accounts and the
+/// number is the thing worth checking -- "operators: 1" on a box whose
+/// `analyst.env` names a second account is the whole of finding Phase 0.3, and
+/// it is invisible any other way.
+#[must_use]
+pub fn build_notice(operators: usize) -> String {
+    format!(
+        "radar-analyst: build {}; operators: {operators} {}.",
+        radar_types::build_sha_or_unknown(),
+        if operators == 1 { "id" } else { "ids" }
+    )
+}
+
 /// Every account the operator controls, for the contest's exclusion rule.
 ///
 /// The bot's own id is always included, so an unset or mistyped
@@ -1097,6 +1125,27 @@ mod tests {
             excluded: Vec::new(),
         };
         assert_eq!(claim_target(&others, "won"), "won");
+    }
+
+    #[test]
+    fn the_start_line_carries_the_commit_and_the_operator_count() {
+        // Both are states an operator otherwise infers. "operators: 1" on a box
+        // whose analyst.env names a second account is the whole of Phase 0.3,
+        // and it is invisible any other way.
+        let one = build_notice(1);
+        assert!(one.contains("operators: 1 id."), "{one}");
+        assert!(!one.contains("1 ids"), "{one}");
+        assert!(
+            build_notice(2).contains("operators: 2 ids"),
+            "{}",
+            build_notice(2)
+        );
+
+        // An ordinary build has no `RADAR_BUILD_SHA` and says so rather than
+        // printing a blank, which reads as neither a commit nor an absence.
+        // Release CI sets it, so this asserts the shape and not the value.
+        assert!(one.contains("build "), "{one}");
+        assert!(!one.contains("build ;"), "{one}");
     }
     #[test]
     fn the_operator_set_always_holds_the_bots_own_id_and_drops_empty_ones() {

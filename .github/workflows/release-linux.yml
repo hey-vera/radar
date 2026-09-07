@@ -62,7 +62,13 @@ jobs:
       - name: Build the interface
         run: just web
 
+      # `RADAR_BUILD_SHA` is read by `option_env!`, so it has to be set for the
+      # compile that produces the artifact and nowhere else. A local build has
+      # no value and says "unknown", which is true: only a build from a known
+      # commit may claim one.
       - name: Build release binaries
+        env:
+          RADAR_BUILD_SHA: ${{ github.sha }}
         run: cargo build --release --locked -p radar-serve -p radar-cli -p radar-backfill -p radar-signer -p radar-analyst
 
       - name: Record what was built

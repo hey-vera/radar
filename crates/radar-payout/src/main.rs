@@ -53,11 +53,21 @@ fn dry_run(args: &[String]) -> bool {
 /// A message when neither flag is usable.
 fn weeks_to_pay(args: &[String], records: &[Record]) -> Result<Vec<Week>, String> {
     if args.iter().any(|a| a == "--due") {
-        return Ok(records
+        let mut due: Vec<Week> = records
             .iter()
             .filter(|r| r.claim.is_some() && r.payout.is_none())
             .map(|r| r.week)
-            .collect());
+            .collect();
+        // **Ascending, and this is not cosmetic** (finding S18). Each payment
+        // is everything the vault holds above its reserve, so with two weeks
+        // due the first one paid takes the lot. Unsorted, "first" was
+        // `records_in`'s directory order -- which is the filesystem's opinion,
+        // not the contest's -- so which winner got the vault depended on how
+        // the directory happened to be laid out. The earliest due week takes
+        // it, because it has been waiting longest, and the order is now the
+        // same on every machine.
+        due.sort_unstable();
+        return Ok(due);
     }
     flag(args, "--week")
         .and_then(|w| w.parse::<u64>().ok())
@@ -92,6 +102,8 @@ fn main() -> ExitCode {
     };
     let chain = Rpc::new(rpc_url);
 
+    let floor = radar_payout::floor_from(&|k| std::env::var(k).ok());
+    eprintln!("{}", radar_payout::floor_notice(floor));
     let records = radar_contest::records_in(std::path::Path::new(&contest_dir));
     let weeks = match weeks_to_pay(&args, &records) {
         Ok(weeks) => weeks,
@@ -107,7 +119,15 @@ fn main() -> ExitCode {
 
     let mut failed = false;
     for week in weeks {
-        match pay(&chain, &contest_dir, week, &key, now(), dry_run(&args)) {
+        match pay(
+            &chain,
+            &contest_dir,
+            week,
+            &key,
+            now(),
+            dry_run(&args),
+            floor,
+        ) {
             Ok(Outcome::Planned(plan)) => {
                 println!(
                     "week {}: would pay {} lamports from {} to {}; unsigned transaction, base64:\n{}",
@@ -198,6 +218,27 @@ mod tests {
         assert_eq!(flag(&a, "--nope"), None);
         assert!(dry_run(&a));
         assert!(!dry_run(&args(&["--week", "7"])));
+    }
+
+    #[test]
+    fn due_pays_the_earliest_week_first_whatever_order_the_directory_is_in() {
+        // Finding S18, and it decides who gets the money. Each payment is
+        // everything the vault holds above its reserve, so with two weeks due
+        // the first one paid takes the lot -- and unsorted, "first" was
+        // `records_in`'s directory order, which is the filesystem's opinion
+        // rather than the contest's.
+        //
+        // Re-apply by deleting the `sort_unstable`: this fails, because the
+        // records are handed over newest first.
+        let records = [
+            record(9, true, false),
+            record(7, true, false),
+            record(8, true, false),
+        ];
+        assert_eq!(
+            weeks_to_pay(&args(&["--due"]), &records),
+            Ok(vec![Week(7), Week(8), Week(9)])
+        );
     }
 
     #[test]

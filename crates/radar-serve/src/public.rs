@@ -100,6 +100,13 @@ pub async fn leaderboard() -> Response {
     respond(&paths, StatusCode::OK, doc)
 }
 
+/// `GET /v1/public/hunters`.
+pub async fn hunters() -> Response {
+    let paths = Paths::from_env();
+    let doc = hunters_in(&paths, radar_analyst::daemon::now());
+    respond(&paths, StatusCode::OK, doc)
+}
+
 /// `GET /v1/public/pool`.
 pub async fn pool() -> Response {
     let paths = Paths::from_env();
@@ -302,6 +309,58 @@ pub fn leaderboard_in(paths: &Paths, now: u64) -> Value {
         "entries": unscored,
         "answered": answered,
         "published": published,
+    })
+}
+
+/// The hunter board for the latest week that has one.
+///
+/// Design 0009 §5, M3, and item 8. The rank counts the refusal signals a
+/// summoner's replies carried -- finding launches worth refusing, which is the
+/// skill the bot teaches every time it answers.
+///
+/// # Status, and the document says so
+///
+/// This decides nothing about money. The prize is a separate rule with a
+/// separate document, and a reader who confuses them will think the board pays
+/// out. `basis` carries that sentence rather than leaving the page to supply
+/// it.
+///
+/// # Read from the file the week close wrote
+///
+/// `close_if_due` writes the board beside the record, so this serves the same
+/// tally the weekly post named. Recomputing it here would be a second answer to
+/// the same question, and the two would eventually disagree.
+///
+/// # Handles are not here
+///
+/// The board carries account ids, because that is what a mention carries and
+/// it is the only identifier that cannot be reassigned. The site links by id
+/// and shows a handle only where the week's record read one -- so the handle
+/// travels on `/v1/public/weeks`, and this document does not invent a join.
+#[must_use]
+pub fn hunters_in(paths: &Paths, now: u64) -> Value {
+    let week = latest_record(&paths.contest_dir).map(|r| r.week);
+    let board: Vec<radar_contest::hunter::Placing> = week
+        .and_then(|w| {
+            std::fs::read_to_string(radar_analyst::contest::hunter_path(&paths.contest_dir, w)).ok()
+        })
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or_default();
+    json!({
+        "measured_at": timestamp_from_seconds(now),
+        // `null` when no week has closed, which is a different thing from a
+        // week whose board is empty -- and the page renders them differently.
+        "week": week.map_or(Value::Null, |w| Value::String(monday_of(w))),
+        "basis": "refusal signals the fact sheet carried, per summoned reply, \
+                  capped per summoner per day. Status, not money.",
+        "hunters": board.iter().map(|p| json!({
+            "summoner": p.summoner,
+            "signals": p.signals,
+            "counted": p.counted,
+            // Published rather than hidden: the cap is part of the rule, and a
+            // hunter who hit it should be able to see that they did.
+            "over_cap": p.over_cap,
+        })).collect::<Vec<_>>(),
     })
 }
 
@@ -632,6 +691,53 @@ mod tests {
                 "{field} should be null mid-week: {entry}"
             );
         }
+    }
+
+    #[test]
+    fn the_hunter_board_is_empty_and_dated_before_a_week_closes_not_absent() {
+        // `week: null` and a week whose board is empty are different facts and
+        // the page renders them differently. A 404 would give it a third thing
+        // to show that is not true of either.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        let doc = hunters_in(&paths, WEEK.opens_at());
+        assert_eq!(doc["week"], Value::Null);
+        assert_eq!(doc["hunters"].as_array().expect("hunters").len(), 0);
+        // The one sentence that stops a reader thinking the board pays out.
+        assert!(
+            doc["basis"].as_str().expect("basis").contains("not money"),
+            "{}",
+            doc["basis"]
+        );
+    }
+
+    #[test]
+    fn the_hunter_board_serves_the_tally_the_week_close_wrote() {
+        // Read, never recomputed: the weekly post names this same board, and
+        // two answers to one question eventually disagree.
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let paths = paths_in(dir.path());
+        std::fs::create_dir_all(&paths.contest_dir).expect("mkdir");
+        radar_analyst::contest::write_record(&paths.contest_dir, &a_record(WEEK)).expect("write");
+        let board = vec![radar_contest::hunter::Placing {
+            summoner: "9001".to_owned(),
+            signals: 7,
+            counted: 3,
+            over_cap: 2,
+        }];
+        std::fs::write(
+            radar_analyst::contest::hunter_path(&paths.contest_dir, WEEK),
+            serde_json::to_string(&board).expect("json"),
+        )
+        .expect("write");
+
+        let doc = hunters_in(&paths, WEEK.closes_at() + 60);
+        assert_eq!(doc["week"], monday_of(WEEK));
+        assert_eq!(doc["hunters"][0]["summoner"], "9001");
+        assert_eq!(doc["hunters"][0]["signals"], 7);
+        // The cap is part of the published rule, so a hunter who hit it can
+        // see that they did rather than wondering where their looks went.
+        assert_eq!(doc["hunters"][0]["over_cap"], 2);
     }
 
     #[test]

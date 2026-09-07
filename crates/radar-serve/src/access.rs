@@ -604,6 +604,7 @@ pub fn audience_of(path: &str) -> Audience {
         || path == "/v1/public/stats"
         || path == "/v1/public/leaderboard"
         || path == "/v1/public/pool"
+        || path == "/v1/public/hunters"
     {
         return Audience::Public;
     }
@@ -1056,6 +1057,7 @@ mod tests {
         assert!(is_public("/v1/public/stats"));
         assert!(is_public("/v1/public/leaderboard"));
         assert!(is_public("/v1/public/pool"));
+        assert!(is_public("/v1/public/hunters"));
 
         for private in [
             "/",
@@ -1099,6 +1101,7 @@ mod tests {
             ("/v1/public/stats", Audience::Public),
             ("/v1/public/leaderboard", Audience::Public),
             ("/v1/public/pool", Audience::Public),
+            ("/v1/public/hunters", Audience::Public),
             // The product.
             ("/", Audience::Customer),
             ("/assets/index-abc123.js", Audience::Customer),

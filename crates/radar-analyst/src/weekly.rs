@@ -166,30 +166,103 @@ pub fn summary(record: &Record, vault: Option<&Vault>) -> Post {
             match (&record.payout, &record.winner) {
                 (Some(_), _) => text.push_str("; paid to the claim, transaction on the site."),
                 (None, Some(_)) => {
+                    // The date, not the timestamp. The window has always closed
+                    // at midnight UTC and the date alone says enough -- the same
+                    // trim `claim_prompt` already made, for the same reason:
+                    // this post is at the platform's limit to the character,
+                    // and a post cut off mid-figure is a wrong figure.
                     let until = timestamp_from_seconds(record.claim_window_closes_at());
-                    authorise_date(&mut authorised, &until[..10]);
-                    authorised.extend(
-                        until[11..19]
-                            .split(':')
-                            .filter_map(|p| p.parse::<f64>().ok()),
-                    );
-                    let _ = write!(text, "; claim open until {until}.");
+                    let day = &until[..10];
+                    authorise_date(&mut authorised, day);
+                    let _ = write!(text, "; claim open until {day}.");
                 }
                 (None, None) => text.push('.'),
             }
         }
         None => text.push_str("\nPrize pool: no token yet."),
     }
-    // The site's address is in the account's bio, not here: its name contains
-    // a word the forbidden list refuses as an identity claim, and the checks
-    // are not given exemptions for the account's own copy.
-    text.push_str("\nRule and leaderboard: on the site.");
+    // The address itself, since 2026-09-06. `forbidden::check` masks this exact
+    // literal before scanning, so the account can name its own site and every
+    // other "cabal" is still refused. Before that the line read "on the site"
+    // with no link, and a reader who wanted to check the rule had to go and
+    // find it -- which is a strange thing to ask of somebody you are inviting
+    // to check you.
+    text.push_str("\nRule and leaderboard: cabalhunter.org/leaderboard");
 
     Post {
         text,
         authorised,
         source: record.to_json().unwrap_or_default(),
     }
+}
+
+/// The week's best hunters, named, as the third post in the thread.
+///
+/// Design 0009 item 8. The hunter rank is **status, never money** (design 0009
+/// §5, M3): it counts the refusal signals a summoner's replies carried, which
+/// is the skill the bot teaches every time it answers. Naming the top three is
+/// the whole of the reward, so the post has to exist for the rank to mean
+/// anything.
+///
+/// # Why a third post rather than three more words on the summary
+///
+/// The summary's fullest branch is already at the platform's limit, to the
+/// character. There is no room, and a post cut off mid-figure is a wrong
+/// figure -- so this is a reply in the same thread instead of a truncation.
+///
+/// # Handles only, and `None` when there are none
+///
+/// A `Placing` carries the numeric account id, and posting that would render
+/// `@1234567890` at a reader as though somebody had chosen it -- the site's own
+/// S4, in a post this time. Hunters with no handle on the record are skipped,
+/// and a board with no named hunters at all produces no post: an empty
+/// leaderboard is not worth a reply.
+#[must_use]
+#[allow(clippy::cast_precision_loss, reason = "a signal count, far below 2^53")]
+pub fn hunters(record: &Record, board: &[radar_contest::hunter::Placing]) -> Option<Post> {
+    // Every handle the week's record knows, ranked and excluded alike: an
+    // entrant excluded from the *prize* still hunted, and the two rules are
+    // deliberately different ones.
+    let handles: std::collections::BTreeMap<&str, &str> = record
+        .ranking
+        .ranked
+        .iter()
+        .map(|r| &r.entry)
+        .chain(record.ranking.excluded.iter().map(|(e, _)| e))
+        .filter_map(|e| Some((e.summoner.as_str(), e.handle.as_deref()?)))
+        .collect();
+
+    let named: Vec<(&str, u64)> = board
+        .iter()
+        .filter(|p| p.signals > 0)
+        .filter_map(|p| Some((*handles.get(p.summoner.as_str())?, p.signals)))
+        .take(3)
+        .collect();
+    if named.is_empty() {
+        return None;
+    }
+
+    let mut authorised = Vec::new();
+    let monday = date_from_days(i64::try_from(record.opened_at / 86_400).unwrap_or(i64::MAX));
+    authorise_date(&mut authorised, &monday);
+    let mut text = format!("Best hunters, week of {monday}, by refusal signals found:");
+    for (handle, signals) in &named {
+        authorised.push(*signals as f64);
+        let _ = write!(
+            text,
+            "\n@{handle} -- {signals} {}",
+            if *signals == 1 { "signal" } else { "signals" }
+        );
+    }
+    // Status, and it says so. The prize is a separate rule and a reader who
+    // confuses the two will think the board decides the money.
+    text.push_str("\nStatus, not money. The rule: cabalhunter.org/history");
+
+    Some(Post {
+        text,
+        authorised,
+        source: record.to_json().unwrap_or_default(),
+    })
 }
 
 /// The winner's coin, torn down: the reply the roaster wrote from its sheet,
@@ -361,6 +434,101 @@ mod tests {
         Record::close(WEEK, ranking, &radar_contest::Rules::published(["radar"]))
     }
 
+    /// A board, best first, the way `hunter::tally` returns one.
+    fn placing(summoner: &str, signals: u64) -> radar_contest::hunter::Placing {
+        radar_contest::hunter::Placing {
+            summoner: summoner.to_owned(),
+            signals,
+            counted: 1,
+            over_cap: 0,
+        }
+    }
+
+    /// The week's record with handles on both entrants, so the post has names.
+    fn record_with_handles() -> Record {
+        let mut r = record(true);
+        r.ranking.ranked[0].entry.handle = Some("first".to_owned());
+        r.ranking.excluded[0].0.handle = Some("second".to_owned());
+        r
+    }
+
+    #[test]
+    fn the_hunters_post_names_handles_and_never_a_bare_account_id() {
+        // The site's S4, in a post this time: `@9001` reads as a name somebody
+        // chose, and it is a numeric account id. Re-apply by dropping the
+        // `handles.get` lookup and posting `p.summoner` -- the second
+        // assertion fails.
+        let record = record_with_handles();
+        let board = [placing("9001", 5), placing("9002", 2), placing("9003", 9)];
+        let post = hunters(&record, &board).expect("two named hunters");
+
+        // The week, as a date. CI turned the `/ 86_400` into `%` and `*` and
+        // nothing failed, because nothing here read the date -- so the post
+        // could have been headed "week of 1970-01-01" at every reader.
+        assert!(post.text.contains("week of 2026-08-31"), "{}", post.text);
+        assert!(post.text.contains("@first -- 5 signals"), "{}", post.text);
+        assert!(post.text.contains("@second -- 2 signals"), "{}", post.text);
+        // 9003 has no handle on this record, so it is skipped rather than
+        // posted as a number.
+        assert!(!post.text.contains("9003"), "{}", post.text);
+        // Status, said plainly. A reader who thinks the board decides the money
+        // has been told something false about how the contest works.
+        assert!(post.text.contains("Status, not money"), "{}", post.text);
+
+        // The same two checks every other post goes through, and the link is
+        // the reason the second one is worth running here.
+        assert_eq!(check(&post), Ok(()), "{}", post.text);
+        assert!(
+            post.text.chars().count() <= 280,
+            "{} chars: {}",
+            post.text.chars().count(),
+            post.text
+        );
+    }
+
+    #[test]
+    fn a_board_with_nothing_to_say_produces_no_post_at_all() {
+        // An empty leaderboard is not worth a reply, and a post reading "Best
+        // hunters:" with nothing under it is worse than silence.
+        let record = record_with_handles();
+        assert!(hunters(&record, &[]).is_none());
+        // A hunter who found no signals is not a hunter. Zero here is a real
+        // measurement -- the sheets carried no refusal signal -- not an
+        // absence, so it is filtered rather than named.
+        assert!(hunters(&record, &[placing("9001", 0)]).is_none());
+        // And a board of ids the record has no handle for.
+        assert!(hunters(&record, &[placing("9999", 7)]).is_none());
+    }
+
+    #[test]
+    fn the_hunters_post_names_at_most_three() {
+        let mut record = record_with_handles();
+        // Four entrants, all named, all with signals.
+        for (id, handle) in [("9003", "third"), ("9004", "fourth")] {
+            record.ranking.excluded.push((
+                ContestEntry {
+                    reply_id: format!("r-{id}"),
+                    summoner: id.to_owned(),
+                    mention_id: Some(format!("m-{id}")),
+                    handle: Some(handle.to_owned()),
+                    mint: "M".to_owned(),
+                    at: WEEK.opens_at() + 30,
+                    metrics: Metrics::default(),
+                },
+                radar_contest::Excluded::Unscored,
+            ));
+        }
+        let board = [
+            placing("9001", 9),
+            placing("9002", 5),
+            placing("9003", 3),
+            placing("9004", 1),
+        ];
+        let post = hunters(&record, &board).expect("a board");
+        assert!(post.text.contains("@third"), "{}", post.text);
+        assert!(!post.text.contains("@fourth"), "{}", post.text);
+    }
+
     fn vault() -> Vault {
         Vault {
             address: "VAULT".to_owned(),
@@ -427,8 +595,19 @@ mod tests {
             post.text
                 .contains("Prize pool: 1.235 SOL at 2026-09-07T00:01:00Z")
         );
+        // The date, not the timestamp: the window has always closed at
+        // midnight UTC, and this post is at the limit to the character.
         assert!(
-            post.text.contains("claim open until 2026-09-14T00:00:00Z"),
+            post.text.contains("claim open until 2026-09-14."),
+            "{}",
+            post.text
+        );
+        // The account can name its own site. `forbidden::check` masks this
+        // exact literal, so `check` below is the real proof, not this line --
+        // until 2026-09-06 the post said "on the site" with no address,
+        // because the checks refused the word "cabal" in its own domain.
+        assert!(
+            post.text.contains("cabalhunter.org/leaderboard"),
             "{}",
             post.text
         );

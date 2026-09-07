@@ -72,7 +72,11 @@ reason, published verbatim: {}",
             let vault = pda::creator_vault(&creator).ok_or("the creator vault could not be derived")?;
             let lamports = chain.balance(&vault)?;
             let blockhash = chain.latest_blockhash()?;
-            let planned = plan(&record, &creator, lamports, &blockhash).map_err(|e| e.to_string())?;
+            // The same floor the timer uses, read the same way. A hand
+            // payment that ignored it would be a second policy.
+            let floor = radar_payout::floor_from(&|k| std::env::var(k).ok());
+            let planned = plan(&record, &creator, lamports, &blockhash, floor)
+                .map_err(|e| e.to_string())?;
             println!(
                 "week {}: pay {} lamports from {} to {}\nvault {} holds {} lamports\nunsigned transaction, base64 (sign with the creator key and send; then `radar contest record-payout --signature <sig>`):\n{}",
                 week.0,

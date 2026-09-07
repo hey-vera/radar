@@ -277,6 +277,28 @@ exclude_re = [
     # `the_latest_measurement_of_a_mint_is_the_one_that_counts`.
     'replace > with >= in build',
 
+    # `radar_types::build_sha` replaced with `None`.
+    #
+    # It is `option_env!("RADAR_BUILD_SHA")`, and **in every test build that is
+    # already `None`** -- only the one release-CI step that produces the
+    # artifact sets the variable, and `option_env!` is resolved when the crate
+    # is compiled, which `cargo mutants` does without it. The mutation and the
+    # original are the same value under any test that could run here.
+    #
+    # Neither category above, and worth saying exactly rather than filing it
+    # under the nearest one. It is not *equivalent* -- in a release build the
+    # mutation would erase the commit from `/health`, from the analyst's start
+    # line, and from `radar brief`'s reading. It is not unreachable for want of
+    # a `.git` either. It is unobservable because the input is fixed at compile
+    # time and no test compiles the crate twice.
+    #
+    # The other four mutants of this pair are caught, and that is what makes
+    # this entry narrow rather than a hole: `Some("")`, `Some("xyzzy")`, `""`
+    # and `"xyzzy"` all fail
+    # `a_build_outside_release_ci_says_unknown_rather_than_a_blank_or_a_hash`,
+    # which pins the value an operator actually reads off a hand-built binary.
+    'replace build_sha -> Option<&.static str> with None',
+
     # --- category 2: unreachable in the mutation sandbox ---------------------
     #
     # `untracked_documents` shells out to `git ls-files --others`. It is covered

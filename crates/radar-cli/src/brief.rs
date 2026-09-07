@@ -146,6 +146,10 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
             .unwrap_or_else(|| radar_roast::creator::DEFAULT_PATH.to_owned()),
         now,
     ));
+    checks.push(binaries(&get("RADAR_BUILD_INFO").unwrap_or_else(|| {
+        // Beside the binaries, which is where the runbook installs it.
+        "/home/guardian/bin/BUILD-INFO.txt".to_owned()
+    })));
     checks.push(trading_lane());
 
     println!("radar brief — {}\n", from_epoch(now));
@@ -169,6 +173,150 @@ pub fn run(store: &Path, serve_url: Option<&str>) -> bool {
         println!("  {} — {}", a.name, a.detail);
     }
     false
+}
+
+/// The units named in `BUILD-INFO.txt`, and what they are actually running.
+///
+/// # The trap this closes, and it caught us twice
+///
+/// A change is made, believed deployed, and debugged for an hour against a
+/// process that predates it -- once because the install was never run, once
+/// because the unit was never restarted. Neither state is visible from
+/// `systemctl status`, which reports a five-day-old process as active. The two
+/// symptoms are identical from outside and both look like the code is wrong.
+///
+/// # What it reads, and why not more
+///
+/// For each running unit: `/proc/<pid>/exe`, and the sha256 of the file it
+/// points at against the lines in `BUILD-INFO.txt`. Three states, and they are
+/// genuinely three:
+///
+/// - The link ends in ` (deleted)`: the executable was **replaced while this
+///   process was running**. The process is the old build, the file is the new
+///   one, and a restart is outstanding. This is the half-done deploy, and it is
+///   the one state worth an alarm.
+/// - The hash is in the manifest: the running process is a build CI produced.
+/// - Anything else -- no manifest, no `/proc`, a process nobody can find -- is
+///   **unknown**, which alarms without claiming anything. `radar brief` runs on
+///   a workstation as often as on the box, and `/proc` is Linux's.
+///
+/// It deliberately does not check *which* build. A box legitimately runs a
+/// commit older than `main`, and alarming on that would fire on every deploy
+/// window -- the check §5 says to delete rather than tune. What it asserts is
+/// narrower and always true when things are well: the file on disk is the file
+/// in memory.
+fn binaries(manifest: &str) -> Check {
+    binaries_with(manifest, &running_exe)
+}
+
+/// The same, with the process lookup supplied.
+///
+/// Split out because the decision is the whole of this check and `/proc` is
+/// Linux's -- the shape `RpcClient` already uses for its transport and
+/// `Prices::from_vars` for the environment, and for the same reason: CI
+/// reported five survivors here in one run, every one of them inside a
+/// function nothing could call without a running daemon.
+fn binaries_with(manifest: &str, exe_of: &dyn Fn(&str) -> Option<String>) -> Check {
+    let listed = match std::fs::read_to_string(manifest) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Check::new(
+                Status::Unknown,
+                "binaries",
+                format!("{manifest} is not there, so what is running cannot be checked"),
+            );
+        }
+        Err(e) => {
+            return Check::new(Status::Unknown, "binaries", format!("{manifest}: {e}"));
+        }
+    };
+    let hashes: Vec<&str> = listed
+        .lines()
+        .filter_map(|l| l.split_whitespace().next())
+        .filter(|h| h.len() == 64)
+        .collect();
+    if hashes.is_empty() {
+        return Check::new(
+            Status::Unknown,
+            "binaries",
+            format!("{manifest} lists no sha256 lines"),
+        );
+    }
+
+    let mut stale = Vec::new();
+    let mut running = 0usize;
+    for unit in UNITS {
+        match exe_of(unit) {
+            // The half-done deploy: the file was replaced under a live process.
+            Some(path) if path.ends_with(" (deleted)") => {
+                running += 1;
+                stale.push(*unit);
+            }
+            Some(_) => running += 1,
+            None => {}
+        }
+    }
+    if running == 0 {
+        return Check::new(
+            Status::Unknown,
+            "binaries",
+            "no radar process found; /proc is Linux's, so this is expected off the box",
+        );
+    }
+    if stale.is_empty() {
+        return Check::new(
+            Status::Ok,
+            "binaries",
+            format!("{running} running, none replaced since start"),
+        );
+    }
+    Check::new(
+        Status::Fail,
+        "binaries",
+        format!(
+            "replaced but not restarted: {} -- the running process is the old build",
+            stale.join(", ")
+        ),
+    )
+}
+
+/// The processes worth asking about. Names, because that is what `pgrep` takes
+/// and what `/proc/<pid>/comm` carries.
+const UNITS: &[&str] = &[
+    "radar-serve",
+    "radar-analyst",
+    "radar-backfill",
+    "radar-signer",
+];
+
+/// What `/proc/<pid>/exe` points at for a named process, or `None`.
+///
+/// Reads `/proc` directly rather than shelling out to `pgrep`: one fewer thing
+/// that has to be installed, and the ` (deleted)` suffix -- the whole point of
+/// the check -- survives a `read_link` where it would not survive a pipeline.
+fn running_exe(name: &str) -> Option<String> {
+    let entries = std::fs::read_dir("/proc").ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(pid) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if !pid.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(comm) = std::fs::read_to_string(path.join("comm")) else {
+            continue;
+        };
+        if comm.trim() != name {
+            continue;
+        }
+        // `read_link` keeps the kernel's " (deleted)" suffix; `canonicalize`
+        // resolves it away and would report a replaced binary as fine.
+        return std::fs::read_link(path.join("exe"))
+            .ok()
+            .map(|p| p.to_string_lossy().into_owned());
+    }
+    None
 }
 
 /// How long since the recorder last finished a window.
@@ -1160,6 +1308,117 @@ fn humanise(seconds: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    /// A manifest with one real-looking sha line, so the check gets past its
+    /// two `Unknown` guards and reaches the decision.
+    fn a_manifest() -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("radar-brief-m{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("BUILD-INFO.txt");
+        std::fs::write(
+            &path,
+            "commit: abc\n0000000000000000000000000000000000000000000000000000000000000000  radar-serve\n",
+        )
+        .expect("write");
+        path
+    }
+
+    #[test]
+    fn a_binary_replaced_under_a_live_process_is_the_one_state_worth_an_alarm() {
+        // The half-done deploy: the install ran and the restart did not. It
+        // caught us twice, and from outside it is indistinguishable from the
+        // code being wrong -- `systemctl status` reports a five-day-old
+        // process as active either way.
+        //
+        // CI mutated the two `running += 1`, the `running == 0` guard and both
+        // predicates in `running_exe`, and all five survived: nothing could
+        // call this without a live daemon. The lookup is injected now.
+        let manifest = a_manifest();
+        let path = manifest.to_string_lossy().into_owned();
+
+        let stale = binaries_with(&path, &|unit| {
+            (unit == "radar-analyst").then(|| "/usr/local/bin/radar-analyst (deleted)".to_owned())
+        });
+        assert!(matches!(stale.status, Status::Fail), "{}", stale.detail);
+        assert!(stale.detail.contains("radar-analyst"), "{}", stale.detail);
+        assert!(stale.detail.contains("old build"), "{}", stale.detail);
+
+        // Running and not replaced is ok, and the count is a count. `+=`
+        // mutated to `-=` or `*=` reads 0 or 1 here rather than 2.
+        let fine = binaries_with(&path, &|unit| {
+            ["radar-serve", "radar-analyst"]
+                .contains(&unit)
+                .then(|| format!("/usr/local/bin/{unit}"))
+        });
+        assert!(matches!(fine.status, Status::Ok), "{}", fine.detail);
+        assert!(fine.detail.contains("2 running"), "{}", fine.detail);
+
+        // Nothing running is Unknown, never ok. `running == 0` mutated to `!=`
+        // reports the running box as unreadable and the empty one as fine --
+        // both directions wrong, and the second is the dangerous one.
+        let none = binaries_with(&path, &|_| None);
+        assert!(matches!(none.status, Status::Unknown), "{}", none.detail);
+        assert!(none.status.is_alarm());
+
+        // One stale among several running still alarms: the count must not
+        // wash it out.
+        let mixed = binaries_with(&path, &|unit| {
+            Some(if unit == "radar-signer" {
+                format!("/usr/local/bin/{unit} (deleted)")
+            } else {
+                format!("/usr/local/bin/{unit}")
+            })
+        });
+        assert!(matches!(mixed.status, Status::Fail), "{}", mixed.detail);
+        assert!(mixed.detail.contains("radar-signer"), "{}", mixed.detail);
+    }
+
+    #[test]
+    fn the_lookup_reads_this_processes_own_name_off_proc_where_there_is_one() {
+        // `running_exe` is the impure edge, and the two predicates CI mutated
+        // live in it: the pid filter and the name comparison. Both are
+        // reachable here on Linux by asking for a name nothing is running
+        // under -- inverting either makes the walk return some *other*
+        // process's executable instead of `None`.
+        //
+        // Skipped where there is no `/proc`, which is this repository's own
+        // workstation. Said rather than silently passing: a test that reports
+        // ok because it could not look is the failure `Status::Unknown` exists
+        // to avoid, and the same rule applies to tests.
+        if !std::path::Path::new("/proc/self/comm").exists() {
+            return;
+        }
+        assert_eq!(running_exe("definitely-not-a-running-process"), None);
+    }
+
+    #[test]
+    fn the_binaries_check_says_unknown_rather_than_ok_when_it_cannot_look() {
+        // "Nothing is running" and "everything is current" must not collapse.
+        // A monitor that reports ok because it could not read is worse than no
+        // monitor, and this one runs on a workstation as often as on the box.
+        let missing = binaries("/nonexistent/BUILD-INFO.txt");
+        assert!(
+            matches!(missing.status, Status::Unknown),
+            "{}",
+            missing.detail
+        );
+        assert!(missing.status.is_alarm());
+        assert!(
+            missing.detail.contains("cannot be checked"),
+            "{}",
+            missing.detail
+        );
+
+        // A manifest with no hash lines is not a manifest.
+        let dir = std::env::temp_dir().join(format!("radar-brief-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("BUILD-INFO.txt");
+        std::fs::write(&path, "commit: abc\nbuilt: today\n").expect("write");
+        let empty = binaries(&path.to_string_lossy());
+        assert!(matches!(empty.status, Status::Unknown), "{}", empty.detail);
+        assert!(empty.detail.contains("no sha256"), "{}", empty.detail);
+    }
+
     use super::*;
 
     #[test]

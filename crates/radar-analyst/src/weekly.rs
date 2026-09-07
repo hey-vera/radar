@@ -462,6 +462,10 @@ mod tests {
         let board = [placing("9001", 5), placing("9002", 2), placing("9003", 9)];
         let post = hunters(&record, &board).expect("two named hunters");
 
+        // The week, as a date. CI turned the `/ 86_400` into `%` and `*` and
+        // nothing failed, because nothing here read the date -- so the post
+        // could have been headed "week of 1970-01-01" at every reader.
+        assert!(post.text.contains("week of 2026-08-31"), "{}", post.text);
         assert!(post.text.contains("@first -- 5 signals"), "{}", post.text);
         assert!(post.text.contains("@second -- 2 signals"), "{}", post.text);
         // 9003 has no handle on this record, so it is skipped rather than

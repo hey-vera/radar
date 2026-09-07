@@ -364,7 +364,12 @@ Three metered providers are compiled in and **exactly one may be configured**;
 two is refused at start-up with both named. `RADAR_MODEL_OPENAI_KEY` speaks Chat
 Completions, `RADAR_MODEL_API_KEY` speaks Anthropic's Messages shape
 (`claude-sonnet-5` and its siblings), and `RADAR_MODEL_CODEX` is the
-subscription CLI, private use only and not for this account. The endpoint, the
+subscription CLI, and **[ADR 0014](adr/0014-the-public-account-runs-on-an-api-key-never-a-subscription.md)
+says it must never be configured on the box that runs the public account**:
+plan sign-in is the vendor's documented pathway for interactive work and an API
+key is theirs for automation, the quota is shared with whatever else the
+account holder is doing in a browser, and a rate limit reached is silence rather
+than a refusal the meter can see. The endpoint, the
 model name and the two prices are shared, so moving between vendors is an env
 edit and a restart. **The OpenAI key is on the box**, so replies are written by
 a model and checked back against the fact sheet, with the deterministic template

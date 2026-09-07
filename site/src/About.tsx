@@ -37,8 +37,9 @@ export function About() {
         <Card className="mb-10 border-[var(--color-edge)]">
           <p className="text-[var(--color-text)]">
             <strong>Cabal Hunter is an automated account.</strong> It is
-            operated by Josh Fair. It replies only when it is mentioned, it
-            reports what it measured on chain, and it is not financial advice.
+            operated by Josh Fair. It never picks a coin to post about — every
+            coin it names, somebody asked it about — it reports what it
+            measured on chain, and it is not financial advice.
           </p>
         </Card>
 

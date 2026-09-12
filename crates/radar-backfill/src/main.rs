@@ -652,15 +652,21 @@ const fn runs_without_a_range(follow: bool, outcomes: bool, market_tape: bool) -
     follow || outcomes || market_tape
 }
 
-/// Whether the next market-tape window has any width to it.
+/// Whether the collector is between passes, with no window yet to ask about.
 ///
-/// False when the horizon has not moved past the cursor yet, which is the
-/// ordinary state between passes -- the caller sleeps rather than asking
-/// CryptoHouse about a window of zero or negative length. Inverted, the
-/// collector sleeps exactly when there *is* work and asks exactly when there is
-/// none, which spends quota on empty windows and never advances the cursor.
-const fn has_a_window_to_ask_about(window_end: i64, cursor: i64) -> bool {
-    window_end > cursor
+/// True when the horizon has not moved past the cursor, which is the ordinary
+/// state while waiting -- the caller sleeps rather than asking CryptoHouse
+/// about a window of zero or negative length. Inverted, the collector sleeps
+/// exactly when there *is* work and queries exactly when there is none, which
+/// spends quota on empty windows while the cursor never advances.
+///
+/// **Named for the true case on purpose.** Phrased the other way round the
+/// call site needs a `!`, and a leading `!` is one character a mutation can
+/// delete in a daemon loop no test reaches. Stated positively there is nothing
+/// at the call site to mutate, and the comparison itself is right here where a
+/// test can hold it.
+const fn is_between_passes(window_end: i64, cursor: i64) -> bool {
+    window_end <= cursor
 }
 
 /// How far a market-tape pass may reach: wall-clock, less the lag that lets a
@@ -738,7 +744,7 @@ fn market_tape(args: &Args) -> Result<(), String> {
     loop {
         let horizon = market_tape_horizon(now_epoch(), MARKET_TAPE_LAG_SECONDS);
         let window_end = market_tape_window_end(cursor, pass_seconds, horizon);
-        if !has_a_window_to_ask_about(window_end, cursor) {
+        if is_between_passes(window_end, cursor) {
             std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
             continue;
         }
@@ -1218,13 +1224,16 @@ mod tests {
     /// advances.
     #[test]
     fn a_window_of_no_width_is_slept_through_rather_than_asked_about() {
-        assert!(has_a_window_to_ask_about(1_100, 1_000), "a real window");
         assert!(
-            !has_a_window_to_ask_about(1_000, 1_000),
+            !is_between_passes(1_100, 1_000),
+            "a real window is work, not waiting"
+        );
+        assert!(
+            is_between_passes(1_000, 1_000),
             "zero width is nothing to ask about"
         );
         assert!(
-            !has_a_window_to_ask_about(900, 1_000),
+            is_between_passes(900, 1_000),
             "a horizon behind the cursor is not a window at all"
         );
     }

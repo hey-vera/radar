@@ -1640,3 +1640,81 @@ fn coverage_reaches_disk_on_the_buffer_it_was_given() {
         2
     );
 }
+
+/// The buffer flushes at its threshold, not before and not never.
+///
+/// `flush_at` is what bounds how much a crash loses and how much memory a
+/// long-running collector holds. Counting the buffer with `*=` leaves it at
+/// zero forever, so nothing ever flushes on its own; relaxing the comparison
+/// flushes on every row, which writes a parquet file per trade.
+///
+/// Asserted through `written_rows`, which is the count the writer publishes,
+/// so the test reads the same number an operator would.
+#[test]
+fn the_buffer_flushes_at_its_threshold_and_not_before() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 3).expect("open");
+
+    w.append_market_trade(market_trade(1, 500, true))
+        .expect("append");
+    assert_eq!(w.written_rows(), 0, "one row is under the threshold");
+    w.append_market_trade(market_trade(1, 501, true))
+        .expect("append");
+    assert_eq!(w.written_rows(), 0, "two rows is still under it");
+
+    w.append_market_trade(market_trade(1, 502, true))
+        .expect("append");
+    assert_eq!(
+        w.written_rows(),
+        3,
+        "the third row reaches the threshold and the buffer goes to disk"
+    );
+}
+
+/// Every flushed row is counted, once.
+///
+/// `written_rows += rows` turned into `*=` leaves the count at zero however
+/// much was written — a store filling up while the number an operator reads
+/// says nothing has been.
+#[test]
+fn every_flushed_row_is_counted_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    for slot in 500..505 {
+        w.append_market_trade(market_trade(1, slot, true))
+            .expect("append");
+    }
+    assert_eq!(w.written_rows(), 0, "nothing written before the flush");
+    w.flush().expect("flush");
+    assert_eq!(w.written_rows(), 5, "five appended, five counted");
+}
+
+/// A file starting exactly at the watermark is read, not skipped.
+///
+/// `read_market_trades` skips a partition whose **start** is past `as_of`.
+/// A file starting exactly at the watermark holds rows at it, which a read as
+/// of that slot must see: relaxed to `>=` the boundary file is skipped
+/// entirely, and the reader reports a quiet market for a slot it holds trades
+/// for.
+#[test]
+fn a_partition_starting_at_the_watermark_is_read_not_skipped() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_market_trade(market_trade(1, 500, true))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let r = Reader::open(dir.path());
+    let at = r
+        .read_market_trades(AsOf::at(Slot(500)))
+        .expect("read as of the row's own slot");
+    assert_eq!(at.len(), 1, "a read as of a row's slot sees that row");
+
+    let before = r
+        .read_market_trades(AsOf::at(Slot(499)))
+        .expect("read before it");
+    assert!(
+        before.is_empty(),
+        "and a read before it sees nothing: {before:?}"
+    );
+}

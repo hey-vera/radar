@@ -312,6 +312,24 @@ fn to_fold_trade(row: &MarketTrade) -> market_fold::Trade {
 /// `None` when the store holds no market trades at all, which is a different
 /// answer again: not "the market is quiet", but "this instance has collected
 /// nothing", and the caller says so.
+/// Why a coin's header carries no price.
+///
+/// Two different facts, and a caller acts on them differently: nothing traded
+/// in the window at all, or trades happened and none of them paired with a
+/// quote leg. Collapsing them would tell somebody the coin is quiet when it is
+/// busy and unpriceable.
+///
+/// Named so the distinction is testable. Inside the `match` it was a guard no
+/// test reached, and both of its mutations -- always empty, never empty --
+/// swap one message for the other silently.
+const fn why_no_price(no_trades_at_all: bool) -> &'static str {
+    if no_trades_at_all {
+        "no recorded trades in this window"
+    } else {
+        "recent trades exist but none paired with a quote leg in this window"
+    }
+}
+
 /// Whether a stored timestamp falls inside a window.
 ///
 /// **Half-open: `>= from`, `< to`**, so a row exactly at `to` belongs to the
@@ -746,13 +764,7 @@ pub async fn token(
     let priced = recent_trades.iter().find(|t| t.price.is_some());
     let (price, price_reason) = match priced {
         Some(t) => (t.price, None),
-        None if recent_trades.is_empty() => {
-            (None, Some("no recorded trades in the last two minutes"))
-        }
-        None => (
-            None,
-            Some("recent trades exist but none paired with a quote leg in this window"),
-        ),
+        None => (None, Some(why_no_price(recent_trades.is_empty()))),
     };
 
     Json(json!({
@@ -907,6 +919,19 @@ mod tests {
             has_a_priced_fill(&[1u8]),
             "and one priced fill is something"
         );
+    }
+
+    /// An unpriced coin says which kind of unpriced it is.
+    ///
+    /// "Nothing traded" and "things traded but nothing was priceable" are
+    /// different facts about a coin, and a reader acts on them differently.
+    #[test]
+    fn an_unpriced_coin_says_which_kind_of_unpriced_it_is() {
+        let quiet = why_no_price(true);
+        let busy = why_no_price(false);
+        assert_ne!(quiet, busy, "the two cases must not read alike");
+        assert!(quiet.contains("no recorded trades"), "{quiet}");
+        assert!(busy.contains("none paired with a quote leg"), "{busy}");
     }
 
     /// A window includes its start and excludes its end.

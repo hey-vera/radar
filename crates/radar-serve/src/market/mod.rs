@@ -60,7 +60,19 @@ use serde_json::json;
 
 /// A single top-level window's width, when a caller does not name one — the
 /// span of trades folded into the tape by default.
-const DEFAULT_WINDOW_SECONDS: i64 = 120;
+///
+/// **Thirty minutes, not two.** Two was the width while these routes queried
+/// CryptoHouse live, where a narrow window was a cheap one. Reading the store
+/// it costs nothing, and two minutes was too narrow to show anything: the
+/// collector works in five-minute passes, so a coin busy enough to rank in the
+/// ten-minute coin list can easily have no trade in the last two minutes, and
+/// its tape came back empty and `complete` — a true statement about a sliver,
+/// read by everyone as a statement about the coin. Observed in production on
+/// 2026-09-12, on four of the four busiest coins at once.
+///
+/// The answer is bounded by the caller's `limit` regardless, so a wider window
+/// changes how far back the newest trades are found, never how many come back.
+const DEFAULT_WINDOW_SECONDS: i64 = 30 * 60;
 
 /// How far back a chart reaches when the caller names no range.
 ///
@@ -79,6 +91,12 @@ const COINS_WINDOW_SECONDS: i64 = 10 * 60;
 /// minutes of itself. Held at compile time so the two windows cannot be
 /// reordered by an edit to either.
 const _: () = assert!(DEFAULT_CANDLE_WINDOW_SECONDS > DEFAULT_WINDOW_SECONDS);
+
+/// A tape narrower than one collector pass shows an empty sliver of a busy
+/// coin -- the defect that made four of the four busiest coins look untraded
+/// on 2026-09-12. Held here so a future narrowing of the window fails the
+/// build rather than the screen.
+const _: () = assert!(DEFAULT_WINDOW_SECONDS > radar_backfill::market_tape::PASS_INTERVAL_SECONDS);
 
 /// Whether a requested range runs forwards.
 ///
@@ -826,6 +844,7 @@ mod tests {
     fn the_default_windows_are_the_spans_their_names_claim() {
         assert_eq!(DEFAULT_CANDLE_WINDOW_SECONDS, 3_600, "an hour of chart");
         assert_eq!(COINS_WINDOW_SECONDS, 600, "ten minutes of activity");
+        assert_eq!(DEFAULT_WINDOW_SECONDS, 1_800, "half an hour of tape");
         assert_eq!(MAX_CANDLE_WINDOW_SECONDS, 86_400, "a day is the ceiling");
         // That a chart reaches further back than a tape is held at compile
         // time beside the constants themselves -- clippy rightly refuses an

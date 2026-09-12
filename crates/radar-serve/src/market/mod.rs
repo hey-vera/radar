@@ -98,15 +98,18 @@ const _: () = assert!(DEFAULT_CANDLE_WINDOW_SECONDS > DEFAULT_WINDOW_SECONDS);
 /// build rather than the screen.
 const _: () = assert!(DEFAULT_WINDOW_SECONDS > radar_backfill::market_tape::PASS_INTERVAL_SECONDS);
 
-/// Whether a requested range runs forwards.
+/// Whether a requested range does not run forwards.
 ///
 /// A range whose start is at or after its end is a caller mistake, refused
 /// with a message rather than answered with an empty list — the two are
-/// different facts and only one is about the market. Named so the comparison
-/// is testable: relaxed, a zero-width range is accepted and answers "no
-/// candles", which reads exactly like a quiet coin.
-const fn is_a_forward_range(from: i64, to: i64) -> bool {
-    from < to
+/// different facts and only one is about the market.
+///
+/// **Named for the true case**, so the call site reads `if
+/// is_a_backwards_range(..)` with no `!` in front of it. A leading `!` is one
+/// character a mutation deletes, and deleting this one refuses every valid
+/// range and accepts every invalid one.
+const fn is_a_backwards_range(from: i64, to: i64) -> bool {
+    from >= to
 }
 
 /// The start of a range, clamped so it reaches back no further than `max`.
@@ -494,7 +497,7 @@ pub async fn candles(
         Ok(v) => v.unwrap_or(reaching_back(requested_to, DEFAULT_CANDLE_WINDOW_SECONDS)),
         Err(r) => return *r,
     };
-    if !is_a_forward_range(requested_from, requested_to) {
+    if is_a_backwards_range(requested_from, requested_to) {
         return bad_request("from must be before to");
     }
     // The range actually covered may be narrower than requested -- clamped
@@ -583,10 +586,11 @@ fn coins_from_trades(trades: &[MarketTrade]) -> Vec<market_fold::Coin> {
                 .map(|m| m.to_string());
             let quote_volume = has_a_priced_fill(&priced)
                 .then(|| priced.iter().filter_map(|t| t.quote_amount).sum::<f64>());
-            let change_pct = match (first_price, last_price) {
-                (Some(first), Some(last)) if first > 0.0 => Some((last - first) / first * 100.0),
-                _ => None,
-            };
+            // `market_fold::change_from`, not a second copy of it. These four
+            // lines existed here as well, with their own surviving mutants,
+            // because the tests beside the original could not reach a
+            // duplicate.
+            let change_pct = market_fold::change_from(first_price, last_price);
             market_fold::Coin {
                 mint: mint.to_string(),
                 tx_count,
@@ -854,9 +858,9 @@ mod tests {
     /// A range must run forwards, and a zero-width one is a mistake.
     #[test]
     fn a_range_that_does_not_run_forwards_is_refused() {
-        assert!(is_a_forward_range(100, 200));
-        assert!(!is_a_forward_range(200, 200), "zero width is not a range");
-        assert!(!is_a_forward_range(300, 200), "nor is a backwards one");
+        assert!(!is_a_backwards_range(100, 200), "a real range");
+        assert!(is_a_backwards_range(200, 200), "zero width is not a range");
+        assert!(is_a_backwards_range(300, 200), "nor is a backwards one");
     }
 
     /// The clamp holds a start no further back than the ceiling allows.

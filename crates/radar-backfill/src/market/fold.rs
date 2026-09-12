@@ -547,7 +547,10 @@ fn priced(
 
 /// The percentage move from the window's first priced fill to its last.
 ///
-/// Pulled out of [`fold_coins`] so the decision has a name and a test. Two
+/// Pulled out of [`fold_coins`] so the decision has a name and a test, and
+/// public because `radar-serve`'s own coin fold had grown a second copy of the
+/// same four lines -- with its own surviving mutants, because the tests here
+/// could not reach it. Two
 /// things it must not do, and both are one character away: divide by a first
 /// price of zero -- which yields an infinity that serialises as JSON `null`
 /// and so arrives looking exactly like an honest absent change -- and report a
@@ -557,7 +560,7 @@ fn priced(
 /// of zero: nothing in the window paired that mint with a quote leg, so no
 /// move was measured rather than no move having happened.
 #[must_use]
-fn change_from(first_price: Option<f64>, last_price: Option<f64>) -> Option<f64> {
+pub fn change_from(first_price: Option<f64>, last_price: Option<f64>) -> Option<f64> {
     match (first_price, last_price) {
         (Some(first), Some(last)) if first > 0.0 => Some((last - first) / first * 100.0),
         _ => None,

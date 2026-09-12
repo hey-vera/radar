@@ -532,6 +532,18 @@ exclude_re = [
     # and is covered: a window *past* the horizon is clamped, and one well
     # inside it is not.
     'replace < with <= in market_tape_window_end',
+
+    # `clamped_start` returns `requested_from` when it is greater than the
+    # floor and the floor otherwise. `>` and `>=` differ only where the two are
+    # equal, and there both arms return the same number by the condition that
+    # selected them.
+    #
+    # Applied by hand on 2026-09-12 against
+    # `a_start_is_clamped_to_the_ceiling_but_never_pushed_forward`, which
+    # asserts both sides of the boundary. The direction that matters -- a start
+    # further back than the ceiling being pulled up to it -- is covered and
+    # its mutants are caught.
+    'replace > with >= in clamped_start',
     'delete ! in fold_holders',
 ]
 

@@ -870,6 +870,43 @@ mod tests {
         assert_eq!(trades[0].trader, None);
     }
 
+    /// A trade missing either end has no side, whichever end is missing.
+    ///
+    /// **Each clause of the guard is asserted separately**, because they are
+    /// joined by `||` and a mutation to `&&` requires *all* of them before
+    /// refusing -- so a row with a blank source alone falls through to the
+    /// frequency comparison, where the blank end is unseen, the real end is
+    /// seen, and the trade is confidently reported as a sell. A mint has a
+    /// blank source and is not a sell.
+    #[test]
+    fn a_trade_missing_either_end_has_no_side() {
+        let real = "VAULT11111111111111111111111111111111111111";
+        let seen = HashMap::from([(real, 9u64)]);
+
+        let mut no_source = row("a", "2026-09-11 00:00:01", WSOL, "10000");
+        no_source.token_source = String::new();
+        no_source.token_destination = real.to_owned();
+        assert_eq!(
+            side_and_trader(&no_source, &seen).0,
+            Side::Unknown,
+            "a mint has no sender and is not a sell"
+        );
+
+        let mut no_destination = row("b", "2026-09-11 00:00:02", WSOL, "10000");
+        no_destination.token_source = real.to_owned();
+        no_destination.token_destination = String::new();
+        assert_eq!(
+            side_and_trader(&no_destination, &seen).0,
+            Side::Unknown,
+            "a burn has no receiver and is not a buy"
+        );
+
+        let mut neither = row("c", "2026-09-11 00:00:03", WSOL, "10000");
+        neither.token_source = String::new();
+        neither.token_destination = String::new();
+        assert_eq!(side_and_trader(&neither, &seen).0, Side::Unknown);
+    }
+
     /// A leg that starts and ends at the pool is not a trade in either
     /// direction.
     ///

@@ -493,6 +493,29 @@ exclude_re = [
     # untested. Only the `false` direction is unobservable.
     'replace match guard !row.destination.is_empty() with false in fold_holders',
     'replace match guard !row.source.is_empty() with false in fold_holders',
+
+    # The same two lines, mutated the other way -- the guard forced `true`, or
+    # its `!` deleted -- are equivalent for a *different* reason, and the
+    # difference is worth writing down because the first reason does not cover
+    # it.
+    #
+    # These send a **blank-source burn** into the burn arm, which debits the
+    # empty-string account. That does create a phantom entry. It is then
+    # dropped by `fold_holders`'s own `.filter(|(_, raw)| *raw > 0)`, because a
+    # debit with nothing before it is negative, so nothing downstream can
+    # observe the difference. A burn that *has* a source behaves identically
+    # either way, falling through to the `_` arm which debits the same account.
+    #
+    # Applied by hand on 2026-09-12, one at a time rather than together:
+    # `a_burn_debits_its_source_and_never_a_blank_one` passes against both.
+    # Written expecting it to fail, which is how the positive-balance filter
+    # turned out to be doing the work the guard appeared to be doing.
+    #
+    # **If that filter ever admits non-positive balances, remove these two
+    # lines**: the guard becomes observable again and these stop being
+    # equivalent.
+    'replace match guard !row.source.is_empty() with true in fold_holders',
+    'delete ! in fold_holders',
 ]
 
 # A note on what does NOT belong here, learned on 2026-09-03 and worth the four

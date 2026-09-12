@@ -764,6 +764,42 @@ mod tests {
     const WSOL: &str = "So11111111111111111111111111111111111111112";
     const A_MINT: &str = "5NfV2sy8DqXamLvYEE4LcTWzGqZc5Emv4bqqhVDWpump";
 
+    /// Coverage for another table is not coverage for this one.
+    ///
+    /// `radar-follow` writes coverage for `Launches` and `Graduations` against
+    /// the same store, continuously. A check that matched any coverage row at
+    /// all would therefore report the market tape as collected on every
+    /// established instance -- including one where the market-tape unit was
+    /// never installed, which is exactly the deployment this is meant to
+    /// catch. Kills the mutant replacing `==` with `!=`.
+    #[test]
+    fn another_tables_coverage_is_not_the_market_tapes() {
+        let dir = tempfile::tempdir().expect("a temporary directory");
+        {
+            let mut writer =
+                radar_store::Writer::open(dir.path().to_str().expect("a path"), 20_000)
+                    .expect("a writer");
+            writer
+                .append_coverage(radar_store::Coverage {
+                    recorded_at: radar_types::Slot(100),
+                    table: Table::Launches,
+                    filter: None,
+                    observed: radar_store::ObservedSlots::Nothing,
+                    source: "test".to_owned(),
+                    decoder_version: "test".to_owned(),
+                    status: radar_store::Completion::Complete,
+                })
+                .expect("coverage appends");
+            writer.flush().expect("flush");
+        }
+        let store = Reader::open(dir.path().to_str().expect("a path"));
+        let as_of = AsOf::at(radar_types::Slot(10_000));
+        assert!(
+            !market_tape_collected(&store, as_of).expect("the store reads"),
+            "a Launches coverage row does not mean the market tape ran"
+        );
+    }
+
     /// The store's own newest moment, not the wall clock.
     ///
     /// **This is the defect that made every route answer empty.** The

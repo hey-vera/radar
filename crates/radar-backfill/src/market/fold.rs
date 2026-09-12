@@ -877,6 +877,65 @@ mod tests {
         assert_eq!(change_from(Some(2.0), None), None);
     }
 
+    /// A bucket starts on an interval boundary, whatever second the trade
+    /// landed on.
+    ///
+    /// `epoch.div_euclid(interval) * interval` floors to the boundary. Kills
+    /// the mutant turning that multiplication into an addition, which would
+    /// put the bucket at `epoch / interval + interval` -- a number near the
+    /// epoch rather than near the trade, so every bar on the chart lands in
+    /// 1970 and the axis spans fifty years.
+    #[test]
+    fn a_bucket_starts_on_an_interval_boundary_not_near_the_epoch() {
+        let trades = vec![
+            trade_from_row(&row("a", "2026-09-11 12:34:56", WSOL, "10000"), None)
+                .expect("converts"),
+        ];
+        let candles = fold_candles(&trades, 300);
+        assert_eq!(candles.len(), 1);
+        let start = candles[0].time;
+        assert_eq!(start % 300, 0, "aligned to the five-minute boundary");
+        let at = ts_to_epoch("2026-09-11 12:34:56").expect("a stamp");
+        assert!(
+            start <= at && at - start < 300,
+            "the bucket contains its own trade: bucket {start}, trade {at}"
+        );
+        assert!(
+            start > 1_700_000_000,
+            "a bucket near the epoch means the arithmetic multiplied nothing"
+        );
+    }
+
+    /// A burn whose source is blank debits nobody, and one with a source
+    /// debits it.
+    ///
+    /// Kills the `delete !` and `with true` mutants on the burn guard: both
+    /// send a blank-source burn into the burn arm, which debits the empty
+    /// string and builds a negative phantom holder.
+    #[test]
+    fn a_burn_debits_its_source_and_never_a_blank_one() {
+        let from = "SRC1111111111111111111111111111111111111111";
+        let rows = vec![
+            holder_row("", from, "5000000", "MintTo"),
+            holder_row(from, "", "2000000", "Burn"),
+        ];
+        let folded = fold_holders(&rows, "2026-09-11 00:00:00", "2026-09-11 01:00:00", 10).holders;
+        assert_eq!(folded.len(), 1, "one real account: {folded:?}");
+        assert_eq!(folded[0].account, from);
+        assert!(
+            (folded[0].balance - 3.0).abs() < 1e-12,
+            "5 minted less 2 burned is 3: {folded:?}"
+        );
+
+        let blank = vec![holder_row("", "", "2000000", "Burn")];
+        assert!(
+            fold_holders(&blank, "2026-09-11 00:00:00", "2026-09-11 01:00:00", 10)
+                .holders
+                .is_empty(),
+            "a burn with no source debits nobody"
+        );
+    }
+
     /// A leg that starts and ends at the pool is not a trade in either
     /// direction.
     ///

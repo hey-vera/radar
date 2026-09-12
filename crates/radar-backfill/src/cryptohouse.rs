@@ -74,6 +74,22 @@ impl Client {
     pub fn new(endpoint: impl Into<String>) -> Self {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(180)))
+            // **Do not turn a non-2xx into an error before its body is read.**
+            //
+            // ClickHouse puts the whole explanation in the body and nothing
+            // useful in the status: the thousand-row cap arrives as a bare
+            // HTTP 500 whose body names `TOO_MANY_ROWS_OR_BYTES`. With ureq's
+            // default, that became `Error::StatusCode(500)` with the body
+            // dropped, so [`QueryError::should_narrow`] — which looks for
+            // exactly that text — returned false, and a window that needed
+            // halving failed outright instead.
+            //
+            // That is why the `trades` table was empty. `--scope trades` over
+            // any window wide enough to be worth running returns far more than
+            // a thousand rows, every attempt hit the cap, and every attempt
+            // gave up at the first response rather than narrowing. The
+            // narrowing code was correct and never ran. Found 2026-09-11.
+            .http_status_as_error(false)
             .build();
         Self {
             endpoint: endpoint.into(),
@@ -104,29 +120,66 @@ impl Client {
             .send(format!("{sql} FORMAT JSONEachRow"))
         {
             Ok(r) => r,
-            // ClickHouse answers a bad query with a non-2xx whose *body* holds
-            // the explanation and whose status holds nothing useful -- an unknown
-            // column comes back as a bare 404. Reporting only the status once
-            // cost a debugging round trip, so the body is read out here.
-            Err(ureq::Error::StatusCode(code)) => {
-                // Name the query that failed. An error that says only "404"
-                // could be any of several queries in a batch run, and finding
-                // out which cost a round trip once already.
-                let head: String = sql.chars().take(100).collect();
-                return Err(QueryError::Server(format!(
-                    "HTTP {code} rejecting: {head}..."
-                )));
-            }
             Err(e) => return Err(QueryError::Transport(e.to_string())),
         };
 
+        // The status is read but never used to decide the outcome on its own:
+        // `http_status_as_error(false)` is set precisely so the body arrives
+        // whatever the status, because that is where ClickHouse says what
+        // happened. It is carried into the message only so an operator can
+        // see it.
+        let status = response.status().as_u16();
         let body = response
             .body_mut()
             .read_to_string()
             .map_err(|e| QueryError::Transport(e.to_string()))?;
 
+        if is_error_status(status) {
+            return Err(server_error(status, &body, sql));
+        }
+
         parse_rows(&body)
     }
+}
+
+/// Whether an HTTP status means the body is an explanation rather than rows.
+///
+/// Pulled out beside [`server_error`] and for the same reason: inside
+/// [`Client::query`] the only way to exercise the boundary was a live request,
+/// so nothing checked which side of 400 each status fell on. A `<` here rather
+/// than a `>=` would feed ClickHouse's error text to `parse_rows` and report
+/// the failure as a malformed row -- a fact about this build, for something
+/// that is a fact about the query.
+#[must_use]
+const fn is_error_status(status: u16) -> bool {
+    status >= 400
+}
+
+/// Builds the error for a non-2xx response, from its status and its body.
+///
+/// **Pure, and separate from [`Client::query`], because the bug it fixes is
+/// only visible in what this returns.** The thousand-row cap arrives as a bare
+/// HTTP 500 whose body names `TOO_MANY_ROWS_OR_BYTES`, and
+/// [`QueryError::should_narrow`] decides whether to halve the window by looking
+/// for exactly that text. An earlier version formatted the status and the first
+/// hundred characters of the *query* and discarded the body — so the marker was
+/// never present, `should_narrow` returned false, and a window that needed
+/// halving failed outright. Every `--scope trades` run hit this, which is why
+/// the `trades` table was empty. Found 2026-09-11.
+///
+/// Living inside `query` meant the only way to exercise it was a live request
+/// against a public endpoint. Out here it takes a status and a body, so the
+/// wrong behaviour can be reapplied in a test.
+///
+/// The body leads and is truncated at 600 characters: both markers appear near
+/// the front of a ClickHouse exception, which can otherwise carry a long stack.
+/// The query's first hundred characters follow, because an error that says only
+/// "404" could be any of several queries in a batch run.
+#[must_use]
+fn server_error(status: u16, body: &str, sql: &str) -> QueryError {
+    let detail: String = body.trim().chars().take(600).collect();
+    let head: String = sql.chars().take(100).collect();
+    QueryError::Server(format!("HTTP {status}: {detail} -- rejecting: {head}..."))
 }
 
 /// Parses a `JSONEachRow` body, surfacing a server exception as an error.
@@ -178,6 +231,73 @@ mod tests {
                 .expect_err("must error")
                 .should_narrow()
         );
+    }
+
+    /// 400 is the boundary, and both sides of it are pinned.
+    ///
+    /// ClickHouse answers a rejected query with a non-2xx whose body carries
+    /// the explanation, and a success with rows. Reading 400 as success feeds
+    /// the explanation to `parse_rows`, which then reports a fact about this
+    /// build for something that is a fact about the query; reading 399 as a
+    /// failure throws away rows that arrived.
+    #[test]
+    fn four_hundred_is_where_a_body_stops_being_rows() {
+        assert!(!is_error_status(200));
+        assert!(!is_error_status(204));
+        assert!(!is_error_status(399), "399 is not an error status");
+        assert!(is_error_status(400), "400 is");
+        assert!(is_error_status(500));
+    }
+
+    /// The row cap as it actually arrives: a bare HTTP 500 with the marker in
+    /// the body.
+    ///
+    /// Reapply the bug by having `server_error` ignore `body` — format the
+    /// status and the query alone, as it did before 2026-09-11 — and this
+    /// fails while
+    /// `the_row_cap_narrows_the_window_like_a_timeout_does` still passes,
+    /// because that one feeds the body in directly and never goes near a
+    /// status code. That gap is the whole reason `--scope trades` never
+    /// worked.
+    #[test]
+    fn a_row_cap_reported_as_http_500_still_narrows() {
+        let body = "Code: 396. DB::Exception: Limit for result exceeded, max rows: 1.00 thousand (TOO_MANY_ROWS_OR_BYTES) (version 26.4.1.2212)";
+        let err = server_error(500, body, "SELECT mint FROM solana.token_transfers");
+        assert!(
+            err.should_narrow(),
+            "a 500 carrying TOO_MANY_ROWS_OR_BYTES must narrow, not fail: {err}"
+        );
+    }
+
+    /// A timeout reported the same way, for the same reason.
+    #[test]
+    fn a_timeout_reported_as_http_500_still_narrows() {
+        let body = "Code: 159. DB::Exception: Timeout exceeded (TIMEOUT_EXCEEDED)";
+        let err = server_error(500, body, "SELECT 1");
+        assert!(err.should_narrow(), "{err}");
+    }
+
+    /// And a genuine mistake still does not, because narrowing it would only
+    /// hammer a public endpoint with the same broken query.
+    #[test]
+    fn a_bad_identifier_does_not_narrow_however_it_is_reported() {
+        let body =
+            "Code: 47. DB::Exception: Unknown expression identifier `mnit` (UNKNOWN_IDENTIFIER)";
+        let err = server_error(404, body, "SELECT mnit FROM solana.token_transfers");
+        assert!(!err.should_narrow(), "{err}");
+    }
+
+    /// The status reaches the operator, and so does which query failed.
+    #[test]
+    fn the_error_names_the_status_and_the_query_that_failed() {
+        let err = server_error(
+            500,
+            "Code: 396 ...",
+            "SELECT mint FROM solana.token_transfers",
+        );
+        let text = err.to_string();
+        assert!(text.contains("500"), "{text}");
+        assert!(text.contains("solana.token_transfers"), "{text}");
     }
 
     #[test]

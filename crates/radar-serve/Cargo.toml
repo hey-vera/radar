@@ -18,6 +18,10 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 radar-agent.workspace = true
 radar-asof.workspace = true
+# The CryptoHouse client and its window-halving fetch strategy, for the public
+# market-data seam in `market`. Already a dependency of `radar-backfill`
+# itself; reused here rather than a second client for the same endpoint.
+radar-backfill.workspace = true
 radar-customer.workspace = true
 radar-model.workspace = true
 radar-instruments.workspace = true

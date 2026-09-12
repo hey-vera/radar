@@ -14,6 +14,8 @@ use radar_asof::AsOf;
 use radar_backfill::checkpoints;
 use radar_backfill::coverage;
 use radar_backfill::extract::{Row, Skipped, Stats};
+use radar_backfill::market::{fold as market_fold, query as market_query};
+use radar_backfill::market_tape;
 use radar_backfill::outcomes::{self, AggregateRow, HeadRow, TimeRow};
 use radar_backfill::prices::{self, PriceRow};
 use radar_backfill::{Client, QueryError, Scope, events_from_rows, query_for_window};
@@ -69,6 +71,27 @@ const FOLLOW_RETRY_MIN: Duration = Duration::from_secs(5);
 /// (ADR 0002), so an endpoint that is already unhappy is not hammered.
 const FOLLOW_RETRY_MAX: Duration = Duration::from_secs(300);
 
+/// How wide a market-tape pass's window is, and how long it sleeps between
+/// passes. The two are the same number on purpose, and it is
+/// `market_tape::PASS_INTERVAL_SECONDS` rather than a second copy of it --
+/// `market_tape::Budget::PER_PASS` is derived by dividing that interval into
+/// the hourly quota, so a local copy that drifted would silently change the
+/// budget's meaning without changing the budget.
+///
+/// The loop sleeps this long regardless of how long a pass itself took, so the
+/// interval can only widen under load, never narrow below what the budget
+/// assumes.
+const MARKET_TAPE_PASS_INTERVAL: Duration =
+    Duration::from_secs(market_tape::PASS_INTERVAL_SECONDS as u64);
+
+/// How far behind wall-clock time a market-tape pass stays, so the window it
+/// asks for has already had time to land in CryptoHouse.
+const MARKET_TAPE_LAG_SECONDS: i64 = 120;
+
+/// The narrowest window a market-tape pass's trades query will still try
+/// before giving up rather than halving further.
+const MARKET_TAPE_MIN_WINDOW_SECONDS: i64 = 4;
+
 /// The smallest window follow mode will shrink to under repeated failure.
 ///
 /// Shrinking matters more than waiting. A five-minute window during a migration
@@ -121,6 +144,10 @@ fn retry_backoff(failures: u32) -> Duration {
     doubled.min(FOLLOW_RETRY_MAX)
 }
 
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "independent CLI flags, not a state machine -- --follow, --outcomes, --market-tape and --reprice each stand alone and folding them into enums would not make any of the modes below clearer"
+)]
 struct Args {
     from: String,
     to: String,
@@ -129,6 +156,10 @@ struct Args {
     scope: Scope,
     follow: bool,
     outcomes: bool,
+    /// Collect the venue-agnostic market tape `radar-serve`'s market routes
+    /// read from, rather than querying CryptoHouse live. See
+    /// `radar_backfill::market_tape`.
+    market_tape: bool,
     /// Replace recorded price paths instead of folding onto them.
     reprice: bool,
     /// The analyst's directory, when the account runs on this host.
@@ -147,6 +178,8 @@ fn usage() -> &'static str {
    radar-backfill --outcomes --store <dir> [--analyst-dir <dir>]
    radar-backfill --outcomes --reprice --store <dir>
 
+   radar-backfill --market-tape --store <dir>
+
 --analyst-dir names the account's directory, and its only effect is to give the
 mints in `replies.jsonl` a fourth measurement at seven days. Every other token
 settles at a day. Without it the daily post reports a day-old measurement, which
@@ -160,7 +193,13 @@ mint however much it scans.
 
 --follow keeps recording from where the store left off, staying five minutes
 behind the chain and sleeping when caught up. It uses the same extraction path
-as a one-off backfill, so history and live data are one code path."
+as a one-off backfill, so history and live data are one code path.
+
+--market-tape collects the venue-agnostic trade tape radar-serve's market
+routes read: two queries per two-minute pass (60/hour), so radar-serve never
+queries CryptoHouse on a request path and the shared hourly quota is not
+exhausted by traffic. Keeps its own cursor, separate from --follow's, so the
+two can run against the same store without fighting over one file."
 }
 
 fn parse_args() -> Result<Args, String> {
@@ -171,6 +210,7 @@ fn parse_args() -> Result<Args, String> {
     let mut scope = Scope::default();
     let mut follow = false;
     let mut measure_outcomes = false;
+    let mut market_tape = false;
     let mut reprice = false;
     let mut analyst_dir = None;
 
@@ -200,6 +240,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "--follow" => follow = true,
             "--outcomes" => measure_outcomes = true,
+            "--market-tape" => market_tape = true,
             "--analyst-dir" => analyst_dir = Some(value()?),
             "--reprice" => reprice = true,
             "-h" | "--help" => return Err(usage().to_owned()),
@@ -215,10 +256,11 @@ fn parse_args() -> Result<Args, String> {
         )
     })?;
 
-    // Follow mode has no explicit range: it starts from the store's own cursor
-    // and runs until stopped, so requiring --from and --to would be asking for
-    // values it is going to ignore.
-    if follow || measure_outcomes {
+    // Follow mode, outcomes and the market tape have no explicit range: each
+    // starts from its own cursor or window and runs (or measures) until
+    // stopped, so requiring --from and --to would be asking for values none
+    // of them are going to use.
+    if runs_without_a_range(follow, measure_outcomes, market_tape) {
         return Ok(Args {
             from: String::new(),
             to: String::new(),
@@ -227,6 +269,7 @@ fn parse_args() -> Result<Args, String> {
             scope,
             follow,
             outcomes: measure_outcomes,
+            market_tape,
             reprice,
             analyst_dir,
         });
@@ -252,6 +295,7 @@ fn parse_args() -> Result<Args, String> {
         scope,
         follow,
         outcomes: measure_outcomes,
+        market_tape,
         reprice,
         analyst_dir,
     })
@@ -265,6 +309,10 @@ fn merge(into: &mut Stats, from: &Stats) {
 }
 
 /// Fetches one window, halving it on a server timeout.
+///
+/// A thin wrapper over [`radar_backfill::fetch_windowed`], which is generic so
+/// the same halving discipline is available to other callers — see its own
+/// doc comment for why this used to be a private `fn` here.
 fn fetch_window(
     client: &Client,
     from: i64,
@@ -272,28 +320,15 @@ fn fetch_window(
     depth: u32,
     scope: Scope,
 ) -> Result<Vec<Row>, QueryError> {
-    let sql = query_for_window(&from_epoch(from), &from_epoch(to), scope);
-    match client.query::<Row>(&sql) {
-        Ok(rows) => Ok(rows),
-        Err(e) if e.should_narrow() && (to - from) > MIN_WINDOW_SECONDS && depth < 10 => {
-            let mid = from + (to - from) / 2;
-            eprintln!(
-                "    window too wide ({}), halving: {} .. {}",
-                if e.to_string().contains("TOO_MANY_ROWS") {
-                    "row cap"
-                } else {
-                    "timeout"
-                },
-                from_epoch(from),
-                from_epoch(to)
-            );
-            let mut rows = fetch_window(client, from, mid, depth + 1, scope)?;
-            std::thread::sleep(PAUSE_BETWEEN_WINDOWS);
-            rows.extend(fetch_window(client, mid, to, depth + 1, scope)?);
-            Ok(rows)
-        }
-        Err(e) => Err(e),
-    }
+    radar_backfill::fetch_windowed(
+        client,
+        from,
+        to,
+        depth,
+        MIN_WINDOW_SECONDS,
+        PAUSE_BETWEEN_WINDOWS,
+        &|from, to| query_for_window(from, to, scope),
+    )
 }
 
 /// Writes one coverage record per table the scope collected into.
@@ -575,6 +610,229 @@ fn follow(args: &Args) -> Result<(), String> {
 
         cursor = window_end;
         std::thread::sleep(PAUSE_BETWEEN_WINDOWS);
+    }
+}
+
+/// Where the market tape keeps its own cursor.
+///
+/// A subdirectory under the store, not the store root: the follow cursor
+/// (`radar_store::CURSOR_FILE`) lives at the root, and two writers of one file
+/// fight over it. This collector's cursor lives beside it in its own
+/// directory instead, using the same atomic read/write.
+fn market_tape_scope(store: &str) -> std::path::PathBuf {
+    std::path::Path::new(store).join(market_tape::SCOPE_DIR)
+}
+
+/// [`MARKET_TAPE_PASS_INTERVAL`] in seconds, as the `i64` the rest of this
+/// file's time arithmetic uses. `try_from` rather than `as`: a `Duration`
+/// this large would be a caller bug, not a value to wrap silently into a
+/// negative interval.
+fn market_tape_pass_seconds() -> i64 {
+    i64::try_from(MARKET_TAPE_PASS_INTERVAL.as_secs()).unwrap_or(i64::MAX)
+}
+
+/// The end of the next market-tape window, given where the cursor sits, how
+/// wide a pass is, and how far the collector may reach before wall-clock lag.
+///
+/// Pulled out of the loop for the same reason [`windows`] is: the decision is
+/// arithmetic a fake transport cannot exercise, since it runs *before* either
+/// query, but a test can drive it directly with no network at all. A pass
+/// never reaches past `horizon` even if `pass_seconds` would carry it there,
+/// which is what keeps the collector from asking CryptoHouse for a window
+/// that has not landed yet.
+/// Whether a mode runs from its own cursor rather than an explicit range.
+///
+/// `--follow`, `--outcomes` and `--market-tape` each start from somewhere they
+/// work out for themselves and run until stopped, so requiring `--from` and
+/// `--to` would demand values none of them reads. Named so the disjunction can
+/// be tested: with an `&&` in place of either `||`, a run of one of these modes
+/// alone falls through to the range parser and is refused for missing arguments
+/// it was never going to use.
+const fn runs_without_a_range(follow: bool, outcomes: bool, market_tape: bool) -> bool {
+    follow || outcomes || market_tape
+}
+
+/// Whether the collector is between passes, with no window yet to ask about.
+///
+/// True when the horizon has not moved past the cursor, which is the ordinary
+/// state while waiting -- the caller sleeps rather than asking CryptoHouse
+/// about a window of zero or negative length. Inverted, the collector sleeps
+/// exactly when there *is* work and queries exactly when there is none, which
+/// spends quota on empty windows while the cursor never advances.
+///
+/// **Named for the true case on purpose.** Phrased the other way round the
+/// call site needs a `!`, and a leading `!` is one character a mutation can
+/// delete in a daemon loop no test reaches. Stated positively there is nothing
+/// at the call site to mutate, and the comparison itself is right here where a
+/// test can hold it.
+const fn is_between_passes(window_end: i64, cursor: i64) -> bool {
+    window_end <= cursor
+}
+
+/// How far a market-tape pass may reach: wall-clock, less the lag that lets a
+/// window land in CryptoHouse first.
+///
+/// Named rather than inlined so the subtraction can be tested. Added as `+`
+/// instead it reaches into the future, and the collector asks for a window
+/// that has not happened -- which returns nothing and is recorded as a quiet
+/// market.
+const fn market_tape_horizon(now: i64, lag_seconds: i64) -> i64 {
+    now - lag_seconds
+}
+
+/// Where a fresh store's cursor starts: one full pass behind the horizon, so
+/// the first pass has a complete window to ask about rather than an empty
+/// sliver.
+const fn market_tape_first_cursor(now: i64, lag_seconds: i64, pass_seconds: i64) -> i64 {
+    market_tape_horizon(now, lag_seconds) - pass_seconds
+}
+
+const fn market_tape_window_end(cursor: i64, pass_seconds: i64, horizon: i64) -> i64 {
+    let wanted = cursor + pass_seconds;
+    if wanted < horizon { wanted } else { horizon }
+}
+
+/// Collects the venue-agnostic market tape: two CryptoHouse queries per pass,
+/// one pass every [`MARKET_TAPE_PASS_INTERVAL`]. See
+/// `radar_backfill::market_tape`'s module doc for the arithmetic and the
+/// coverage caveat.
+/// Records that a market-tape pass ran and collected nothing it can attest to.
+///
+/// **Not the same as recording nothing.** A pass that failed and wrote no
+/// coverage leaves a slot range indistinguishable from a quiet market, which is
+/// the failure this project is most organised against. A `Partial` record with
+/// no slots says the window was visited and did not complete, which a reader
+/// can act on.
+///
+/// Extracted because both failure arms of `market_tape` need it and wrote it
+/// out identically -- and because a third copy is exactly how one of them
+/// eventually gets forgotten.
+fn record_partial_pass(store: &str, store_high: Option<radar_types::Slot>) -> Result<(), String> {
+    let mut writer = Writer::open(store, 20_000).map_err(|e| e.to_string())?;
+    writer
+        .append_coverage(market_tape::coverage_record(
+            Completion::Partial,
+            &[],
+            coverage::established_at(None, store_high),
+        ))
+        .map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())
+}
+
+fn market_tape(args: &Args) -> Result<(), String> {
+    let client = Client::default();
+    let scope = market_tape_scope(&args.store);
+    let pass_seconds = market_tape_pass_seconds();
+    let mut cursor = radar_store::read_cursor(&scope).unwrap_or_else(|| {
+        market_tape_first_cursor(now_epoch(), MARKET_TAPE_LAG_SECONDS, pass_seconds)
+    });
+
+    println!(
+        "market tape: {pass_seconds}s per pass, at most {} queries per pass ({}/hour ceiling),          top {} mints, from {} into {}",
+        market_tape::Budget::PER_PASS,
+        u64::from(market_tape::Budget::PER_PASS) * 3_600 / MARKET_TAPE_PASS_INTERVAL.as_secs(),
+        market_tape::SHORTLIST,
+        from_epoch(cursor),
+        args.store
+    );
+    println!("ctrl-c to stop");
+
+    let mut store_high = Reader::open(&args.store)
+        .watermark()
+        .map_err(|e| e.to_string())?;
+
+    loop {
+        let horizon = market_tape_horizon(now_epoch(), MARKET_TAPE_LAG_SECONDS);
+        let window_end = market_tape_window_end(cursor, pass_seconds, horizon);
+        if is_between_passes(window_end, cursor) {
+            std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
+            continue;
+        }
+        let (from_s, to_s) = (from_epoch(cursor), from_epoch(window_end));
+
+        // One budget per pass. Every query below goes through it, including
+        // the ones `narrowing_fetch` generates by halving -- which is the
+        // whole point, since those are the ones nothing was counting.
+        let budget = market_tape::Budget::new(market_tape::Budget::PER_PASS);
+
+        // The window's active mints.
+        let candidates: Vec<market_fold::CoinCandidateRow> = match budget.guard(
+            |sql| client.query(sql),
+            &market_query::coin_candidates_query(&from_s, &to_s, market_tape::SHORTLIST),
+        ) {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("  {from_s} .. {to_s} candidates query failed: {e}");
+                record_partial_pass(&args.store, store_high)?;
+                std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
+                continue;
+            }
+        };
+
+        // Query 2 of 2: those mints' trades, batched into one `IN (...)`.
+        // Empty candidates skip the query rather than asking for an empty
+        // `IN ()`, which is invalid SQL and would waste the round trip.
+        let trades = if candidates.is_empty() {
+            Vec::new()
+        } else {
+            let mints: Vec<String> = candidates.iter().map(|c| c.mint.clone()).collect();
+            match radar_backfill::narrowing_fetch(
+                &|sql| budget.guard(|s| client.query(s), sql),
+                cursor,
+                window_end,
+                0,
+                MARKET_TAPE_MIN_WINDOW_SECONDS,
+                PAUSE_BETWEEN_WINDOWS,
+                &|f, t| market_query::trades_query(&mints, f, t, market_tape::TRADES_PER_MINT),
+            ) {
+                Ok(rows) => market_tape::fold_market_trades(&rows),
+                Err(e) => {
+                    // A spent budget is not a fault and reads differently in
+                    // the log, because an operator acts on it differently:
+                    // one means the endpoint is unwell, the other means this
+                    // window was busier than the quota can cover.
+                    eprintln!(
+                        "  {from_s} .. {to_s} trades incomplete ({} queries left): {e}",
+                        budget.remaining()
+                    );
+                    record_partial_pass(&args.store, store_high)?;
+                    std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
+                    continue;
+                }
+            }
+        };
+
+        let recorded_at = coverage::established_at(market_tape::highest_slot(&trades), store_high);
+        store_high = Some(recorded_at);
+
+        {
+            let mut writer = Writer::open(&args.store, 20_000).map_err(|e| e.to_string())?;
+            let trade_count = trades.len();
+            // The coverage record is built from `trades` before they are
+            // moved into the writer, and buffered before the rows -- but
+            // `Writer::flush` still puts the coverage file down *after* the
+            // event files, so a crash mid-flush loses the record and keeps
+            // the rows rather than the other way round.
+            let coverage = market_tape::coverage_record(Completion::Complete, &trades, recorded_at);
+            for trade in trades {
+                writer
+                    .append_market_trade(trade)
+                    .map_err(|e| e.to_string())?;
+            }
+            writer
+                .append_coverage(coverage)
+                .map_err(|e| e.to_string())?;
+            writer.flush().map_err(|e| e.to_string())?;
+            println!(
+                "  {from_s} .. {to_s}  candidates {:>4}  trades {:>5}",
+                candidates.len(),
+                trade_count
+            );
+        }
+        radar_store::write_cursor(&scope, window_end)?;
+
+        cursor = window_end;
+        std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
     }
 }
 
@@ -919,6 +1177,8 @@ fn main() -> ExitCode {
     };
     let result = if args.outcomes {
         measure(&args)
+    } else if args.market_tape {
+        market_tape(&args)
     } else if args.follow {
         follow(&args)
     } else {
@@ -935,6 +1195,132 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    /// Any one of the cursor-driven modes runs without a range.
+    ///
+    /// Kills both `||` mutants. With an `&&`, running `--market-tape` alone
+    /// falls through to the range parser and is refused for missing `--from`
+    /// and `--to` that it would never have read -- so the mode simply stops
+    /// working, with an error blaming the operator.
+    #[test]
+    fn each_cursor_driven_mode_runs_without_a_range_on_its_own() {
+        assert!(runs_without_a_range(true, false, false), "--follow alone");
+        assert!(runs_without_a_range(false, true, false), "--outcomes alone");
+        assert!(
+            runs_without_a_range(false, false, true),
+            "--market-tape alone"
+        );
+        assert!(
+            !runs_without_a_range(false, false, false),
+            "a plain backfill does need --from and --to"
+        );
+    }
+
+    /// A window with no width is not asked about.
+    ///
+    /// Kills the mutant inverting the comparison, which would make the
+    /// collector sleep exactly when there is work and query exactly when there
+    /// is none -- spending quota on empty windows while the cursor never
+    /// advances.
+    #[test]
+    fn a_window_of_no_width_is_slept_through_rather_than_asked_about() {
+        assert!(
+            !is_between_passes(1_100, 1_000),
+            "a real window is work, not waiting"
+        );
+        assert!(
+            is_between_passes(1_000, 1_000),
+            "zero width is nothing to ask about"
+        );
+        assert!(
+            is_between_passes(900, 1_000),
+            "a horizon behind the cursor is not a window at all"
+        );
+    }
+
+    /// The horizon is behind the clock, never ahead of it.
+    ///
+    /// Kills the mutants turning the subtraction into an addition or a
+    /// division. Either reaches into the future, where the collector asks for
+    /// a window that has not happened, gets nothing, and records a quiet
+    /// market.
+    #[test]
+    fn the_horizon_is_behind_the_clock_by_exactly_the_lag() {
+        assert_eq!(market_tape_horizon(1_000_000, 120), 999_880);
+        assert!(
+            market_tape_horizon(1_000_000, 120) < 1_000_000,
+            "a horizon at or ahead of now asks about a window still filling"
+        );
+    }
+
+    /// A fresh store starts one whole pass behind the horizon.
+    ///
+    /// Kills the same two mutants on the other subtraction. A first cursor at
+    /// the horizon leaves a zero-width first window; one ahead of it makes
+    /// `market_tape_window_end` return something at or behind the cursor and
+    /// the collector sleeps instead of starting.
+    #[test]
+    fn a_fresh_store_starts_one_pass_behind_the_horizon() {
+        let now = 1_000_000;
+        let first = market_tape_first_cursor(now, 120, 300);
+        assert_eq!(first, 999_580);
+        assert_eq!(
+            market_tape_horizon(now, 120) - first,
+            300,
+            "exactly one pass of room, so the first window is a full one"
+        );
+        assert!(
+            market_tape_window_end(first, 300, market_tape_horizon(now, 120)) > first,
+            "the first window must have width, or the loop never starts"
+        );
+    }
+
+    /// A pass never reaches past the horizon, and stops exactly at it.
+    ///
+    /// The horizon is where CryptoHouse has actually landed; asking past it
+    /// returns a window still filling, which the collector would then record
+    /// as complete. Kills the mutant relaxing `wanted < horizon` to `<=`,
+    /// which changes which of two equal values is returned -- harmless here,
+    /// and the reason the boundary is asserted from both sides rather than
+    /// only the clamped one.
+    #[test]
+    fn a_pass_stops_at_the_horizon_rather_than_reaching_past_it() {
+        // Room to spare: the full pass width.
+        assert_eq!(market_tape_window_end(1_000, 300, 10_000), 1_300);
+        // Not enough room: clamped to the horizon, not to cursor + width.
+        assert_eq!(market_tape_window_end(1_000, 300, 1_100), 1_100);
+        // Exactly at it: the same answer either way, which is why this line
+        // exists -- so a reader knows the equality case was considered.
+        assert_eq!(market_tape_window_end(1_000, 300, 1_300), 1_300);
+        // Already past it: the caller sees a window end at or behind the
+        // cursor and sleeps rather than asking for a backwards range.
+        assert!(market_tape_window_end(1_000, 300, 900) <= 1_000);
+    }
+
+    /// The pass width is the interval, as seconds, and it is positive.
+    ///
+    /// Kills the three mutants that replace this with -1, 0 or 1. Each is
+    /// quiet and each is ruinous: a zero or negative width makes every window
+    /// end at or behind its cursor, so the collector sleeps forever and the
+    /// store stays empty while the service reports itself active.
+    #[test]
+    fn the_pass_width_is_the_configured_interval_in_seconds() {
+        let seconds = market_tape_pass_seconds();
+        assert_eq!(
+            seconds,
+            radar_backfill::market_tape::PASS_INTERVAL_SECONDS,
+            "the loop's width and the budget's divisor must be one number"
+        );
+        assert!(
+            seconds > 1,
+            "a width of zero or one collects nothing, forever"
+        );
+        assert_eq!(
+            market_tape_window_end(0, seconds, i64::MAX),
+            seconds,
+            "a pass from zero with room to spare is exactly one interval wide"
+        );
+    }
     #[test]
     fn the_usage_text_names_every_flag_the_parser_accepts() {
         // Not style. `--reprice` was added to the parser and very nearly shipped
@@ -950,6 +1336,7 @@ mod tests {
             "--scope",
             "--follow",
             "--outcomes",
+            "--market-tape",
             "--reprice",
         ] {
             assert!(u.contains(flag), "usage() does not mention {flag}:\n{u}");
@@ -1228,5 +1615,30 @@ mod tests {
         // `Args` clamps `window_minutes` with `.max(1)`, but the loop must not
         // depend on that: a zero step would append the same window forever.
         assert_eq!(windows(0, 3, 0).len(), 3);
+    }
+
+    #[test]
+    fn a_market_tape_pass_reaches_exactly_the_configured_width_when_the_horizon_allows_it() {
+        assert_eq!(market_tape_window_end(1_000, 120, 10_000), 1_120);
+    }
+
+    #[test]
+    fn a_market_tape_pass_never_reaches_past_the_horizon() {
+        // The horizon is wall-clock lag: asking for a window that has not
+        // landed in CryptoHouse yet would just fail, or worse, silently
+        // narrow to whatever partial data happened to exist there.
+        assert_eq!(
+            market_tape_window_end(9_950, 120, 10_000),
+            10_000,
+            "the configured width would overshoot the horizon by 70s"
+        );
+    }
+
+    #[test]
+    fn a_market_tape_pass_at_exactly_the_horizon_reaches_no_further() {
+        // The boundary the two tests above straddle: `wanted == horizon`
+        // must return the horizon itself, not overshoot by treating equality
+        // as "still room to grow".
+        assert_eq!(market_tape_window_end(9_880, 120, 10_000), 10_000);
     }
 }

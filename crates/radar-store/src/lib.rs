@@ -30,6 +30,7 @@ pub mod cursor;
 mod decision;
 mod error;
 pub mod event;
+pub mod market_trade;
 mod outcome;
 mod portfolio;
 mod position;
@@ -42,6 +43,7 @@ pub use cursor::{CURSOR_FILE, from_epoch, now_epoch, read_cursor, to_epoch, writ
 pub use decision::{Conclusion, Decision, KernelOutcome};
 pub use error::StoreError;
 pub use event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
+pub use market_trade::{MarketSide, MarketTrade};
 pub use outcome::{GraduationMode, INSTANT_WITHIN_SLOTS, Outcome, PRICE_SCALE};
 pub use portfolio::portfolio_from;
 pub use position::{Position, fold_positions};

@@ -633,6 +633,13 @@ pub fn audience_of(path: &str) -> Audience {
         || path == "/wallet"
         || path == "/ask"
         || path.starts_with("/token/")
+        // Public market data -- tier 1 of plan 0012. Facts about the chain
+        // that belong to nobody: the trade tape, candles, the coin list, a
+        // coin's header, and folded holders. No identity is ever checked
+        // against this prefix, and nothing under it may read a customer's or
+        // the operator's store -- see the module comment on
+        // `radar_serve::market`.
+        || path.starts_with("/v1/market/")
     {
         return Audience::Public;
     }
@@ -641,14 +648,31 @@ pub fn audience_of(path: &str) -> Audience {
     // makes. Listed rather than inferred, because a rule like "anything under
     // /v1 is a customer route" is exactly how `/v1/store` ends up in front of
     // somebody who should not see the operator's store counts.
-    let customer = path == "/v1/funnel"
-        || path == "/v1/scoreboard"
-        || path == "/v1/decisions"
-        || path.starts_with("/v1/evidence/")
-        || path.starts_with("/v1/tokens/")
-        || path == "/v1/customer/wallet"
-        || path == "/v1/customer/events"
-        || path == "/v1/chat";
+    //
+    // **`/v1/decisions`, `/v1/funnel`, `/v1/scoreboard`, `/v1/evidence/` and
+    // `/v1/tokens/` were on this list and are not any more.** They fall to
+    // `Audience::Operator` below, and the reason is the product's own shape
+    // rather than a security scare: Radar's decision record is the operator's
+    // own research output -- what it examined, what it concluded, and the named
+    // reasons it passed -- and the owner's direction on 2026-09-11 was that it
+    // stays private while market data is free to anyone.
+    //
+    // `Customer` was one environment variable from meaning "anyone with a
+    // wallet": `RADAR_CUSTOMER_ACCESS=open` admits any identity that verifies,
+    // and opening customer sign-in was the next thing planned. That would have
+    // published the 4.8 MB decision record to every stranger who connected a
+    // wallet, silently, as a side effect of a setting about sign-in.
+    //
+    // `/v1/tokens/` is the one worth naming separately, because no single
+    // classification of it was ever correct: `TokenEvidence` returns tier-3
+    // `decisions` and tier-1 `measurements` in one body. Operator is the safe
+    // half to choose. The market data a visitor actually needs is served by
+    // `/v1/market/`, which is `Public` and carries no decision at all.
+    //
+    // Nothing in the interface calls these now -- the pages that read them were
+    // deleted with the research document the terminal replaced.
+    let customer =
+        path == "/v1/customer/wallet" || path == "/v1/customer/events" || path == "/v1/chat";
     if customer {
         return Audience::Customer;
     }
@@ -1079,6 +1103,22 @@ mod tests {
             "/token/So11111111111111111111111111111111111111112"
         ));
 
+        // Public market data: no identity, ever, for any path under the
+        // prefix -- these are facts about the chain, not about a customer.
+        assert!(is_public(
+            "/v1/market/trades/So11111111111111111111111111111111111111112"
+        ));
+        assert!(is_public(
+            "/v1/market/candles/So11111111111111111111111111111111111111112"
+        ));
+        assert!(is_public("/v1/market/coins"));
+        assert!(is_public(
+            "/v1/market/token/So11111111111111111111111111111111111111112"
+        ));
+        assert!(is_public(
+            "/v1/market/holders/So11111111111111111111111111111111111111112"
+        ));
+
         for private in [
             // The operator's screens are not shell. A direct navigation to one
             // still meets the operator check.
@@ -1129,23 +1169,30 @@ mod tests {
             // sign-in control it already carries.
             ("/", Audience::Public),
             ("/assets/index-abc123.js", Audience::Public),
-            // The product's reads, which is where the gate actually is.
-            ("/v1/funnel", Audience::Customer),
-            ("/v1/scoreboard", Audience::Customer),
-            ("/v1/decisions", Audience::Customer),
-            ("/v1/evidence/capacity", Audience::Customer),
-            ("/v1/evidence/returns", Audience::Customer),
-            ("/v1/evidence/activity", Audience::Customer),
+            // Radar's own research output. Operator, not customer: the
+            // decision record is what the operator examined and concluded,
+            // and `Customer` is one `RADAR_CUSTOMER_ACCESS=open` away from
+            // meaning "anyone holding a wallet". Moved 2026-09-12; see
+            // `audience_of`.
+            ("/v1/funnel", Audience::Operator),
+            ("/v1/scoreboard", Audience::Operator),
+            ("/v1/decisions", Audience::Operator),
+            ("/v1/evidence/capacity", Audience::Operator),
+            ("/v1/evidence/returns", Audience::Operator),
+            ("/v1/evidence/activity", Audience::Operator),
+            // Mixed, so classified at its most sensitive half: `TokenEvidence`
+            // carries both decisions and measurements in one body. A visitor
+            // wanting market data gets it from `/v1/market/`, which is public.
+            (
+                "/v1/tokens/So11111111111111111111111111111111111111112",
+                Audience::Operator,
+            ),
             // The watermark only. `/v1/events` stays Operator because its
             // payload is the operator's store counts.
             ("/v1/customer/events", Audience::Customer),
             // Public, unlike everything else under `/v1/customer/`. It is the
             // login bootstrap, read before a token exists.
             ("/v1/customer/config", Audience::Public),
-            (
-                "/v1/tokens/So11111111111111111111111111111111111111112",
-                Audience::Customer,
-            ),
             ("/v1/chat", Audience::Customer),
             // The interface's own routes. **Public**, because they serve the
             // shell -- the same HTML `/` serves -- and a visitor who cannot
@@ -1158,6 +1205,24 @@ mod tests {
             ("/ask", Audience::Public),
             (
                 "/token/So11111111111111111111111111111111111111112",
+                Audience::Public,
+            ),
+            // Public market data. Facts about the chain, and nobody's.
+            (
+                "/v1/market/trades/So11111111111111111111111111111111111111112",
+                Audience::Public,
+            ),
+            (
+                "/v1/market/candles/So11111111111111111111111111111111111111112",
+                Audience::Public,
+            ),
+            ("/v1/market/coins", Audience::Public),
+            (
+                "/v1/market/token/So11111111111111111111111111111111111111112",
+                Audience::Public,
+            ),
+            (
+                "/v1/market/holders/So11111111111111111111111111111111111111112",
                 Audience::Public,
             ),
             // The operator's surface. `/v1/store` and `/v1/events` are here on
@@ -1256,12 +1321,31 @@ mod tests {
             );
         }
 
-        for path in ["/v1/funnel", "/v1/tokens/abc", "/v1/customer/wallet"] {
+        // What a customer token may still reach: their own wallet, their own
+        // event stream, and the assistant. Not the decision record -- see
+        // `audience_of` for why that moved.
+        for path in ["/v1/customer/wallet", "/v1/customer/events", "/v1/chat"] {
             let audience = audience_of(path);
             assert!(audience.accepts_customer(), "{path} is product");
             assert!(
                 audience.accepts_operator(),
                 "{path} must stay readable by the operator, for debugging"
+            );
+        }
+
+        // And what it may not, however valid the token. Each of these was
+        // `Customer` until 2026-09-12, which made opening customer sign-in
+        // and publishing the decision record the same act.
+        for path in [
+            "/v1/decisions",
+            "/v1/funnel",
+            "/v1/scoreboard",
+            "/v1/evidence/returns",
+            "/v1/tokens/So11111111111111111111111111111111111111112",
+        ] {
+            assert!(
+                !audience_of(path).accepts_customer(),
+                "{path} must never open to a customer token"
             );
         }
 

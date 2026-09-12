@@ -23,6 +23,7 @@ pub mod evidence;
 pub mod facilitator;
 pub mod ledger;
 pub mod link;
+pub mod market;
 pub mod mcp;
 mod ops;
 pub mod privy;
@@ -132,6 +133,15 @@ pub struct AppState {
     /// cannot bind a signature to itself, so it refuses to issue challenges
     /// rather than issuing ones that would authenticate against any site.
     pub challenges: Option<challenges::Challenges>,
+    /// The public market-data seam. Empty today -- every route under
+    /// `/v1/market/` reads [`Self::store`] directly rather than holding a
+    /// CryptoHouse client of its own; see [`market`]'s own doc comment.
+    ///
+    /// Tier 1, per [plan 0012](../../../docs/plans/0012-the-public-trading-panel.md)
+    /// -- no identity, no `Tenant`, and it must stay that way. `/v1/market/`
+    /// is `Audience::Public` in [`access::audience_of`] for exactly this
+    /// field's routes.
+    pub market: market::Market,
 }
 
 /// Builds the router.
@@ -171,6 +181,13 @@ pub fn app(state: Arc<AppState>) -> Router {
         .route("/v1/customer/events", get(customer_events))
         .route("/v1/instruments", get(list_instruments))
         .route("/v1/instruments/{name}", post(call_instrument))
+        // Public market data -- tier 1 of plan 0012. No identity, and none of
+        // these may ever gain one; see the module comment on `market`.
+        .route("/v1/market/trades/{mint}", get(market::trades))
+        .route("/v1/market/candles/{mint}", get(market::candles))
+        .route("/v1/market/coins", get(market::coins))
+        .route("/v1/market/token/{mint}", get(market::token))
+        .route("/v1/market/holders/{mint}", get(market::holders))
         .route("/mcp", post(mcp_endpoint))
         // Anything else is either a built asset or a route the interface owns.
         // Placed last so every named route above wins.

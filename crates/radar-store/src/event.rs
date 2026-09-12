@@ -382,6 +382,19 @@ pub enum Table {
     /// through a window produced one, and the rest of the window read as a
     /// quiet market. See [`crate::coverage`].
     Coverage,
+    /// Trades on the venue-agnostic market tape, as `radar-backfill`'s
+    /// market-tape collector records them.
+    ///
+    /// Not a chain event in the sense this table's siblings are: there is no
+    /// decoded instruction and no envelope, because a swap collected this way
+    /// is a token leg and a quote leg outer-joined from raw transfers rather
+    /// than a `buy`/`sell` this build decoded. Recorded like
+    /// [`Positions`](Self::Positions) and [`Coverage`](Self::Coverage) —
+    /// stamped with a real, per-row chain slot the way an event is, but through
+    /// its own writer and reader rather than the shared envelope machinery,
+    /// because it carries no signature position, no parent instruction and no
+    /// success flag for that machinery to fill in. See [`crate::market_trade`].
+    MarketTrades,
 }
 
 impl Table {
@@ -395,6 +408,7 @@ impl Table {
         Self::Decisions,
         Self::Positions,
         Self::Coverage,
+        Self::MarketTrades,
     ];
 
     /// The tables that hold chain events, which is what
@@ -432,7 +446,10 @@ impl Table {
     #[must_use]
     pub const fn slot_column(self) -> &'static str {
         match self {
-            Self::Launches | Self::Trades | Self::Graduations => "slot",
+            // A market trade carries a genuine per-row chain slot the same way
+            // an event does, even though it is recorded rather than decoded --
+            // see `Table::MarketTrades`'s own doc comment for why.
+            Self::Launches | Self::Trades | Self::Graduations | Self::MarketTrades => "slot",
             Self::Outcomes => "measured_at",
             Self::Decisions => "decided_at",
             Self::Positions => "opened_at",
@@ -454,6 +471,7 @@ impl Table {
             Self::Decisions => "decisions",
             Self::Positions => "positions",
             Self::Coverage => "coverage",
+            Self::MarketTrades => "market_trades",
         }
     }
 

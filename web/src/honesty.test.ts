@@ -15,7 +15,19 @@
 
 import { describe, expect, it } from "vitest";
 
-import { POLICY_ARTIFACTS, clearedCost, median, netOfCost, pct } from "./honesty";
+import {
+  POLICY_ARTIFACTS,
+  capCaption,
+  clearedCost,
+  emptyTapeMessage,
+  holdersBasisCaption,
+  isNarrowerThanRequested,
+  isPossiblyCapped,
+  median,
+  netOfCost,
+  partitionReasons,
+  pct,
+} from "./honesty";
 
 describe("median", () => {
   it("is the middle of the sorted values, not of the given order", () => {
@@ -115,6 +127,39 @@ describe("POLICY_ARTIFACTS", () => {
   });
 });
 
+describe("partitionReasons", () => {
+  // Moved here from `Figures.test.tsx` when `ReasonList` -- the only component
+  // that called this -- was deleted with the decision-record pages. The logic
+  // stayed: it is still one of this file's testable claims about what the
+  // interface says, even without a page rendering it today.
+  it("splits the three kinds the kernel already distinguishes", () => {
+    const split = partitionReasons([
+      "NoRoute",
+      "CreatorNeverGraduated",
+      "OverPositionLimit",
+    ]);
+    expect(split.structural).toEqual(["NoRoute"]);
+    expect(split.evidence).toEqual(["CreatorNeverGraduated"]);
+    expect(split.policy).toEqual(["OverPositionLimit"]);
+  });
+
+  it("shows an unrecognised reason rather than hiding it", () => {
+    // The direction that matters. A reason wrongly sorted into `policy` is
+    // collapsed into one line and effectively hidden, and findings are the only
+    // refusals that say anything about the token being looked at.
+    const split = partitionReasons(["SomethingAddedNextYear"]);
+    expect(split.evidence).toEqual(["SomethingAddedNextYear"]);
+    expect(split.policy).toEqual([]);
+  });
+
+  it("preserves the order within each group", () => {
+    // The strategy emits reasons worst-first and re-sorting would throw that
+    // away.
+    const split = partitionReasons(["ExitUnmeasurable", "NoRoute"]);
+    expect(split.structural).toEqual(["ExitUnmeasurable", "NoRoute"]);
+  });
+});
+
 describe("netOfCost", () => {
   it("takes the whole round trip off, and does not clamp", () => {
     // The bug this exists for: the scoreboard rendered the *gross* median under
@@ -140,5 +185,89 @@ describe("netOfCost", () => {
     // The boundary. A cost of zero must not shift the figure, or the function
     // is doing something other than subtracting.
     expect(netOfCost(-863, 0)).toBe(-863);
+  });
+});
+
+describe("emptyTapeMessage", () => {
+  it("tells a coin that never traded apart from a feed Radar could not reach", () => {
+    // The rule from the packet, verbatim: "an empty tape because the coin never
+    // traded, and an empty tape because the data source was unreachable, are
+    // different screens with different words." Same zero rows, and the words
+    // must not collide.
+    const neverTraded = emptyTapeMessage("never-traded");
+    const unreachable = emptyTapeMessage("unreachable", "504: gateway timeout");
+    expect(neverTraded).not.toBe(unreachable);
+    expect(neverTraded.toLowerCase()).not.toContain("unreachable");
+    expect(unreachable.toLowerCase()).not.toContain("no trades");
+  });
+
+  it("folds the transport's own detail in rather than dropping it", () => {
+    expect(emptyTapeMessage("unreachable", "504: gateway timeout")).toContain(
+      "504: gateway timeout",
+    );
+  });
+
+  it("still says something when there is no detail to fold in", () => {
+    expect(emptyTapeMessage("unreachable")).toContain("Radar could not look");
+  });
+});
+
+describe("isPossiblyCapped / capCaption", () => {
+  it("treats a full page as possibly cropped, and says so", () => {
+    // No route in the contract reports a cap flag, so a full page is the
+    // ambiguous case: it might be the whole list, or the first slice of a
+    // longer one, and there is no way to tell them apart from the response
+    // alone. Presenting it as complete is the failure the rule exists to
+    // prevent, so the safe direction is to warn on the full page.
+    expect(isPossiblyCapped(50, 50)).toBe(true);
+    expect(capCaption(50, 50, "trades")).toMatch(/most recent 50 trades/);
+  });
+
+  it("says nothing when the whole list plainly came back", () => {
+    expect(isPossiblyCapped(3, 50)).toBe(false);
+    expect(capCaption(3, 50, "trades")).toBeNull();
+  });
+
+  it("does not read more-than-requested as evidence of completeness", () => {
+    // Defensive: this should not happen, and if it does, it is not proof the
+    // list is whole.
+    expect(isPossiblyCapped(51, 50)).toBe(true);
+  });
+});
+
+describe("holdersBasisCaption", () => {
+  it("passes the server's own words through unchanged", () => {
+    const basis = "folded from transfer history over the last 30 days";
+    expect(holdersBasisCaption(basis)).toBe(basis);
+  });
+
+  it("never drops the caption for being missing -- it substitutes a warning", () => {
+    // The rule: "that caption is not decoration and must not be dropped for
+    // being ugly." A response that omits `basis` must not render as a ranked
+    // list with nothing said about it; it renders a caption that says the
+    // methodology is unknown, which is still true.
+    for (const missing of [null, undefined, "", "   "]) {
+      const caption = holdersBasisCaption(missing);
+      expect(caption.length).toBeGreaterThan(0);
+      expect(caption.toLowerCase()).toContain("does not know");
+    }
+  });
+});
+
+describe("isNarrowerThanRequested", () => {
+  it("is false when the response covers everything that was asked for", () => {
+    expect(isNarrowerThanRequested(100, 200, 100, 200)).toBe(false);
+    // A response allowed to cover *more* than asked is still a full answer.
+    expect(isNarrowerThanRequested(100, 200, 50, 250)).toBe(false);
+  });
+
+  it("catches a start clipped later than requested", () => {
+    // A token younger than the requested window: the earliest candle is later
+    // than `from`, so the left edge of what was asked for is missing.
+    expect(isNarrowerThanRequested(100, 200, 150, 200)).toBe(true);
+  });
+
+  it("catches an end clipped earlier than requested", () => {
+    expect(isNarrowerThanRequested(100, 200, 100, 180)).toBe(true);
   });
 });

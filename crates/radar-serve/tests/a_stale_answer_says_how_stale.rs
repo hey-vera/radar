@@ -57,6 +57,7 @@ fn state_at(dir: &std::path::Path) -> Arc<AppState> {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
     })
 }
 

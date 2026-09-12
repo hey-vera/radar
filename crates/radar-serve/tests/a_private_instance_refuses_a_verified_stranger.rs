@@ -106,6 +106,7 @@ fn router(admission: Admission, keys: Keys) -> axum::Router {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
     }))
 }
 
@@ -114,7 +115,12 @@ async fn get(router: &axum::Router, token: &str) -> (StatusCode, String) {
         .clone()
         .oneshot(
             Request::builder()
-                .uri("/v1/funnel")
+                // A customer route, which is what admission gates. `/v1/funnel`
+                // stood here until 2026-09-12 and became operator-only with the
+                // rest of the decision record, so a customer token now stops at
+                // the audience check before admission is ever consulted -- and
+                // this test would have passed while testing nothing it names.
+                .uri("/v1/customer/wallet")
                 .header("authorization", format!("Bearer {token}"))
                 .body(Body::empty())
                 .expect("a request"),

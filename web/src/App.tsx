@@ -1,153 +1,81 @@
 // SPDX-License-Identifier: Apache-2.0
 //! The shell: which page is showing, and how you get to another one.
 //!
-//! # Why there is a router now
+//! # What this replaced
 //!
-//! There was a `useState` here, and a comment saying a router goes in "when the
-//! first screen needs a URL that means something, not before". Three do.
+//! Until this pass, `/` was a narrow, centred document -- a decision feed,
+//! an evidence scoreboard, and an assistant, at `max-w-6xl`. The owner's
+//! words: "basically like a pumpfun or axiom trading view", and a document is
+//! not that. [`Terminal`](./Terminal.tsx) is a full-bleed trading screen and
+//! is now `/` and `/token/:mint` both; the three pages it replaced --
+//! `Decisions.tsx`, `Scoreboard.tsx`, `Health.tsx`, `Analyst.tsx`, `Token.tsx`
+//! -- are deleted, not hidden, along with the components that existed only to
+//! draw them (`Feed.tsx`, `Activity.tsx`, `CapacityWall.tsx`,
+//! `ReturnDistribution.tsx`, `CostCurve.tsx`, `PricePath.tsx`). See this
+//! session's commits for which pieces of `Figures.tsx` earned a place in the
+//! terminal instead of going with the rest.
 //!
-//! A token page is the obvious one — a decision about a mint is the thing anyone
-//! would send to somebody else, and it was unlinkable. The other two are less
-//! obvious and matter more: with one state variable, a refresh silently returned
-//! the reader to the funnel, and the back button left the application entirely.
-//! Both read as the page losing your place.
+//! `/ask` survives unchanged: it is a conversation, not a report, and the
+//! owner's correction named only the report pages for deletion.
 //!
-//! `wouter` rather than TanStack Router: 2 kB against 45. Its three transitive
-//! dependencies are `mitt`, `regexparam` and `use-sync-external-store`, all
-//! tiny. The plan for this work said "zero dependencies", which was wrong —
-//! checked, and corrected here rather than left to be found later.
+//! # Why there is no navigation bar
 //!
-//! # The seam this leaves
-//!
-//! `AUDIENCE` below is a constant, and that is still the honest shape of what
-//! the interface knows — but the value changed on 2026-09-08, when the shell
-//! became public. It was `"operator"` because Cloudflare Access gated the whole
-//! site and every reader really was the operator. Now a reader is whoever
-//! opened the page, the interface cannot tell an operator from a stranger, and
-//! the constant says so.
+//! There were three customer pages before this pass, and a nav made sense.
+//! There are effectively one now -- the terminal -- plus an assistant reached
+//! by URL, so a nav would be one real link dressed up as a menu. The
+//! terminal's own top bar is specified down to its contents (wordmark,
+//! search, wallet), and none of them is a nav.
 
-import { Link, Route, Switch, useRoute } from "wouter";
+import { Link, Route, Switch } from "wouter";
 
 import { Wallet } from "./Wallet";
 
 import { Agent } from "./Agent";
-import { Analyst } from "./Analyst";
-import { Decisions } from "./Decisions";
-import { Health } from "./Health";
-import { Scoreboard } from "./Scoreboard";
-import { Token, TokenLookup } from "./Token";
-import { navFor, type Audience } from "./routes";
-
-/**
- * Who the interface believes it is talking to.
- *
- * It was the constant `"operator"`, and the comment here said why: Cloudflare
- * Access gated the whole site, so every reader really was the operator and a
- * lookup would have been a guess wearing the shape of a fact. That comment also
- * said this was "the single place that changes when the customer lane switches
- * on". It has.
- *
- * The shell is public now, so a reader is whoever opened the page. It is a
- * constant again, and the honest value is `"customer"` — because the interface
- * cannot tell an operator from anybody else and should not pretend to.
- *
- * A wallet session does not help: it proves a customer, never an operator. The
- * only thing that proves an operator is an operator-gated read succeeding, and
- * probing for one would put a 403 on every stranger's first page load to
- * decide the contents of a menu.
- *
- * So the operator reaches `/instance` and `/analyst` by typing them. They are
- * the one person who knows those pages exist, the server admits them, and the
- * pages render. That is a smaller cost than either a lie or a probe.
- *
- * **This decides what is *offered*, never what is *allowed*.** The server
- * classifies every read and refuses an operator route to a customer token
- * whatever this says. Hiding a link is a courtesy; treating it as a control is
- * how a client-side check becomes the only check.
- */
-const AUDIENCE: Audience = "customer";
+import { Terminal } from "./Terminal";
 
 export function App() {
   return (
+    <Switch>
+      <Route path="/">
+        <Terminal />
+      </Route>
+      <Route path="/token/:mint">
+        {(params) => <Terminal mint={decodeURIComponent(params.mint)} />}
+      </Route>
+      <Route path="/ask">
+        <SimpleShell>
+          <Agent alwaysShow />
+        </SimpleShell>
+      </Route>
+      <Route>
+        <SimpleShell>
+          <NotFound />
+        </SimpleShell>
+      </Route>
+    </Switch>
+  );
+}
+
+/**
+ * The plain document chrome the terminal does not use.
+ *
+ * Only `/ask` and the 404 page render through this now. It is the old app
+ * shell's header, kept for the one page still built as a document rather
+ * than a screen -- not a design worth extending, just not worth rebuilding
+ * for two routes that are not this pass's subject.
+ */
+function SimpleShell({ children }: { children: React.ReactNode }) {
+  return (
     <div className="mx-auto max-w-6xl px-6 py-10">
-      <header className="mb-6">
+      <header className="mb-6 flex items-start justify-between gap-4">
         <h1 className="text-2xl font-semibold tracking-tight">
           <Link href="/" className="hover:text-[var(--color-dim)]">
             Radar
           </Link>
         </h1>
-        <div className="flex items-start justify-between gap-4">
-          <p className="mt-1 text-sm text-[var(--color-dim)]">
-            Solana research intelligence. A record of what was refused, and why.
-          </p>
-          <Wallet />
-        </div>
+        <Wallet />
       </header>
-
-      <Nav />
-
-      <main>
-        <Switch>
-          <Route path="/" component={Decisions} />
-          <Route path="/evidence" component={Scoreboard} />
-          <Route path="/ask">
-            <Agent alwaysShow />
-          </Route>
-          <Route path="/analyst" component={Analyst} />
-          <Route path="/instance" component={Health} />
-          <Route path="/token/:mint" component={TokenPage} />
-          <Route>
-            <NotFound />
-          </Route>
-        </Switch>
-      </main>
-    </div>
-  );
-}
-
-function Nav() {
-  const pages = navFor(AUDIENCE);
-  return (
-    <nav className="mb-8 flex flex-wrap gap-1 border-b border-[var(--color-line)]">
-      {pages.map((page) => (
-        <NavLink key={page.path} href={page.path} label={page.label} />
-      ))}
-    </nav>
-  );
-}
-
-function NavLink({ href, label }: { href: string; label: string }) {
-  const [active] = useRoute(href);
-  return (
-    <Link
-      href={href}
-      // A real anchor, not a button. It was a `<button>` carrying
-      // `aria-current`, which is correct markup for something that is not a link
-      // and wrong for something that is: a reader could not open it in a new
-      // tab, copy its address, or see where it led before clicking.
-      aria-current={active ? "page" : undefined}
-      className={`-mb-px border-b-2 px-3 py-2 text-sm ${
-        active
-          ? "border-[var(--color-good)] text-[var(--color-text)]"
-          : "border-transparent text-[var(--color-dim)] hover:text-[var(--color-text)]"
-      }`}
-    >
-      {label}
-    </Link>
-  );
-}
-
-/// One token's evidence, plus the box that got you here.
-///
-/// The lookup stays on the page rather than being replaced by its result: the
-/// common action after reading one token is looking up another, and a form that
-/// vanishes on submit turns that into a navigation.
-function TokenPage({ params }: { params: { mint: string } }) {
-  const mint = decodeURIComponent(params.mint);
-  return (
-    <div className="space-y-6">
-      <TokenLookup initial={mint} />
-      <Token mint={mint} />
+      <main>{children}</main>
     </div>
   );
 }
@@ -161,7 +89,7 @@ function NotFound() {
       </p>
       <p className="mt-2 text-[var(--color-dim)]">
         <Link href="/" className="underline">
-          Back to the decision record
+          Back to the terminal
         </Link>
         .
       </p>

@@ -259,6 +259,7 @@ async fn main() -> ExitCode {
         // valid somewhere Radar does not control.
         challenges: radar_serve::siws::domain_from(std::env::var("RADAR_CUSTOMER_DOMAIN").ok())
             .map(radar_serve::challenges::Challenges::new),
+        market: radar_serve::market::Market::new(),
     });
 
     println!("radar-serve v{}", env!("CARGO_PKG_VERSION"));

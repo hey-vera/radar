@@ -102,6 +102,7 @@ fn router(keys: Keys) -> axum::Router {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
         privy: None,
     }))
 }
@@ -145,7 +146,10 @@ async fn a_valid_customer_token_opens_the_product() {
     // is not a boundary, and a test suite that only ever asserts refusals would
     // pass with the customer lane wired to nothing at all.
     let (token, keys) = valid_token();
-    for path in ["/v1/funnel", "/v1/scoreboard"] {
+    // The customer product, which is now the wallet lane and the assistant.
+    // `/v1/funnel` and `/v1/scoreboard` were here until 2026-09-12; they carry
+    // Radar's own decision record and are operator-only.
+    for path in ["/v1/customer/wallet", "/v1/chat"] {
         let status = status_with(router(keys.clone()), path, &token).await;
         assert_ne!(
             status,
@@ -208,6 +212,7 @@ async fn the_wallet_route_refuses_a_request_carrying_no_customer_identity() {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
         privy: None,
     }));
 
@@ -286,11 +291,12 @@ async fn a_wallet_session_opens_the_product_on_an_instance_with_no_privy() {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
         privy: None,
     }));
 
     assert_ne!(
-        status_with(router.clone(), "/v1/funnel", &session).await,
+        status_with(router.clone(), "/v1/customer/wallet", &session).await,
         StatusCode::FORBIDDEN,
         "a wallet session must open the product without Privy configured"
     );
@@ -348,6 +354,7 @@ async fn an_allowlist_admits_the_wallet_it_names_and_no_other() {
             scoreboard: radar_serve::cache::Cache::new(),
             token: radar_serve::cache::Cache::new(),
             challenges: None,
+            market: radar_serve::market::Market::new(),
             privy: None,
         }))
     };
@@ -356,12 +363,12 @@ async fn an_allowlist_admits_the_wallet_it_names_and_no_other() {
     let stranger = radar_customer::session::issue(&theirs, &salt, now).expect("a session");
 
     assert_ne!(
-        status_with(build(), "/v1/funnel", &admitted).await,
+        status_with(build(), "/v1/customer/wallet", &admitted).await,
         StatusCode::FORBIDDEN,
         "the allowlisted wallet is admitted"
     );
     assert_eq!(
-        status_with(build(), "/v1/funnel", &stranger).await,
+        status_with(build(), "/v1/customer/wallet", &stranger).await,
         StatusCode::FORBIDDEN,
         "a wallet that signed perfectly well and is not on the list is refused"
     );

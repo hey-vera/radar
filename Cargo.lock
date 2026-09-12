@@ -1557,6 +1557,7 @@ dependencies = [
  "radar-agent",
  "radar-analyst",
  "radar-asof",
+ "radar-backfill",
  "radar-contest",
  "radar-customer",
  "radar-instruments",

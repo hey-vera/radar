@@ -3,8 +3,8 @@
 
 use radar_asof::{AsOf, PointInTime};
 use radar_store::{
-    Completion, Coverage, Envelope, Event, Graduation, Launch, ObservedSlots, Origin, Outcome,
-    Reader, SLOTS_PER_PARTITION, Side, Table, Trade, Writer,
+    Completion, Coverage, Envelope, Event, Graduation, Launch, MarketSide, MarketTrade,
+    ObservedSlots, Origin, Outcome, Reader, SLOTS_PER_PARTITION, Side, Table, Trade, Writer,
 };
 use radar_types::{Address, Signature, Slot};
 
@@ -1445,6 +1445,152 @@ fn coverage_skips_a_partition_that_starts_after_the_watermark() {
     );
 }
 
+// --- market trades ------------------------------------------------------
+
+fn market_trade(mint_id: u8, slot: u64, priced: bool) -> MarketTrade {
+    MarketTrade {
+        mint: mint(mint_id),
+        ts: "2026-09-11 17:35:00.000000".to_owned(),
+        slot: Slot(slot),
+        signature: Signature::new([(slot % 251) as u8; 64]),
+        side: if priced {
+            MarketSide::Buy
+        } else {
+            MarketSide::Unknown
+        },
+        token_amount: 0.056_626,
+        quote_amount: priced.then_some(0.000_01),
+        quote_mint: priced.then(|| {
+            "So11111111111111111111111111111111111111112"
+                .parse()
+                .expect("quote mint")
+        }),
+        price: priced.then_some(0.176_59),
+        trader: priced.then(|| mint(8)),
+    }
+}
+
+#[test]
+fn a_market_trade_survives_a_round_trip_through_parquet() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    let priced = market_trade(1, 500, true);
+    let unpriced = market_trade(2, 501, false);
+    w.append_market_trade(priced.clone()).expect("append");
+    w.append_market_trade(unpriced.clone()).expect("append");
+    w.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_market_trades(AsOf::at(Slot(999)))
+        .expect("read");
+    assert_eq!(back.len(), 2);
+    assert!(
+        back.contains(&priced),
+        "the priced trade must survive exactly: {back:?}"
+    );
+    assert!(
+        back.contains(&unpriced),
+        "the unpriced trade must survive exactly: {back:?}"
+    );
+}
+
+#[test]
+fn a_null_quote_leg_reads_back_as_none_never_as_a_zero_or_empty_string() {
+    // Re-applying the bug: reading an absent quote leg as `0.0` or `""` would
+    // report a trade this fold could not price as though it traded for
+    // nothing, which is rule 9's forbidden default.
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1).expect("open");
+    w.append_market_trade(market_trade(3, 700, false))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let back = Reader::open(dir.path())
+        .read_market_trades(AsOf::at(Slot(999)))
+        .expect("read");
+    assert_eq!(back.len(), 1);
+    assert_eq!(back[0].side, MarketSide::Unknown);
+    assert_eq!(back[0].quote_amount, None);
+    assert_ne!(back[0].quote_amount, Some(0.0));
+    assert_eq!(back[0].quote_mint, None);
+    assert_eq!(back[0].price, None);
+    assert_ne!(back[0].price, Some(0.0));
+    assert_eq!(back[0].trader, None);
+}
+
+#[test]
+fn market_trades_are_gated_on_the_watermark_like_everything_else() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 100).expect("open");
+    for slot in [10u64, 20, 30, 40] {
+        w.append_market_trade(market_trade(1, slot, true))
+            .expect("append");
+    }
+    w.flush().expect("flush");
+
+    let visible = Reader::open(dir.path())
+        .read_market_trades(AsOf::at(Slot(25)))
+        .expect("read");
+    assert_eq!(
+        visible.len(),
+        2,
+        "only slots 10 and 20 are admissible as of 25"
+    );
+    assert!(visible.iter().all(|t| t.slot <= Slot(25)));
+}
+
+#[test]
+fn market_trades_land_in_the_partition_named_after_their_slot() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_market_trade(market_trade(1, 1, true))
+        .expect("append");
+    w.append_market_trade(market_trade(1, SLOTS_PER_PARTITION + 1, true))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let files = Reader::open(dir.path())
+        .files(Table::MarketTrades)
+        .expect("files");
+    assert_eq!(files.len(), 2, "two partitions");
+}
+
+#[test]
+fn market_trades_count_toward_the_store_watermark() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_market_trade(market_trade(1, 55_555, true))
+        .expect("append");
+    w.flush().expect("flush");
+    assert_eq!(
+        Reader::watermark(&Reader::open(dir.path())).expect("watermark"),
+        Some(Slot(55_555))
+    );
+}
+
+#[test]
+fn reading_market_trades_as_events_fails_with_the_reason() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1).expect("open");
+    w.append_market_trade(market_trade(1, 500, true))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let err = Reader::open(dir.path())
+        .read(Table::MarketTrades, AsOf::at(Slot(999)))
+        .expect_err("must refuse");
+    assert!(
+        err.to_string().contains("market_trades"),
+        "the refusal must name the table: {err}"
+    );
+    assert!(
+        Reader::open(dir.path())
+            .read_market_trades(AsOf::at(Slot(999)))
+            .is_ok(),
+        "and the right reader must work"
+    );
+}
+
 #[test]
 fn coverage_reaches_disk_on_the_buffer_it_was_given() {
     // The writer's own counters, which nothing reached: `radar-backfill` prints
@@ -1493,4 +1639,114 @@ fn coverage_reaches_disk_on_the_buffer_it_was_given() {
             .len(),
         2
     );
+}
+
+/// The buffer flushes at its threshold, not before and not never.
+///
+/// `flush_at` is what bounds how much a crash loses and how much memory a
+/// long-running collector holds. Counting the buffer with `*=` leaves it at
+/// zero forever, so nothing ever flushes on its own; relaxing the comparison
+/// flushes on every row, which writes a parquet file per trade.
+///
+/// Asserted through `written_rows`, which is the count the writer publishes,
+/// so the test reads the same number an operator would.
+#[test]
+fn the_buffer_flushes_at_its_threshold_and_not_before() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 3).expect("open");
+
+    w.append_market_trade(market_trade(1, 500, true))
+        .expect("append");
+    assert_eq!(w.written_rows(), 0, "one row is under the threshold");
+    w.append_market_trade(market_trade(1, 501, true))
+        .expect("append");
+    assert_eq!(w.written_rows(), 0, "two rows is still under it");
+
+    w.append_market_trade(market_trade(1, 502, true))
+        .expect("append");
+    assert_eq!(
+        w.written_rows(),
+        3,
+        "the third row reaches the threshold and the buffer goes to disk"
+    );
+}
+
+/// Every flushed row is counted, once.
+///
+/// `written_rows += rows` turned into `*=` leaves the count at zero however
+/// much was written — a store filling up while the number an operator reads
+/// says nothing has been.
+#[test]
+fn every_flushed_row_is_counted_once() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    for slot in 500..505 {
+        w.append_market_trade(market_trade(1, slot, true))
+            .expect("append");
+    }
+    assert_eq!(w.written_rows(), 0, "nothing written before the flush");
+    w.flush().expect("flush");
+    assert_eq!(w.written_rows(), 5, "five appended, five counted");
+}
+
+/// A file starting exactly at the watermark is read, not skipped.
+///
+/// `read_market_trades` skips a partition whose **start** is past `as_of`. A
+/// file starting exactly at the watermark holds rows at it, which a read as of
+/// that slot must see: relaxed to `>=`, or narrowed to `==`, the boundary file
+/// is skipped and the reader reports a quiet market for a slot it holds trades
+/// for.
+///
+/// **The row sits on a partition boundary on purpose.** Partitions are
+/// [`SLOTS_PER_PARTITION`] slots wide, so a row at slot 500 lives in a file
+/// starting at slot **zero** — and `0 > 500` is false however the comparison
+/// is mutated. An earlier version of this test used slot 500 and could not
+/// have caught anything; CI said so.
+#[test]
+fn a_partition_starting_at_the_watermark_is_read_not_skipped() {
+    let boundary = radar_store::SLOTS_PER_PARTITION;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    w.append_market_trade(market_trade(1, boundary, true))
+        .expect("append");
+    w.flush().expect("flush");
+
+    let r = Reader::open(dir.path());
+    let at = r
+        .read_market_trades(AsOf::at(Slot(boundary)))
+        .expect("read as of the partition's own first slot");
+    assert_eq!(
+        at.len(),
+        1,
+        "a read as of a partition's first slot sees that partition"
+    );
+
+    let before = r
+        .read_market_trades(AsOf::at(Slot(boundary - 1)))
+        .expect("read one slot before it");
+    assert!(
+        before.is_empty(),
+        "and a read before the partition starts sees nothing: {before:?}"
+    );
+}
+
+/// Every flushed file is counted, once.
+///
+/// `written_files += 1` mutated to `*=` leaves the count at zero however many
+/// files were written. `written_rows` cannot catch it -- they are separate
+/// counters and an earlier version of these tests asserted only the first.
+#[test]
+fn every_flushed_file_is_counted_once() {
+    let boundary = radar_store::SLOTS_PER_PARTITION;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    // Two partitions, so the flush writes two files rather than one.
+    w.append_market_trade(market_trade(1, 5, true))
+        .expect("append");
+    w.append_market_trade(market_trade(1, boundary + 5, true))
+        .expect("append");
+    assert_eq!(w.written_files(), 0, "nothing written before the flush");
+    w.flush().expect("flush");
+    assert_eq!(w.written_files(), 2, "one file per partition");
+    assert_eq!(w.written_rows(), 2, "and both rows counted");
 }

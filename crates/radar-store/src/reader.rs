@@ -4,7 +4,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use arrow::array::{Array, BooleanArray, Int64Array, StringArray, UInt32Array, UInt64Array};
+use arrow::array::{
+    Array, BooleanArray, Float64Array, Int64Array, StringArray, UInt32Array, UInt64Array,
+};
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use radar_asof::{AsOf, PointInTime};
 use radar_types::{Address, Signature, Slot};
@@ -13,6 +15,7 @@ use crate::coverage::{Completion, Coverage, ObservedSlots};
 use crate::decision::{Conclusion, Decision, KernelOutcome};
 use crate::error::StoreError;
 use crate::event::{Envelope, Event, Graduation, Launch, Origin, Side, Table, Trade};
+use crate::market_trade::{MarketSide, MarketTrade};
 use crate::outcome::Outcome;
 use crate::writer::SLOTS_PER_PARTITION;
 
@@ -552,6 +555,74 @@ impl Reader {
         out.sort_by_key(|d| (d.decided_at.get(), d.mint));
         Ok(out)
     }
+
+    /// Every market-tape trade recorded at or before the watermark.
+    ///
+    /// Read separately from events for the same reason outcomes and decisions
+    /// are: this table carries no envelope, so it is not among
+    /// [`Table::EVENT_TABLES`] and [`Self::read`] refuses it by name.
+    ///
+    /// A row whose `mint`, `signature` or `slot` does not parse is malformed
+    /// and this errors, the same discipline `read_file` applies to a chain
+    /// event -- those three are never null by construction, so a bad value in
+    /// one is a corrupt file rather than an absent fact. `quote_mint` and
+    /// `trader` are optional columns and a missing value there is read as
+    /// `None`, never as a parse failure.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a file cannot be read or a required field is
+    /// malformed.
+    pub fn read_market_trades(&self, as_of: AsOf) -> Result<Vec<MarketTrade>, StoreError> {
+        let mut out = Vec::new();
+        for path in self.files(Table::MarketTrades)? {
+            if start_slot_of(&path).is_some_and(|start| start > as_of.slot().get()) {
+                continue;
+            }
+            let file = fs::File::open(&path)?;
+            let reader = ParquetRecordBatchReaderBuilder::try_new(file)?.build()?;
+            for batch in reader {
+                let batch = batch?;
+                let mint = str_col(&batch, "mint")?;
+                let ts = str_col(&batch, "ts")?;
+                let slot = u64_col(&batch, "slot")?;
+                let signature = str_col(&batch, "signature")?;
+                let side = str_col(&batch, "side")?;
+                let token_amount = f64_col(&batch, "token_amount")?;
+                let quote_amount = f64_col(&batch, "quote_amount")?;
+                let quote_mint = str_col(&batch, "quote_mint")?;
+                let price = f64_col(&batch, "price")?;
+                let trader = str_col(&batch, "trader")?;
+
+                for i in 0..batch.num_rows() {
+                    let row_slot = Slot(slot.value(i));
+                    if !as_of.admits(row_slot) {
+                        continue;
+                    }
+                    out.push(MarketTrade {
+                        mint: parse(mint.value(i), "mint")?,
+                        ts: ts.value(i).to_owned(),
+                        slot: row_slot,
+                        signature: parse(signature.value(i), "signature")?,
+                        side: MarketSide::from_str_or_unknown(side.value(i)),
+                        token_amount: token_amount.value(i),
+                        quote_amount: quote_amount.is_valid(i).then(|| quote_amount.value(i)),
+                        quote_mint: quote_mint
+                            .is_valid(i)
+                            .then(|| parse(quote_mint.value(i), "quote_mint"))
+                            .transpose()?,
+                        price: price.is_valid(i).then(|| price.value(i)),
+                        trader: trader
+                            .is_valid(i)
+                            .then(|| parse(trader.value(i), "trader"))
+                            .transpose()?,
+                    });
+                }
+            }
+        }
+        out.sort_by_key(|t| (t.slot.get(), t.mint, t.signature.to_string()));
+        Ok(out)
+    }
 }
 
 impl PointInTime for Reader {
@@ -776,9 +847,13 @@ fn read_file(path: &Path, table: Table) -> Result<Vec<Event>, StoreError> {
                     origin,
                     mint,
                 })),
-                Table::Outcomes | Table::Decisions | Table::Positions | Table::Coverage => {
+                Table::Outcomes
+                | Table::Decisions
+                | Table::Positions
+                | Table::Coverage
+                | Table::MarketTrades => {
                     unreachable!(
-                        "not events; read by read_outcomes / read_decisions / read_positions"
+                        "not events; read by read_outcomes / read_decisions / read_positions /                          read_market_trades"
                     )
                 }
             });
@@ -876,6 +951,7 @@ typed_col!(i64_col, Int64Array);
 typed_col!(u32_col, UInt32Array);
 typed_col!(bool_col, BooleanArray);
 typed_col!(str_col, StringArray);
+typed_col!(f64_col, Float64Array);
 
 /// Reads the address parse implementations the reader needs.
 impl Reader {

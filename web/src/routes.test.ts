@@ -15,20 +15,35 @@
 //! So the check reads the Rust source. It is a string search rather than a
 //! parse, and that is the right trade for a rule this narrow: it can only fail
 //! by being *too strict*, which is loud, never by missing a route, which is not.
+//!
+//! # Why there is no operator case here any more
+//!
+//! `ROUTES` used to list `/instance` and `/analyst`, the two operator pages the
+//! decision-record interface drew. Both were deleted along with the components
+//! that drew them (`Health.tsx`, `Analyst.tsx`) -- the terminal has no operator
+//! surface, so `ROUTES` has no operator entries, and the tests that swept
+//! `ROUTES.filter(r => r.audience === "operator")` now run over an empty list.
+//! That is not a hole in coverage: an empty `it.each` runs zero cases rather
+//! than failing, and there is nothing left for that direction of the check to
+//! find, because there is nothing left in this file classified operator. If an
+//! operator page returns to the client, its test case returns with it.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  NO_FILTERS,
-  ROUTES,
-  decisionsPath,
-  isMintLike,
-  navFor,
-  parseFilters,
-  tokenPath,
-  type Filters,
-} from "./routes";
+import { ROUTES, isMintLike, tokenPath, type Audience } from "./routes";
+
+/**
+ * `ROUTES` today has only customer entries, so TypeScript narrows its
+ * `audience` field to the literal `"customer"` and flags a comparison against
+ * `"operator"` as unreachable. It is not unreachable in the sense that
+ * matters here -- the check exists precisely so an operator route *added*
+ * later is caught -- so the comparison is done through the wider [`Audience`]
+ * type rather than removed.
+ */
+function isAudience(route: { audience: string }, audience: Audience): boolean {
+  return (route.audience as Audience) === audience;
+}
 
 const ACCESS_RS = resolve(
   __dirname,
@@ -46,8 +61,14 @@ const source = readFileSync(ACCESS_RS, "utf8");
  * wrong way.
  */
 function customerBlock(): string {
-  const start = source.indexOf("let customer = ");
-  expect(start, "`let customer =` not found in access.rs").toBeGreaterThan(-1);
+  // `let customer` without the `= `, because rustfmt decides where the line
+  // breaks and it moved the `=` onto the next line on 2026-09-12 when the
+  // expression got shorter. Eleven route assertions then failed at once,
+  // reporting that every page was unreachable -- an alarming way to be told
+  // about a line break. What this check is for is the two lists agreeing, not
+  // the shape the formatter chose.
+  const start = source.indexOf("let customer");
+  expect(start, "`let customer` not found in access.rs").toBeGreaterThan(-1);
   const end = source.indexOf(";", start);
   expect(end, "the customer expression is not terminated").toBeGreaterThan(start);
   return source.slice(start, end);
@@ -107,43 +128,21 @@ describe("the route table matches the server", () => {
     },
   );
 
-  it.each(ROUTES.filter((r) => r.audience === "operator").map((r) => [r.path]))(
+  it.each(ROUTES.filter((r) => isAudience(r, "operator")).map((r) => [r.path]))(
     "%s is not handed to customers or to strangers by the server",
     (pattern) => {
       // The other direction, and the one that would actually leak. An operator
       // page in the customer list is a page a paying customer can read; in the
       // public list it is a page anybody can read. Both blocks are checked,
       // because the shell moving to `Public` created the second way to get this
-      // wrong.
+      // wrong. `ROUTES` carries no operator entry today, so this runs zero
+      // cases -- see the module comment above for why that is not a gap.
       expect(reachableBlock()).not.toContain(`"${serverPath(pattern)}"`);
     },
   );
 
-  it("has at least one route of each audience, so neither case is vacuous", () => {
+  it("has at least one customer route, so the direction above is not vacuous", () => {
     expect(ROUTES.some((r) => r.audience === "customer")).toBe(true);
-    expect(ROUTES.some((r) => r.audience === "operator")).toBe(true);
-  });
-});
-
-describe("navigation", () => {
-  it("hides operator pages from a customer, and shows them to an operator", () => {
-    // `access::Audience` makes the same asymmetry deliberately: an operator may
-    // read a customer page because debugging a customer's problem requires it,
-    // and the reverse is refused.
-    const customer = navFor("customer");
-    const operator = navFor("operator");
-
-    expect(customer.some((r) => r.audience === "operator")).toBe(false);
-    expect(operator.some((r) => r.audience === "operator")).toBe(true);
-    expect(operator.length).toBeGreaterThan(customer.length);
-  });
-
-  it("keeps the token page out of the navigation", () => {
-    // It needs a mint to mean anything, and a nav entry leading to an empty form
-    // is a nav entry leading nowhere.
-    for (const audience of ["customer", "operator"] as const) {
-      expect(navFor(audience).some((r) => r.path.includes(":mint"))).toBe(false);
-    }
   });
 });
 
@@ -203,19 +202,23 @@ describe("the API routes the interface calls", () => {
   // route the interface calls that the server classifies as Operator answers
   // today (everything falls back to the operator check) and refuses every
   // customer the day the customer lane switches on.
-  it.each([
-    ["/v1/funnel"],
-    ["/v1/decisions"],
-    ["/v1/scoreboard"],
-    ["/v1/tokens/"],
-    ["/v1/customer/events"],
-    ["/v1/customer/wallet"],
-    ["/v1/chat"],
-  ])("%s is a customer route on the server", (path) => {
-    expect(customerBlock(), `${path} would refuse every customer`).toContain(
-      `"${path}"`,
-    );
-  });
+  //
+  // The decision-record reads (`/v1/funnel`, `/v1/decisions`, `/v1/scoreboard`,
+  // `/v1/tokens/`) were asserted here until the pages that called them were
+  // deleted; a route this interface no longer calls is not this file's claim
+  // to verify. `/v1/market/*` is not listed either, in the other direction: it
+  // does not exist in `access.rs` yet (a parallel session is building it), so
+  // asserting it here would fail against a classification that has not been
+  // written, for a fact this test cannot yet check. See this session's return
+  // for the classification the market routes still need.
+  it.each([["/v1/customer/events"], ["/v1/customer/wallet"], ["/v1/chat"]])(
+    "%s is a customer route on the server",
+    (path) => {
+      expect(customerBlock(), `${path} would refuse every customer`).toContain(
+        `"${path}"`,
+      );
+    },
+  );
 
   it.each([["/v1/store"], ["/v1/events"], ["/v1/link"], ["/mcp"], ["/ops"]])(
     "%s stays an operator route",
@@ -226,88 +229,4 @@ describe("the API routes the interface calls", () => {
       expect(customerBlock()).not.toContain(`"${path}"`);
     },
   );
-});
-
-describe("filters in the address bar", () => {
-  it("round-trips through the path and back", () => {
-    // `parseFilters` and `decisionsPath` are inverses, and a pair that drifts
-    // apart produces a link nobody can follow back to what they were reading.
-    const cases: Filters[] = [
-      { reason: null, conclusion: null, prefix: null },
-      { reason: "CapacityBelowFloor", conclusion: null, prefix: null },
-      { reason: null, conclusion: "proposed", prefix: null },
-      { reason: "NoRoute", conclusion: "passed", prefix: "So111" },
-      { reason: null, conclusion: null, prefix: "EPjFWdd5" },
-    ];
-    for (const filters of cases) {
-      const path = decisionsPath(filters);
-      const search = path.includes("?") ? path.slice(path.indexOf("?")) : "";
-      expect(parseFilters(search), path).toEqual(filters);
-    }
-  });
-
-  it("drops an unrecognised conclusion instead of coercing it", () => {
-    // The wrong version that looks right. Coerced to "proposed", the page would
-    // show a filtered record while the control said something else -- a screen
-    // lying about what it is showing.
-    expect(parseFilters("?conclusion=authorised").conclusion).toBeNull();
-    expect(parseFilters("?conclusion=PROPOSED").conclusion).toBeNull();
-    expect(parseFilters("?conclusion=").conclusion).toBeNull();
-  });
-
-  it("drops an empty reason rather than filtering on the empty string", () => {
-    // `?reason=` is a stray parameter, not a request for decisions whose reason
-    // is "". Filtering on it would show an empty record and blame the store.
-    expect(parseFilters("?reason=").reason).toBeNull();
-    expect(parseFilters("?reason=%20%20").reason).toBeNull();
-  });
-
-  it("reads a search string with or without its leading question mark", () => {
-    // wouter's `useSearch` has returned both forms across versions, and the
-    // difference is silent: with the `?` kept, the first key is named "?reason"
-    // and every filter stops applying.
-    expect(parseFilters("?reason=NoRoute").reason).toBe("NoRoute");
-    expect(parseFilters("reason=NoRoute").reason).toBe("NoRoute");
-  });
-
-  it("ignores parameters it does not know", () => {
-    expect(parseFilters("?sort=gainers&reason=NoRoute")).toEqual({
-      reason: "NoRoute",
-      conclusion: null,
-      prefix: null,
-    });
-  });
-
-  it("encodes a reason that would otherwise break the query string", () => {
-    const path = decisionsPath({ ...NO_FILTERS, reason: "a&b=c" });
-    expect(path).not.toContain("b=c&");
-    expect(parseFilters(path.slice(path.indexOf("?"))).reason).toBe("a&b=c");
-  });
-});
-
-describe("the address prefix filter", () => {
-  it("round-trips and composes with the others", () => {
-    // Filters that silently replace each other are how a reader ends up looking
-    // at a different set than the controls say.
-    const both: Filters = {
-      reason: "NoRoute",
-      conclusion: "passed",
-      prefix: "So111",
-    };
-    const path = decisionsPath(both);
-    expect(parseFilters(path.slice(path.indexOf("?")))).toEqual(both);
-  });
-
-  it("drops an empty prefix rather than filtering on nothing", () => {
-    // Every address starts with the empty string, so filtering on it would
-    // silently do nothing and look like the filter had failed.
-    expect(parseFilters("?prefix=").prefix).toBeNull();
-    expect(parseFilters("?prefix=%20%20").prefix).toBeNull();
-  });
-
-  it("preserves case, because base58 does", () => {
-    // `A` and `a` are different characters in the alphabet. Folding them would
-    // build a link that matches addresses which do not exist.
-    expect(parseFilters("?prefix=EPjFW").prefix).toBe("EPjFW");
-  });
 });

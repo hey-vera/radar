@@ -136,6 +136,7 @@ fn router(allowance: Allowance, keys: Keys) -> (axum::Router, Arc<AtomicBool>) {
         scoreboard: radar_serve::cache::Cache::new(),
         token: radar_serve::cache::Cache::new(),
         challenges: None,
+        market: radar_serve::market::Market::new(),
     }));
     (router, reached)
 }

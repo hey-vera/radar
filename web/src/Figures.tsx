@@ -1,95 +1,26 @@
 // SPDX-License-Identifier: Apache-2.0
-//! The three primitives that carry the interface's honesty rules as **types**
-//! rather than as discipline.
+//! The terminal's honesty primitives, carried as **types** rather than as
+//! discipline.
 //!
-//! Every one of them exists because the rule it encodes was broken somewhere by
-//! a component that rendered a number directly. A rule enforced by remembering
-//! is a rule that holds until the next person, and this file is the attempt to
-//! stop relying on that.
+//! This file used to hold five components built for the decision-record
+//! pages -- `Figure`, `Bps`, `ReasonList` and the `Group` helper beneath it --
+//! and all four were deleted with those pages. `Address` and the two below it
+//! earned a place here instead of going with them:
+//!
+//! - **`Address`** is reused as-is: the terminal's info panel and trade tape
+//!   both need a copyable, middle-truncated Solana address, which is exactly
+//!   what it already did for a mint.
+//! - **`MarketFigure`** and **`Side`** are new, and encode the two honesty
+//!   rules the packet states for the market panels: a null price renders as
+//!   "unknown" with its reason, never as 0 or a bare dash, and a trade side of
+//!   `"unknown"` renders as unknown, never defaulted to a buy.
+//!
+//! Every one of these exists because the rule it encodes was broken somewhere
+//! by a component that rendered a value directly. A rule enforced by
+//! remembering is a rule that holds until the next person.
 
 import { useCallback, useState } from "react";
-import { partitionReasons, pct } from "./honesty";
-
-/**
- * A measured figure, or the fact that there is not one.
- *
- * **A null cannot be rendered as a number by this component.** That is the whole
- * point of it: AGENTS.md rule 9 says absent is not zero, and the failure it
- * prevents is a `?? 0` that turns "nobody measured this" into "broke even" — the
- * whole population's median dressed up as a result.
- *
- * `tone` chooses whether the sign is coloured. It defaults to **off**, because
- * the last component to colour a figure by sign was colouring a gross,
- * wrong-entry return as profit and loss. Colour is a claim that the number means
- * gain or loss to the reader; pass `tone="pnl"` only where that is true.
- */
-export function Figure({
-  value,
-  absent = "—",
-  tone = "plain",
-  suffix,
-}: {
-  value: number | null | undefined;
-  /** What to show when there is no measurement. Never a number. */
-  absent?: string;
-  tone?: "plain" | "pnl";
-  suffix?: string;
-}) {
-  if (value === null || value === undefined) {
-    return (
-      <span className="tabular-nums text-[var(--color-absent)]" title="not measured">
-        {absent}
-      </span>
-    );
-  }
-  const colour =
-    tone === "pnl"
-      ? value > 0
-        ? "text-[var(--color-gain)]"
-        : value < 0
-          ? "text-[var(--color-loss)]"
-          : ""
-      : "";
-  return (
-    <span className={`tabular-nums ${colour}`}>
-      {value.toLocaleString()}
-      {suffix}
-    </span>
-  );
-}
-
-/**
- * A return in basis points, as a signed percentage.
- *
- * Separate from [`Figure`] because the sign is not decoration here — it is the
- * redundant channel that makes the figure readable without colour, which is
- * what keeps the screen usable for the ~8% of men with red-green colour vision
- * deficiency. `pct` always emits it.
- */
-export function Bps({
-  value,
-  tone = "plain",
-}: {
-  value: number | null | undefined;
-  tone?: "plain" | "pnl";
-}) {
-  if (value === null || value === undefined) {
-    return (
-      <span className="tabular-nums text-[var(--color-absent)]" title="not measured">
-        —
-      </span>
-    );
-  }
-  const colour =
-    tone === "pnl"
-      ? value > 0
-        ? "text-[var(--color-gain)]"
-        : value < 0
-          ? "text-[var(--color-loss)]"
-          : ""
-      : "";
-  return <span className={`tabular-nums ${colour}`}>{pct(value)}</span>;
-}
+import type { TradeSide } from "./api";
 
 /** How many characters of an address to show at each end. */
 const KEEP = 6;
@@ -108,7 +39,7 @@ export function Address({
   value,
   className = "",
 }: {
-  value: string;
+  value: string | null | undefined;
   className?: string;
 }) {
   const [copied, setCopied] = useState(false);
@@ -118,7 +49,7 @@ export function Address({
     // views. Failing quietly is right here -- the address is still visible in
     // the tooltip, so a reader is not stuck -- but it must not throw.
     void navigator.clipboard
-      ?.writeText(value)
+      ?.writeText(value ?? "")
       .then(() => {
         setCopied(true);
         setTimeout(() => setCopied(false), 1200);
@@ -127,6 +58,31 @@ export function Address({
         /* The tooltip still carries it. */
       });
   }, [value]);
+
+  // An absent address renders as an absent address.
+  //
+  // **This was a crash, and it took the whole page with it.** `value` was
+  // typed `string`, three call sites pass something that is genuinely
+  // optional -- a trade whose trader could not be told from the pool, a token
+  // with no creator on record, a holder row read through a field name the
+  // server does not send -- and `value.length` on the first of those threw
+  // inside render. React unmounted the tree, and a terminal showing a live
+  // market became an empty black rectangle whose only symptom was in the
+  // console. Observed 2026-09-11.
+  //
+  // Typing it `string | null | undefined` is the fix rather than a guard at
+  // each call site: the optionality is real, so the component that draws an
+  // address is where it belongs, and the compiler now refuses a caller that
+  // assumed otherwise. "Unknown" rather than a dash or an empty cell, for
+  // AGENTS §4 rule 9's reason -- absent is not zero, and a blank looks like a
+  // value nobody bothered to show.
+  if (value === null || value === undefined || value === "") {
+    return (
+      <span className={`text-[var(--color-dim)] ${className}`} title="No address was recorded for this row.">
+        unknown
+      </span>
+    );
+  }
 
   const short =
     value.length > KEEP * 2 + 1
@@ -147,80 +103,54 @@ export function Address({
 }
 
 /**
- * A kernel or strategy refusal list, split into the three kinds it contains.
+ * A market fact that may be unknown, with the reason it is when it is.
  *
- * The kernel already makes this distinction and the interface used to throw two
- * thirds of it away. Under `Policy::CLOSED` every limit is zero, so seven
- * refusals fire at once — and a reader shown seven items concludes there are
- * seven things wrong with the token. None of them is about the token.
- *
- * The split is also the thing a reader most needs in order to act. "Radar will
- * never touch this" and "Radar could not tell yet" are different answers, and
- * they were rendered identically.
+ * A market fact's `null` can mean several different things -- no pool found,
+ * no route priced, an unsupported quote mint -- and a trader deciding whether
+ * to trust the screen needs to know which. The word is always **"unknown"**,
+ * spelled out, never a bare dash and never the number 0: rendering
+ * `price ?? 0` here is the exact failure this component exists to make
+ * impossible to write by accident.
  */
-export function ReasonList({ reasons }: { reasons: readonly string[] }) {
-  const { structural, evidence, policy } = partitionReasons(reasons);
-
-  if (reasons.length === 0) return null;
-
-  return (
-    <div className="space-y-3">
-      {structural.length > 0 && (
-        <Group
-          heading="About this token — permanent"
-          note="No amount of waiting changes these."
-          items={structural}
-          tone="text-[var(--color-loss)]"
-        />
-      )}
-
-      {evidence.length > 0 && (
-        <Group
-          heading="About the evidence — may change"
-          note="These describe what Radar could measure, not what the token is."
-          items={evidence}
-          tone="text-[var(--color-warn)]"
-        />
-      )}
-
-      {policy.length > 0 && (
-        <p className="text-sm">
-          <strong className="text-[var(--color-refuse)]">Policy closed.</strong>{" "}
-          <span className="text-[var(--color-dim)]">
-            {policy.length} of these refusals are that one fact — every limit is
-            zero, so every comparison against zero fails. They are not{" "}
-            {policy.length} findings about this token.
-          </span>
-        </p>
-      )}
-    </div>
-  );
+export function MarketFigure({
+  value,
+  reason,
+  format,
+}: {
+  value: number | null;
+  reason: string | null;
+  format: (v: number) => string;
+}) {
+  if (value === null) {
+    return (
+      <span
+        className="text-[var(--color-absent)]"
+        title={reason ?? "Radar did not say why"}
+      >
+        unknown{reason ? ` — ${reason}` : ""}
+      </span>
+    );
+  }
+  return <span className="tabular-nums">{format(value)}</span>;
 }
 
-function Group({
-  heading,
-  note,
-  items,
-  tone,
-}: {
-  heading: string;
-  note: string;
-  items: readonly string[];
-  tone: string;
-}) {
-  return (
-    <div>
-      <p className="text-xs uppercase tracking-wide text-[var(--color-dim)]">
-        {heading}
-      </p>
-      <ul className="mt-1 space-y-0.5 text-sm">
-        {items.map((reason) => (
-          <li key={reason} className={tone}>
-            {reason}
-          </li>
-        ))}
-      </ul>
-      <p className="mt-1 text-xs text-[var(--color-dim)]">{note}</p>
-    </div>
-  );
+/**
+ * A trade's side, exactly as reported -- never defaulted toward a buy.
+ *
+ * The contract is explicit that a side can be `"unknown"`, and that it "renders
+ * as unknown, not as a buy". The obvious wrong version is a component typed
+ * `side: "buy" | "sell"` with the caller coercing an unrecognised value on the
+ * way in; typing this one over [`TradeSide`] instead makes that coercion a
+ * type error at the call site rather than a silent mislabel here.
+ */
+export function Side({ side }: { side: TradeSide }) {
+  if (side === "unknown") {
+    return (
+      <span className="text-[var(--color-absent)]" title="Radar could not tell which side of the trade this was">
+        unknown
+      </span>
+    );
+  }
+  const colour = side === "buy" ? "text-[var(--color-gain)]" : "text-[var(--color-loss)]";
+  return <span className={colour}>{side}</span>;
 }

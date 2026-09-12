@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+#
+# Install to /etc/systemd/system/radar-market-tape.service
+#
+# Collects the venue-agnostic market tape the public terminal reads. Separate
+# from radar-follow, and it must stay separate: they write different tables and
+# keep different cursors, and one stalling should not stop the other.
+#
+# **This is the unit that makes the market routes answer anything at all.**
+# `radar-serve`'s /v1/market/* routes read only the store and issue no
+# CryptoHouse query on any request path -- so without this running they report
+# "not collected", correctly and forever. A deploy that ships the server without
+# this ships an honest empty screen.
+[Unit]
+Description=Radar market tape — collects the trades the public terminal shows
+Documentation=https://github.com/1xmint/theradar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=guardian
+Group=guardian
+WorkingDirectory=/home/guardian/radar
+# No arguments beyond the store. The pass interval, the query budget, the
+# shortlist size and the per-mint trade limit are compile-time constants in
+# `radar_backfill::market_tape`, deliberately: they divide a shared 120/hour
+# quota between this and radar-follow, and a flag that let one of them be
+# widened at deploy time would let the pair exceed the quota without anything
+# saying so. See that module's doc comment for the arithmetic.
+ExecStart=/home/guardian/bin/radar-backfill --market-tape --store /home/guardian/radar/data/store
+Restart=always
+# Longer than radar-follow's 30s. A restart loop here spends quota on repeated
+# first passes, and the quota is the scarce thing -- see the module comment.
+RestartSec=120
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/guardian/radar/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+# As radar-follow: a Rust binary that decodes bytes and writes files, and one
+# reading a great deal of untrusted input. Denying pages that are both writable
+# and executable costs nothing and removes the step after the corruption.
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+# One pass holds a shortlist of mints and their recent trades -- 900 rows at the
+# shipped constants. Smaller than the follower's, which holds a whole window.
+MemoryMax=256M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -39,6 +39,7 @@ Expected, and true on 2026-09-06:
 |---|---|
 | `radar-serve.service` | enabled, active |
 | `radar-follow.service` | enabled, active |
+| `radar-market-tape.service` | **not installed** — without it the public terminal's market routes report "not collected", correctly and forever |
 | `radar-analyst.service` | enabled, active — **the X account is live** |
 | `radar-brief.timer` | enabled, active |
 | `radar-brief.service` | static — the timer starts it |
@@ -1285,6 +1286,40 @@ journalctl -u radar-follow -f
 It is a separate unit from `radar-serve` because the recorder writes and the
 server reads, and a crash in one should not take the other down. The store is
 append-only, so both may hold it at once.
+
+### The market tape
+
+The public trading terminal reads `Table::MarketTrades`, and **nothing else
+fills it**. `radar-serve`'s `/v1/market/*` routes issue no CryptoHouse query on
+any request path -- that is the point of them, since the endpoint allows 120
+queries an hour per IP and a handful of terminal loads once spent 291 of them.
+So a deploy that ships the server without this unit ships a screen that says
+"not collected" to every visitor. It is saying something true; it is not a
+product.
+
+```bash
+sudo install -D -m644 deploy/radar-market-tape.service /etc/systemd/system/radar-market-tape.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now radar-market-tape
+journalctl -u radar-market-tape -f
+```
+
+A healthy pass logs one line naming the window, the number of mints shortlisted
+and the trades collected:
+
+```
+2026-09-12 16:44:41 .. 2026-09-12 16:49:41  candidates   10  trades   900
+```
+
+`trades incomplete (0 queries left)` is the budget stopping a pass that hit an
+unusually busy window, not a fault -- what it could not reach is written as
+partial coverage. Repeated lines like it mean the market is consistently busier
+than the free quota covers, which is a fact about the quota and the reason
+`market_tape::SHORTLIST` is ten rather than two hundred.
+
+It shares the 120/hour quota with `radar-follow` and the hourly `--outcomes`
+cron. The split is arithmetic in `radar_backfill::market_tape`, not
+configuration, so that the pair cannot be widened past the quota by a flag.
 
 ## Disk
 

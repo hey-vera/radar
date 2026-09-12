@@ -12,6 +12,22 @@
 //!
 //! One table, and `routes.test.ts` asserts it matches the audiences the server
 //! declares. That test is the only thing standing between the two lists.
+//!
+//! # Why there is no `navFor` any more
+//!
+//! The decision-record pages -- `/evidence`, `/analyst`, `/instance`, and the
+//! `/` decision feed -- were deleted along with the components that drew them:
+//! the terminal replaces all four, and the owner's target for this pass is
+//! narrower than any of them served -- find a coin, look at it, trade it,
+//! track what you hold. None of that needs a navigation bar, and the terminal's
+//! top bar is specified down to its three contents (wordmark, search, wallet),
+//! none of which is a nav. `navFor` and the `inNav` flag it read existed only
+//! for the nav `App.tsx` no longer renders, so they went with it -- a function
+//! with no caller is not a design, it is a comment that compiles.
+//!
+//! The `audience` field on [`Route`] stays: it is still what `routes.test.ts`
+//! cross-checks against `access::audience_of`, independent of whether anything
+//! renders a menu from it.
 
 /** Which audience a page belongs to. Mirrors `access::Audience`. */
 export type Audience = "customer" | "operator";
@@ -20,79 +36,35 @@ export type Audience = "customer" | "operator";
 export interface Route {
   /** The path pattern, in wouter's syntax. */
   readonly path: string;
-  /** What the navigation calls it. */
-  readonly label: string;
   /** Who may reach it. */
   readonly audience: Audience;
-  /** Whether it appears in the navigation, or is only reached by a link. */
-  readonly inNav: boolean;
 }
 
 /**
- * The interface's pages.
+ * The interface's pages, all of them.
  *
- * Order is the navigation order, and it is the order the product argues for
- * itself in: what was decided, then the evidence behind the decisions, then the
- * assistant, then the instance.
+ * Three: the terminal, the token it can be pinned to, and the assistant --
+ * kept because it is a distinct feature (a conversation) rather than a report,
+ * and the owner's correction named only the report pages for deletion.
  */
 export const ROUTES = [
   {
     path: "/",
-    label: "Decisions",
     audience: "customer",
-    inNav: true,
-  },
-  {
-    path: "/evidence",
-    label: "Evidence",
-    audience: "customer",
-    inNav: true,
   },
   {
     path: "/ask",
-    label: "Ask",
     audience: "customer",
-    inNav: true,
   },
   {
-    path: "/instance",
-    label: "Instance",
-    audience: "operator",
-    inNav: true,
-  },
-  {
-    // The public analyst's reply log. Operator, because every row carries the
-    // fact sheet the reply was built from — working material rather than a
-    // public artefact, and the page an operator reads two hundred dry-run
-    // replies on before anybody outside sees one.
-    path: "/analyst",
-    label: "Analyst",
-    audience: "operator",
-    inNav: true,
-  },
-  {
-    // Reached from a decision row or from the lookup box, never from the nav —
-    // it needs a mint to mean anything, and a nav entry that leads to an empty
-    // form is a nav entry that leads nowhere.
+    // Reached from the coin list or the search box, never typed from nothing —
+    // it needs a mint to mean anything.
     path: "/token/:mint",
-    label: "Token",
     audience: "customer",
-    inNav: false,
   },
 ] as const satisfies readonly Route[];
 
-/** The pages that appear in the navigation, for a given audience. */
-export function navFor(audience: Audience): readonly Route[] {
-  // An operator sees everything; a customer sees only customer pages. The
-  // asymmetry is `access::Audience`'s and it is deliberate there: an operator
-  // may read a customer page because debugging a customer's problem requires
-  // it, and the reverse is refused.
-  return ROUTES.filter(
-    (r) => r.inNav && (audience === "operator" || r.audience === "customer"),
-  );
-}
-
-/** The path to one token's evidence. */
+/** The path to one token's terminal view. */
 export function tokenPath(mint: string): string {
   return `/token/${encodeURIComponent(mint)}`;
 }
@@ -128,76 +100,4 @@ export function isMintLike(value: string): boolean {
     trimmed.length <= ADDRESS_LENGTH.max &&
     BASE58.test(trimmed)
   );
-}
-
-/** What the decision record is being filtered to. */
-export interface Filters {
-  /** Only decisions carrying this reason. */
-  reason: string | null;
-  /** Only proposals, or only tokens passed over. */
-  conclusion: "proposed" | "passed" | null;
-  /**
-   * Only decisions whose mint or creator starts with this.
-   *
-   * A prefix, and the server treats it as one. Base58 addresses are compared by
-   * their leading characters everywhere in this system, and a substring match
-   * over four thousand of them returns noise — any three characters appear
-   * somewhere in most.
-   */
-  prefix: string | null;
-}
-
-/** Nothing filtered. */
-export const NO_FILTERS: Filters = {
-  reason: null,
-  conclusion: null,
-  prefix: null,
-};
-
-/**
- * Reads the filters out of a URL query string.
- *
- * Pure, and separated from the screen for the reason `honesty.ts` gives about
- * everything else in this interface: it has a wrong version that looks right.
- * An unrecognised `conclusion` silently treated as `"proposed"` would show a
- * reader a filtered record while the control said otherwise — a page lying about
- * what it is showing, which is this repository's whole subject.
- *
- * So an unrecognised value is **dropped**, not coerced. The filter it names does
- * not apply, the reader sees the unfiltered record, and nothing claims a filter
- * that is not in force.
- *
- * An empty `reason` is dropped for the same reason: `?reason=` is not a request
- * for decisions whose reason is the empty string.
- */
-export function parseFilters(search: string): Filters {
-  const params = new URLSearchParams(
-    search.startsWith("?") ? search.slice(1) : search,
-  );
-
-  const reason = params.get("reason")?.trim();
-  const conclusion = params.get("conclusion")?.trim();
-  const prefix = params.get("prefix")?.trim();
-
-  return {
-    reason: reason ? reason : null,
-    conclusion:
-      conclusion === "proposed" || conclusion === "passed" ? conclusion : null,
-    prefix: prefix ? prefix : null,
-  };
-}
-
-/**
- * The address of the decision record under a set of filters.
- *
- * The inverse of [`parseFilters`], and `routes.test.ts` holds them to being
- * exactly that. A pair that drifts apart produces a link nobody can follow back.
- */
-export function decisionsPath(filters: Filters): string {
-  const params = new URLSearchParams();
-  if (filters.reason) params.set("reason", filters.reason);
-  if (filters.conclusion) params.set("conclusion", filters.conclusion);
-  if (filters.prefix) params.set("prefix", filters.prefix);
-  const search = params.toString();
-  return search ? `/?${search}` : "/";
 }

@@ -65,6 +65,12 @@ pub struct Writer {
     /// statement about a *range* of the chain rather than a thing that happened
     /// at a point in it.
     pending_coverage: BTreeMap<u64, Vec<crate::Coverage>>,
+    /// Buffered market-tape trades, by partition.
+    ///
+    /// Separate from `pending`: a market trade carries no envelope, so putting
+    /// it through the same buffer would mean inventing a signature position
+    /// and a success flag it does not have.
+    pending_market_trades: BTreeMap<u64, Vec<crate::MarketTrade>>,
     buffered: usize,
     flush_at: usize,
     written_rows: u64,
@@ -90,6 +96,7 @@ impl Writer {
             pending_decisions: BTreeMap::new(),
             pending_positions: BTreeMap::new(),
             pending_coverage: BTreeMap::new(),
+            pending_market_trades: BTreeMap::new(),
             buffered: 0,
             flush_at: flush_at.max(1),
             written_rows: 0,
@@ -207,6 +214,29 @@ impl Writer {
         Ok(())
     }
 
+    /// Buffers one market-tape trade, flushing if the buffer is full.
+    ///
+    /// Partitioned by the trade's own slot, the same as `Table::Trades` -- a
+    /// market trade carries a real chain slot even though it is recorded
+    /// rather than decoded, see `Table::MarketTrades`'s own doc comment.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`StoreError`] if a flush fails.
+    pub fn append_market_trade(&mut self, trade: crate::MarketTrade) -> Result<(), StoreError> {
+        let slot = trade.slot;
+        self.highest_slot = Some(self.highest_slot.map_or(slot, |h| h.max(slot)));
+        self.pending_market_trades
+            .entry(partition_of(slot))
+            .or_default()
+            .push(trade);
+        self.buffered += 1;
+        if self.buffered >= self.flush_at {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
     /// Events buffered but not yet on disk.
     #[must_use]
     pub const fn buffered(&self) -> usize {
@@ -282,6 +312,18 @@ impl Writer {
             let rows = events.len() as u64;
             let batch = build_batch(table, &events)?;
             let path = self.next_path(table, partition);
+            write_parquet(&path, &batch)?;
+            self.written_rows += rows;
+            self.written_files += 1;
+        }
+
+        for (partition, trades) in std::mem::take(&mut self.pending_market_trades) {
+            if trades.is_empty() {
+                continue;
+            }
+            let rows = trades.len() as u64;
+            let batch = build_market_trade_batch(&trades)?;
+            let path = self.next_path(Table::MarketTrades, partition);
             write_parquet(&path, &batch)?;
             self.written_rows += rows;
             self.written_files += 1;
@@ -427,6 +469,54 @@ fn build_position_batch(positions: &[crate::Position]) -> Result<RecordBatch, St
             Arc::new(closed_at.finish()),
             Arc::new(exit.finish()),
             Arc::new(realised.finish()),
+        ],
+    )
+    .map_err(StoreError::from)
+}
+
+fn build_market_trade_batch(rows: &[crate::MarketTrade]) -> Result<RecordBatch, StoreError> {
+    use arrow::array::Float64Builder;
+
+    let (mut mint, mut ts) = (StringBuilder::new(), StringBuilder::new());
+    let mut slot = UInt64Builder::new();
+    let mut signature = StringBuilder::new();
+    let mut side = StringBuilder::new();
+    let mut token_amount = Float64Builder::new();
+    let mut quote_amount = Float64Builder::new();
+    let mut quote_mint = StringBuilder::new();
+    let mut price = Float64Builder::new();
+    let mut trader = StringBuilder::new();
+
+    for t in rows {
+        mint.append_value(t.mint.to_string());
+        ts.append_value(&t.ts);
+        slot.append_value(t.slot.get());
+        signature.append_value(t.signature.to_string());
+        side.append_value(t.side.as_str());
+        token_amount.append_value(t.token_amount);
+        // `append_option`, not a fallback to zero: a null here must never be
+        // read back as a trade priced or sized at nothing. See
+        // `market_trade`'s own doc comment for why these three are null
+        // together.
+        quote_amount.append_option(t.quote_amount);
+        quote_mint.append_option(t.quote_mint.map(|m| m.to_string()));
+        price.append_option(t.price);
+        trader.append_option(t.trader.map(|a| a.to_string()));
+    }
+
+    RecordBatch::try_new(
+        schema_for(Table::MarketTrades),
+        vec![
+            Arc::new(mint.finish()) as ArrayRef,
+            Arc::new(ts.finish()),
+            Arc::new(slot.finish()),
+            Arc::new(signature.finish()),
+            Arc::new(side.finish()),
+            Arc::new(token_amount.finish()),
+            Arc::new(quote_amount.finish()),
+            Arc::new(quote_mint.finish()),
+            Arc::new(price.finish()),
+            Arc::new(trader.finish()),
         ],
     )
     .map_err(StoreError::from)
@@ -710,9 +800,13 @@ fn build_batch(table: Table, events: &[Event]) -> Result<RecordBatch, StoreError
             }
             cols.push(Arc::new(mint.finish()));
         }
-        Table::Outcomes | Table::Decisions | Table::Positions | Table::Coverage => {
+        Table::Outcomes
+        | Table::Decisions
+        | Table::Positions
+        | Table::Coverage
+        | Table::MarketTrades => {
             unreachable!(
-                "not events; see build_outcome_batch / build_decision_batch /                  build_position_batch"
+                "not events; see build_outcome_batch / build_decision_batch /                  build_position_batch / build_market_trade_batch"
             )
         }
     }

@@ -20,9 +20,13 @@ pub mod coverage;
 pub mod cryptohouse;
 pub mod extract;
 pub mod launch_block;
+pub mod market;
+pub mod market_tape;
 pub mod outcomes;
 pub mod prices;
 
 pub use cryptohouse::{Client, QueryError};
-pub use extract::{Row, Scope, Skipped, Stats, events_from_rows, query_for_window};
+pub use extract::{
+    Row, Scope, Skipped, Stats, events_from_rows, fetch_windowed, narrowing_fetch, query_for_window,
+};
 pub use outcomes::{MINTS_PER_BATCH, outcomes_from_rows};

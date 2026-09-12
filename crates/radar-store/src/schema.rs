@@ -85,7 +85,11 @@ fn event_schema(table: Table) -> Arc<Schema> {
             Field::new("accepted_any_price", DataType::Boolean, false),
         ]),
         Table::Graduations => fields.push(Field::new("mint", DataType::Utf8, false)),
-        Table::Outcomes | Table::Decisions | Table::Positions | Table::Coverage => {
+        Table::Outcomes
+        | Table::Decisions
+        | Table::Positions
+        | Table::Coverage
+        | Table::MarketTrades => {
             unreachable!("not chain events; handled by recorded_schema")
         }
     }
@@ -225,6 +229,26 @@ fn recorded_schema(table: Table) -> Arc<Schema> {
             // token's first fill ever, which is not where Radar entered.
             Field::new("entry_price", DataType::UInt64, true),
             Field::new("inputs_digest", DataType::Utf8, false),
+        ])),
+        // Nullable together, by construction of the writer: `quote_amount` and
+        // `quote_mint` are only ever both written or both left absent (see
+        // `market_trade`'s doc comment), and `price` is null whenever either
+        // side of its division is unknown. `trader` is nullable independently
+        // -- a trade can be priced without its trader being known, and vice
+        // versa is not possible but the schema does not need to encode that.
+        Table::MarketTrades => Arc::new(Schema::new(vec![
+            Field::new("mint", DataType::Utf8, false),
+            Field::new("ts", DataType::Utf8, false),
+            Field::new("slot", DataType::UInt64, false),
+            Field::new("signature", DataType::Utf8, false),
+            // Never null: `MarketSide::Unknown` is a genuine value, not an
+            // absence -- see the type's own doc comment.
+            Field::new("side", DataType::Utf8, false),
+            Field::new("token_amount", DataType::Float64, false),
+            Field::new("quote_amount", DataType::Float64, true),
+            Field::new("quote_mint", DataType::Utf8, true),
+            Field::new("price", DataType::Float64, true),
+            Field::new("trader", DataType::Utf8, true),
         ])),
         Table::Launches | Table::Trades | Table::Graduations => {
             unreachable!("chain events; handled by event_schema")

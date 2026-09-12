@@ -250,7 +250,24 @@ licence-headers:
 # a suite that quietly shrinks is a suite somebody deleted a test from, and the
 # number going down is the only thing that says so. Raise it when tests are
 # added; never lower it to make a run go green.
-export MIN_WEB_TESTS := "173"
+#
+# **Lowered 173 -> 95 on 2026-09-11, which is the move the line above forbids,
+# so here is the reason it is not that move.** The rule guards against a floor
+# quietly following a shrinking suite downward. This is the other case: five
+# pages were deleted outright -- `Decisions`, `Scoreboard`, `Analyst`, `Health`,
+# `Token` -- along with the six components that existed only to draw them, when
+# the interface became a trading terminal instead of a research document. Their
+# tests went with them, because a test asserting a deleted page rendered is not
+# coverage of anything.
+#
+# What survived is the part worth keeping: `honesty.test.ts` grew the rules the
+# new panels turn on, and `partitionReasons`'s tests moved into it from
+# `Figures.test.tsx`, which is where the logic always lived. So the drop is 78
+# tests of pages that no longer exist, not 78 assertions nobody re-made.
+#
+# The number is checked against a real run, not estimated: `npm run test` in
+# `web/` reports 95 across 6 files at this commit. Raise it from here.
+export MIN_WEB_TESTS := "95"
 
 # The public site at cabalhunter.org. Lower because it has five pages, and it
 # exists for the same reason MIN_WEB_TESTS does: `vitest run` exits zero when it

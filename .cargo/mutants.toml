@@ -471,6 +471,80 @@ exclude_re = [
     # covers the branch itself, and the `==` mutant on this line is caught, so
     # the guard is not merely untested.
     'replace < with <= in Gate::refill_to',
+
+    # `fold_holders` matches `MintTo`/`Burn` before a general `_` arm, and the
+    # general arm does the same work conditionally:
+    #
+    #     "MintTo" | "MintToChecked" if !row.destination.is_empty() => credit dest,
+    #     "Burn"   | "BurnChecked"   if !row.source.is_empty()      => debit source,
+    #     _ => { if !source.is_empty() { debit source } if !dest.is_empty() { credit dest } }
+    #
+    # A mint carries no source and a burn carries no destination, so a guard
+    # replaced with `false` sends the row to `_`, which skips the empty side and
+    # performs exactly the same single operation on the other. The balances are
+    # identical; only which arm did the arithmetic changes.
+    #
+    # Applied by hand on 2026-09-12 against
+    # `a_mint_credits_the_destination_and_a_burn_debits_the_source` and
+    # `a_mint_or_burn_with_a_blank_side_credits_nobody`: both pass either way,
+    # because both assert the resulting balances, which is the thing that
+    # matters. The complementary mutants on these lines -- replacing the guards
+    # with `true`, and deleting the `!` -- ARE caught, so the guards are not
+    # untested. Only the `false` direction is unobservable.
+    # **These are regexes, not literals.** Written unescaped first and they
+    # matched nothing -- `()` is an empty capture group, so the pattern found
+    # `is_empty` where the mutant's name says `is_empty()`, and cargo-mutants
+    # reported all three as survivors for another full CI round. The `.` and
+    # the parentheses are escaped now.
+    'replace match guard !row\.destination\.is_empty\(\) with false in fold_holders',
+    'replace match guard !row\.source\.is_empty\(\) with false in fold_holders',
+
+    # The same two lines, mutated the other way -- the guard forced `true`, or
+    # its `!` deleted -- are equivalent for a *different* reason, and the
+    # difference is worth writing down because the first reason does not cover
+    # it.
+    #
+    # These send a **blank-source burn** into the burn arm, which debits the
+    # empty-string account. That does create a phantom entry. It is then
+    # dropped by `fold_holders`'s own `.filter(|(_, raw)| *raw > 0)`, because a
+    # debit with nothing before it is negative, so nothing downstream can
+    # observe the difference. A burn that *has* a source behaves identically
+    # either way, falling through to the `_` arm which debits the same account.
+    #
+    # Applied by hand on 2026-09-12, one at a time rather than together:
+    # `a_burn_debits_its_source_and_never_a_blank_one` passes against both.
+    # Written expecting it to fail, which is how the positive-balance filter
+    # turned out to be doing the work the guard appeared to be doing.
+    #
+    # **If that filter ever admits non-positive balances, remove these two
+    # lines**: the guard becomes observable again and these stop being
+    # equivalent.
+    'replace match guard !row\.source\.is_empty\(\) with true in fold_holders',
+
+    # `market_tape_window_end` returns `wanted` when `wanted < horizon` and
+    # `horizon` otherwise. The two differ only where `wanted == horizon`, and
+    # there both arms return the same number -- `wanted` under `<=`, `horizon`
+    # under `<`, which are equal by the condition that selected them.
+    #
+    # Applied by hand on 2026-09-12 against
+    # `a_pass_stops_at_the_horizon_rather_than_reaching_past_it`, which asserts
+    # the tie explicitly for this reason. The complementary direction matters
+    # and is covered: a window *past* the horizon is clamped, and one well
+    # inside it is not.
+    'replace < with <= in market_tape_window_end',
+
+    # `clamped_start` returns `requested_from` when it is greater than the
+    # floor and the floor otherwise. `>` and `>=` differ only where the two are
+    # equal, and there both arms return the same number by the condition that
+    # selected them.
+    #
+    # Applied by hand on 2026-09-12 against
+    # `a_start_is_clamped_to_the_ceiling_but_never_pushed_forward`, which
+    # asserts both sides of the boundary. The direction that matters -- a start
+    # further back than the ceiling being pulled up to it -- is covered and
+    # its mutants are caught.
+    'replace > with >= in clamped_start',
+    'delete ! in fold_holders',
 ]
 
 # A note on what does NOT belong here, learned on 2026-09-03 and worth the four

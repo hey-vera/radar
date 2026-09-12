@@ -640,6 +640,24 @@ fn market_tape_pass_seconds() -> i64 {
 /// never reaches past `horizon` even if `pass_seconds` would carry it there,
 /// which is what keeps the collector from asking CryptoHouse for a window
 /// that has not landed yet.
+/// How far a market-tape pass may reach: wall-clock, less the lag that lets a
+/// window land in CryptoHouse first.
+///
+/// Named rather than inlined so the subtraction can be tested. Added as `+`
+/// instead it reaches into the future, and the collector asks for a window
+/// that has not happened -- which returns nothing and is recorded as a quiet
+/// market.
+const fn market_tape_horizon(now: i64, lag_seconds: i64) -> i64 {
+    now - lag_seconds
+}
+
+/// Where a fresh store's cursor starts: one full pass behind the horizon, so
+/// the first pass has a complete window to ask about rather than an empty
+/// sliver.
+const fn market_tape_first_cursor(now: i64, lag_seconds: i64, pass_seconds: i64) -> i64 {
+    market_tape_horizon(now, lag_seconds) - pass_seconds
+}
+
 const fn market_tape_window_end(cursor: i64, pass_seconds: i64, horizon: i64) -> i64 {
     let wanted = cursor + pass_seconds;
     if wanted < horizon { wanted } else { horizon }
@@ -676,8 +694,9 @@ fn market_tape(args: &Args) -> Result<(), String> {
     let client = Client::default();
     let scope = market_tape_scope(&args.store);
     let pass_seconds = market_tape_pass_seconds();
-    let mut cursor = radar_store::read_cursor(&scope)
-        .unwrap_or_else(|| now_epoch() - MARKET_TAPE_LAG_SECONDS - pass_seconds);
+    let mut cursor = radar_store::read_cursor(&scope).unwrap_or_else(|| {
+        market_tape_first_cursor(now_epoch(), MARKET_TAPE_LAG_SECONDS, pass_seconds)
+    });
 
     println!(
         "market tape: {pass_seconds}s per pass, at most {} queries per pass ({}/hour ceiling),          top {} mints, from {} into {}",
@@ -694,7 +713,7 @@ fn market_tape(args: &Args) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     loop {
-        let horizon = now_epoch() - MARKET_TAPE_LAG_SECONDS;
+        let horizon = market_tape_horizon(now_epoch(), MARKET_TAPE_LAG_SECONDS);
         let window_end = market_tape_window_end(cursor, pass_seconds, horizon);
         if window_end <= cursor {
             std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
@@ -1147,6 +1166,43 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    /// The horizon is behind the clock, never ahead of it.
+    ///
+    /// Kills the mutants turning the subtraction into an addition or a
+    /// division. Either reaches into the future, where the collector asks for
+    /// a window that has not happened, gets nothing, and records a quiet
+    /// market.
+    #[test]
+    fn the_horizon_is_behind_the_clock_by_exactly_the_lag() {
+        assert_eq!(market_tape_horizon(1_000_000, 120), 999_880);
+        assert!(
+            market_tape_horizon(1_000_000, 120) < 1_000_000,
+            "a horizon at or ahead of now asks about a window still filling"
+        );
+    }
+
+    /// A fresh store starts one whole pass behind the horizon.
+    ///
+    /// Kills the same two mutants on the other subtraction. A first cursor at
+    /// the horizon leaves a zero-width first window; one ahead of it makes
+    /// `market_tape_window_end` return something at or behind the cursor and
+    /// the collector sleeps instead of starting.
+    #[test]
+    fn a_fresh_store_starts_one_pass_behind_the_horizon() {
+        let now = 1_000_000;
+        let first = market_tape_first_cursor(now, 120, 300);
+        assert_eq!(first, 999_580);
+        assert_eq!(
+            market_tape_horizon(now, 120) - first,
+            300,
+            "exactly one pass of room, so the first window is a full one"
+        );
+        assert!(
+            market_tape_window_end(first, 300, market_tape_horizon(now, 120)) > first,
+            "the first window must have width, or the loop never starts"
+        );
+    }
 
     /// A pass never reaches past the horizon, and stops exactly at it.
     ///

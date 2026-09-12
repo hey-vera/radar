@@ -813,6 +813,97 @@ mod narrowing {
         );
     }
 
+    /// The floor compares the window's *width*, not the sum of its bounds.
+    ///
+    /// Every other test here starts at zero, where `to - from` and `to + from`
+    /// are the same number, so the mutant replacing one with the other
+    /// survives all of them. This window starts an hour in: its width is
+    /// sixteen seconds and its bounds sum to over seven thousand, so a floor
+    /// of thirty-two stops it immediately under subtraction and never under
+    /// addition.
+    #[test]
+    fn the_floor_measures_the_window_not_the_sum_of_its_bounds() {
+        let endpoint = Endpoint::new(0);
+        let calls_before = endpoint.asked.borrow().len();
+        let err = fetch(&endpoint, 3_600, 3_616, 32).expect_err("nothing fits");
+        assert!(err.should_narrow(), "the row cap is what was reported");
+        assert_eq!(
+            endpoint.asked.borrow().len() - calls_before,
+            1,
+            "a sixteen-second window is already under a thirty-two second \
+             floor and must not be halved at all"
+        );
+    }
+
+    /// Both halves carry the depth forward, not just the first.
+    ///
+    /// The depth test above walks the left spine only, because a failure there
+    /// propagates before the right half is ever asked for. This one succeeds
+    /// on the left and fails on the right, so the second recursive call's
+    /// `depth + 1` is the one being exercised -- the mutant turning it into
+    /// `depth * 1` leaves that branch's depth at zero and lets it halve far
+    /// past the limit.
+    #[test]
+    fn the_second_half_carries_the_depth_forward_too() {
+        // Fails **only** for a window ending at the very top, so every left
+        // half succeeds and the recursion walks down the right spine. That is
+        // what makes the second recursive call's `depth + 1` the one under
+        // test: with a fake that failed on the left, the failure propagates
+        // before the right call is reached at all, and the mutant survives.
+        struct Lopsided {
+            calls: RefCell<u32>,
+        }
+        let endpoint = Lopsided {
+            calls: RefCell::new(0),
+        };
+        let err = narrowing_fetch(
+            &|sql: &str| {
+                *endpoint.calls.borrow_mut() += 1;
+                // Keyed on where the window *ends*, not where it starts. An
+                // earlier version read `from`, so the first window began at
+                // zero, succeeded outright, and the halving under test never
+                // ran at all.
+                let (_from, to) = sql.split_once("..").expect("the fake's shape");
+                let secs = to
+                    .split(' ')
+                    .nth(1)
+                    .and_then(|t| {
+                        let mut p = t.split(':').map(|x| x.parse::<i64>().ok());
+                        Some(p.next()?? * 3600 + p.next()?? * 60 + p.next()??)
+                    })
+                    .expect("a time");
+                if secs == 86_000 {
+                    Err(QueryError::Server(
+                        "Code: 396 (TOO_MANY_ROWS_OR_BYTES)".to_owned(),
+                    ))
+                } else {
+                    Ok(vec![sql.to_owned()])
+                }
+            },
+            0,
+            86_000,
+            0,
+            1,
+            Duration::ZERO,
+            &spans,
+        )
+        .expect_err("the upper half never fits");
+        assert!(err.should_narrow());
+        // The span is deliberately far wider than the floor: 86,000 seconds
+        // halves about seventeen times before reaching one second, but the
+        // depth limit is ten. So the two stop at clearly different points, and
+        // a right half whose depth never advances runs deeper than one whose
+        // does. An earlier version used 1,024 seconds, where the floor and the
+        // depth limit coincide — the mutant survived it. It is also under a
+        // day, because this fake's clock parser reads only the time part of a
+        // stamp and a multi-day window would read as a few hours.
+        let calls = *endpoint.calls.borrow();
+        assert!(
+            calls <= 21,
+            "the depth limit bounds the right half too, got {calls} calls"
+        );
+    }
+
     /// An error that narrowing cannot fix is reported at once, not retried on
     /// a narrower window.
     ///

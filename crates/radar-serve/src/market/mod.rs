@@ -80,6 +80,42 @@ const COINS_WINDOW_SECONDS: i64 = 10 * 60;
 /// reordered by an edit to either.
 const _: () = assert!(DEFAULT_CANDLE_WINDOW_SECONDS > DEFAULT_WINDOW_SECONDS);
 
+/// Whether a requested range runs forwards.
+///
+/// A range whose start is at or after its end is a caller mistake, refused
+/// with a message rather than answered with an empty list — the two are
+/// different facts and only one is about the market. Named so the comparison
+/// is testable: relaxed, a zero-width range is accepted and answers "no
+/// candles", which reads exactly like a quiet coin.
+const fn is_a_forward_range(from: i64, to: i64) -> bool {
+    from < to
+}
+
+/// The start of a range, clamped so it reaches back no further than `max`.
+///
+/// The response says when this clamps, so the caller is never told a day was
+/// covered when an hour was. Adding `max` instead of subtracting it moves the
+/// floor into the future and the clamp swallows the whole range.
+const fn clamped_start(requested_from: i64, to: i64, max_span: i64) -> i64 {
+    let floor = reaching_back(to, max_span);
+    if requested_from > floor {
+        requested_from
+    } else {
+        floor
+    }
+}
+
+/// Whether any trade in a window carried both legs, and so has a quote amount
+/// to sum.
+///
+/// Stated positively on purpose: the negated form at the call site carries a
+/// `!` that a mutation can delete, turning "no priced fill, so no volume" into
+/// "no priced fill, so sum an empty list and report zero volume" — a figure
+/// nobody measured, in the column a reader sorts by.
+fn has_a_priced_fill<T>(priced: &[T]) -> bool {
+    !priced.is_empty()
+}
+
 /// Said when the store holds no market trades at all.
 ///
 /// Distinct from a collected-and-quiet window: this instance has never had the
@@ -437,16 +473,16 @@ pub async fn candles(
         Err(r) => return *r,
     };
     let requested_from = match params.from.as_deref().map(parse_stamp).transpose() {
-        Ok(v) => v.unwrap_or(requested_to - DEFAULT_CANDLE_WINDOW_SECONDS),
+        Ok(v) => v.unwrap_or(reaching_back(requested_to, DEFAULT_CANDLE_WINDOW_SECONDS)),
         Err(r) => return *r,
     };
-    if requested_from >= requested_to {
+    if !is_a_forward_range(requested_from, requested_to) {
         return bad_request("from must be before to");
     }
     // The range actually covered may be narrower than requested -- clamped
     // rather than silently served, per the plan's own rubric for this
     // endpoint.
-    let from = requested_from.max(requested_to - MAX_CANDLE_WINDOW_SECONDS);
+    let from = clamped_start(requested_from, requested_to, MAX_CANDLE_WINDOW_SECONDS);
     let to = requested_to;
     let (from_s, to_s) = (from_epoch(from), from_epoch(to));
 
@@ -527,7 +563,7 @@ fn coins_from_trades(trades: &[MarketTrade]) -> Vec<market_fold::Coin> {
                 .last()
                 .and_then(|t| t.quote_mint)
                 .map(|m| m.to_string());
-            let quote_volume = (!priced.is_empty())
+            let quote_volume = has_a_priced_fill(&priced)
                 .then(|| priced.iter().filter_map(|t| t.quote_amount).sum::<f64>());
             let change_pct = match (first_price, last_price) {
                 (Some(first), Some(last)) if first > 0.0 => Some((last - first) / first * 100.0),
@@ -794,6 +830,41 @@ mod tests {
         // That a chart reaches further back than a tape is held at compile
         // time beside the constants themselves -- clippy rightly refuses an
         // assertion whose value is already known.
+    }
+
+    /// A range must run forwards, and a zero-width one is a mistake.
+    #[test]
+    fn a_range_that_does_not_run_forwards_is_refused() {
+        assert!(is_a_forward_range(100, 200));
+        assert!(!is_a_forward_range(200, 200), "zero width is not a range");
+        assert!(!is_a_forward_range(300, 200), "nor is a backwards one");
+    }
+
+    /// The clamp holds a start no further back than the ceiling allows.
+    #[test]
+    fn a_start_is_clamped_to_the_ceiling_but_never_pushed_forward() {
+        // Inside the ceiling: left alone.
+        assert_eq!(clamped_start(9_000, 10_000, 86_400), 9_000);
+        // Further back than the ceiling: pulled up to it, not past it.
+        assert_eq!(clamped_start(0, 100_000, 86_400), 100_000 - 86_400);
+        assert!(
+            clamped_start(0, 100_000, 86_400) < 100_000,
+            "a clamped start still precedes its end"
+        );
+    }
+
+    /// No priced fill means no volume figure, not a volume of zero.
+    #[test]
+    fn a_window_with_no_priced_fill_has_no_volume_rather_than_zero() {
+        let none: [u8; 0] = [];
+        assert!(
+            !has_a_priced_fill(&none),
+            "nothing priced is nothing to sum"
+        );
+        assert!(
+            has_a_priced_fill(&[1u8]),
+            "and one priced fill is something"
+        );
     }
 
     /// A window reaches back from its end, never forward.

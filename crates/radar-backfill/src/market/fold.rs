@@ -12,16 +12,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-/// Which fraction of a mint's transfer legs one token account must appear on
-/// before it is trusted as the pool or curve rather than an ordinary trader.
-///
-/// A real vault sits on one side of nearly every trade for its mint; an
-/// individual trader appears on a handful. 0.5 is a deliberately low bar —
-/// this only has to beat the *next* most frequent account, not clear a high
-/// confidence threshold — because the cost of guessing wrong is `Side::Unknown`
-/// rather than a wrong-but-plausible buy or sell.
-const POOL_SHARE_THRESHOLD: f64 = 0.5;
-
 /// Parses a raw base-unit amount, as CryptoHouse's `toString(Decimal(38,9))`
 /// renders it.
 ///
@@ -78,7 +68,8 @@ pub enum Side {
     Sell,
     /// The pool side of the trade could not be identified confidently.
     ///
-    /// Not an error and not a coin flip: [`POOL_SHARE_THRESHOLD`] was not met,
+    /// Not an error and not a coin flip: neither end of the trade appeared
+    /// more often than the other across the window,
     /// so nothing here claims a direction it did not establish. A wrong
     /// direction is worse than an admitted unknown.
     Unknown,
@@ -100,7 +91,7 @@ pub struct TapeRow {
     /// shortlist of mints in one round trip (the change that makes the
     /// collector fit inside CryptoHouse's quota): a caller has to split the
     /// combined result back into one row set per mint before folding, since
-    /// [`detect_pool`] assumes every row it sees belongs to a single mint's
+    /// [`end_frequencies`] assumes every row it sees belongs to a single mint's
     /// activity.
     pub mint: String,
     /// `block_timestamp`, `YYYY-MM-DD HH:MM:SS.ffffff`.
@@ -162,54 +153,22 @@ pub struct Trade {
     pub trader: Option<String>,
 }
 
-/// The token account most likely to be the pool or bonding-curve vault for
-/// this mint's activity in the window — the account on one side of nearly
-/// every leg.
+/// How often each token account appears as an end of a trade in this window.
 ///
-/// `None` when no single account clears [`POOL_SHARE_THRESHOLD`], including
-/// the case of no rows at all. Every trade folded against a `None` pool is
-/// [`Side::Unknown`], which is the honest answer when this heuristic itself
-/// has no confident guess.
-#[must_use]
-fn detect_pool(rows: &[TapeRow]) -> Option<&str> {
-    let mut freq: HashMap<&str, u64> = HashMap::new();
-    let mut legs = 0u64;
+/// **The input to the side decision, and the replacement for a single
+/// window-wide pool account.** See [`side_and_trader`] for why one account is
+/// not enough.
+fn end_frequencies(rows: &[TapeRow]) -> HashMap<&str, u64> {
+    let mut seen: HashMap<&str, u64> = HashMap::new();
     for row in rows {
         if !row.token_source.is_empty() {
-            *freq.entry(row.token_source.as_str()).or_default() += 1;
-            legs += 1;
+            *seen.entry(row.token_source.as_str()).or_default() += 1;
         }
         if !row.token_destination.is_empty() {
-            *freq.entry(row.token_destination.as_str()).or_default() += 1;
-            legs += 1;
+            *seen.entry(row.token_destination.as_str()).or_default() += 1;
         }
     }
-    if legs == 0 {
-        return None;
-    }
-
-    // Sorted rather than `max_by_key`, and the tie-break is by name so the
-    // result cannot depend on `HashMap`'s randomised iteration order --
-    // caught by a flaky test where a lone trade's two accounts tied at one
-    // appearance each and the "pool" was whichever one the hasher visited
-    // last. A genuine tie is refused outright rather than broken arbitrarily:
-    // if the runner-up matches the leader, nothing here has separated a pool
-    // from an ordinary trader, and `Side::Unknown` is the honest answer.
-    let mut counts: Vec<(&str, u64)> = freq.into_iter().collect();
-    counts.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
-    let (account, count) = counts[0];
-    if counts
-        .get(1)
-        .is_some_and(|(_, runner_up)| *runner_up >= count)
-    {
-        return None;
-    }
-    #[expect(
-        clippy::cast_precision_loss,
-        reason = "a share for a threshold compare"
-    )]
-    let share = count as f64 / legs as f64;
-    (share >= POOL_SHARE_THRESHOLD).then_some(account)
+    seen
 }
 
 /// One row's side and trader, given the pool this mint's window resolved to.
@@ -220,31 +179,36 @@ fn detect_pool(rows: &[TapeRow]) -> Option<&str> {
 /// the quote asset), the mint leg on a sell (they sent the token) — because a
 /// `Transfer`/`TransferChecked` row's `authority` is who authorised moving
 /// funds *out* of its source, never who merely received them.
-fn side_and_trader(row: &TapeRow, pool: Option<&str>) -> (Side, Option<String>) {
+fn side_and_trader(row: &TapeRow, seen: &HashMap<&str, u64>) -> (Side, Option<String>) {
     let non_empty = |s: &str| (!s.is_empty()).then(|| s.to_owned());
-    match pool {
-        Some(pool)
-            if row.token_source == pool
-                && !row.token_destination.is_empty()
-                && row.token_destination != pool =>
-        {
-            (Side::Buy, non_empty(&row.quote_authority))
-        }
-        Some(pool)
-            if row.token_destination == pool
-                && !row.token_source.is_empty()
-                && row.token_source != pool =>
-        {
-            (Side::Sell, non_empty(&row.token_authority))
-        }
-        _ => (Side::Unknown, None),
+    if row.token_source.is_empty()
+        || row.token_destination.is_empty()
+        || row.token_source == row.token_destination
+    {
+        return (Side::Unknown, None);
+    }
+    let from = seen.get(row.token_source.as_str()).copied().unwrap_or(0);
+    let to = seen
+        .get(row.token_destination.as_str())
+        .copied()
+        .unwrap_or(0);
+    match from.cmp(&to) {
+        // The mint left the busier account: a pool paid out, so the trader
+        // bought. They are on the quote leg, having sent the quote asset.
+        std::cmp::Ordering::Greater => (Side::Buy, non_empty(&row.quote_authority)),
+        // The mint arrived at the busier account: a pool took it in, so the
+        // trader sold. They authorised the mint leg, having sent the token.
+        std::cmp::Ordering::Less => (Side::Sell, non_empty(&row.token_authority)),
+        // Neither end is busier. Nothing here separates a pool from a trader,
+        // and a direction guessed from a tie is a direction invented.
+        std::cmp::Ordering::Equal => (Side::Unknown, None),
     }
 }
 
-fn trade_from_row(row: &TapeRow, pool: Option<&str>) -> Option<Trade> {
+fn trade_from_row(row: &TapeRow, seen: &HashMap<&str, u64>) -> Option<Trade> {
     let token_amount = adjust(&row.token_value, &row.token_decimals)?;
     let slot: u64 = row.slot.trim().parse().ok()?;
-    let (side, trader) = side_and_trader(row, pool);
+    let (side, trader) = side_and_trader(row, seen);
 
     // The empty `quote_mint` is what a missing join match looks like -- see
     // `TapeRow`'s doc comment. Everything downstream of "no quote leg" stays
@@ -281,10 +245,10 @@ fn trade_from_row(row: &TapeRow, pool: Option<&str>) -> Option<Trade> {
 /// counter is kept for it here.
 #[must_use]
 pub fn fold_tape(rows: &[TapeRow]) -> Vec<Trade> {
-    let pool = detect_pool(rows);
+    let seen = end_frequencies(rows);
     let mut trades: Vec<Trade> = rows
         .iter()
-        .filter_map(|r| trade_from_row(r, pool))
+        .filter_map(|r| trade_from_row(r, &seen))
         .collect();
     // Lexicographic order agrees with chronological order for this timestamp
     // format, so no epoch parse is needed just to sort.
@@ -695,102 +659,6 @@ mod tests {
         assert_eq!(parse_units("56626.0001"), None);
     }
 
-    /// The pool is the account on enough legs, and a tie is refused.
-    ///
-    /// Kills the mutants that turn the leg tally into a product, and the ones
-    /// that replace the share division with a remainder or a product: each
-    /// changes which account clears [`POOL_SHARE_THRESHOLD`], and with two
-    /// accounts on every row the correct share is exactly 0.5.
-    #[test]
-    fn the_pool_is_the_account_on_half_the_legs_and_a_tie_is_refused() {
-        // Three trades, one account on every one of them: six legs, the pool
-        // on three. Exactly the threshold, which must pass.
-        let mut rows = vec![
-            row("a", "2026-09-11 00:00:01", WSOL, "10000"),
-            row("b", "2026-09-11 00:00:02", WSOL, "10000"),
-            row("c", "2026-09-11 00:00:03", WSOL, "10000"),
-        ];
-        rows[1].token_destination = "OTHER1111111111111111111111111111111111111".to_owned();
-        rows[2].token_destination = "OTHER2222222222222222222222222222222222222".to_owned();
-        assert_eq!(
-            detect_pool(&rows),
-            Some("POOL111111111111111111111111111111111111"),
-            "the account on every trade is the pool"
-        );
-
-        // One trade, two accounts, one appearance each. Nothing separates a
-        // pool from a trader, so the answer is no pool rather than a coin flip.
-        let single = vec![row("a", "2026-09-11 00:00:01", WSOL, "10000")];
-        assert_eq!(detect_pool(&single), None, "a tie names no pool");
-    }
-
-    /// An account on a minority of legs is not the pool.
-    ///
-    /// **The share is a division and the tests above did not pin it.** With
-    /// one account on two of ten legs the correct share is 0.2, below
-    /// [`POOL_SHARE_THRESHOLD`] — but `count % legs` is 2 and `count * legs`
-    /// is 20, and both clear the bar. Either mutation would name an ordinary
-    /// busy trader as the pool and hand every trade in the window a side
-    /// derived from them.
-    #[test]
-    fn an_account_on_a_minority_of_legs_is_not_the_pool() {
-        let mut rows = Vec::new();
-        for i in 0..5 {
-            let mut r = row("s", "2026-09-11 00:00:01", WSOL, "10000");
-            r.token_source = format!("SRC{i:038}");
-            r.token_destination = format!("DST{i:038}");
-            rows.push(r);
-        }
-        // One account on two of the ten legs; every other account on one.
-        rows[1].token_source = rows[0].token_source.clone();
-        assert_eq!(
-            detect_pool(&rows),
-            None,
-            "two legs in ten is 20 per cent, which is not a pool"
-        );
-    }
-
-    /// Both sides of a transfer count toward the total, not just one.
-    ///
-    /// `detect_pool` tallies a leg for the source and a leg for the
-    /// destination. Dropping either tally halves the denominator and doubles
-    /// every share, which turns a minority account into the pool. Three
-    /// appearances across four trades is 3/8 = 0.375 and no pool; counting one
-    /// side only makes it 3/4 and a confident wrong one. Asserted in both
-    /// directions because the two tallies are separate statements.
-    #[test]
-    fn both_ends_of_a_transfer_count_toward_the_share() {
-        let build = |on_source: bool| {
-            let mut rows = Vec::new();
-            for i in 0..4 {
-                let mut r = row("s", "2026-09-11 00:00:01", WSOL, "10000");
-                r.token_source = format!("SRC{i:038}");
-                r.token_destination = format!("DST{i:038}");
-                rows.push(r);
-            }
-            let busy = "BUSY11111111111111111111111111111111111111".to_owned();
-            for row_ref in rows.iter_mut().take(3) {
-                if on_source {
-                    row_ref.token_source = busy.clone();
-                } else {
-                    row_ref.token_destination = busy.clone();
-                }
-            }
-            rows
-        };
-
-        assert_eq!(
-            detect_pool(&build(true)),
-            None,
-            "three source legs in eight is 37.5 per cent, not a pool"
-        );
-        assert_eq!(
-            detect_pool(&build(false)),
-            None,
-            "and the same three legs on the destination side"
-        );
-    }
-
     /// A mint with no destination credits nobody, and a burn with no source
     /// debits nobody.
     ///
@@ -888,8 +756,11 @@ mod tests {
     #[test]
     fn a_bucket_starts_on_an_interval_boundary_not_near_the_epoch() {
         let trades = vec![
-            trade_from_row(&row("a", "2026-09-11 12:34:56", WSOL, "10000"), None)
-                .expect("converts"),
+            trade_from_row(
+                &row("a", "2026-09-11 12:34:56", WSOL, "10000"),
+                &HashMap::new(),
+            )
+            .expect("converts"),
         ];
         let candles = fold_candles(&trades, 300);
         assert_eq!(candles.len(), 1);
@@ -936,6 +807,69 @@ mod tests {
         );
     }
 
+    /// The busier end of a trade is the pool, so a window of real trades
+    /// resolves to buys and sells rather than to unknowns.
+    ///
+    /// **This is the fix for a tape where every row read `unknown`.** The
+    /// previous rule looked for one account on at least half of *all* legs in
+    /// the window. A coin trading on several venues has no such account —
+    /// measured live on 2026-09-12, the busiest account on WEN appeared on
+    /// twelve legs of about fifty, so nothing cleared the bar and every trade
+    /// in a working tape was reported directionless.
+    ///
+    /// Comparing the two ends of each trade needs no single pool: a vault
+    /// appears on many trades and a trader on one, whichever venue carried it.
+    #[test]
+    fn a_window_of_real_trades_resolves_to_buys_and_sells() {
+        let pool = "VAULT11111111111111111111111111111111111111";
+        let mut rows = Vec::new();
+        // Three buys: the vault pays the mint out to three different wallets.
+        for i in 0..3 {
+            let mut r = row("b", "2026-09-11 00:00:01", WSOL, "10000");
+            r.token_source = pool.to_owned();
+            r.token_destination = format!("BUYER{i:037}");
+            rows.push(r);
+        }
+        // Two sells: two wallets send the mint in.
+        for i in 0..2 {
+            let mut r = row("s", "2026-09-11 00:00:02", WSOL, "10000");
+            r.token_source = format!("SELLER{i:036}");
+            r.token_destination = pool.to_owned();
+            rows.push(r);
+        }
+
+        let trades = fold_tape(&rows);
+        assert_eq!(trades.len(), 5);
+        let buys = trades.iter().filter(|t| t.side == Side::Buy).count();
+        let sells = trades.iter().filter(|t| t.side == Side::Sell).count();
+        assert_eq!(buys, 3, "the vault paying out is a buy: {trades:?}");
+        assert_eq!(sells, 2, "the vault taking in is a sell: {trades:?}");
+        assert!(
+            trades.iter().all(|t| t.side != Side::Unknown),
+            "no trade in a window with an obvious vault is directionless"
+        );
+        assert!(
+            trades.iter().all(|t| t.trader.is_some()),
+            "each resolved side names the wallet on the other end"
+        );
+    }
+
+    /// Two ends seen equally often name no direction.
+    ///
+    /// A single trade between two wallets nobody has seen before is exactly
+    /// this: one appearance each, nothing to separate a vault from a trader,
+    /// and `Unknown` is the honest answer rather than a coin flip.
+    #[test]
+    fn two_equally_seen_ends_name_no_direction() {
+        let mut r = row("a", "2026-09-11 00:00:01", WSOL, "10000");
+        r.token_source = "AAAA1111111111111111111111111111111111111111".to_owned();
+        r.token_destination = "BBBB1111111111111111111111111111111111111111".to_owned();
+        let trades = fold_tape(&[r]);
+        assert_eq!(trades.len(), 1);
+        assert_eq!(trades[0].side, Side::Unknown);
+        assert_eq!(trades[0].trader, None);
+    }
+
     /// A leg that starts and ends at the pool is not a trade in either
     /// direction.
     ///
@@ -949,7 +883,7 @@ mod tests {
         let mut r = row("a", "2026-09-11 00:00:01", WSOL, "10000");
         r.token_source = pool.to_owned();
         r.token_destination = pool.to_owned();
-        let (side, trader) = side_and_trader(&r, Some(pool));
+        let (side, trader) = side_and_trader(&r, &HashMap::from([(pool, 9u64)]));
         assert_eq!(side, Side::Unknown, "pool to pool is not a buy or a sell");
         assert_eq!(trader, None);
     }
@@ -966,14 +900,17 @@ mod tests {
     fn a_trade_of_zero_tokens_has_no_price_rather_than_an_infinite_one() {
         let mut r = row("a", "2026-09-11 00:00:01", WSOL, "10000");
         r.token_value = "0".to_owned();
-        let t = trade_from_row(&r, None).expect("a zero-token transfer is still a row");
+        let t = trade_from_row(&r, &HashMap::new()).expect("a zero-token transfer is still a row");
         assert!((t.token_amount - 0.0).abs() < f64::EPSILON);
         assert_eq!(t.price, None, "no price, not an infinity");
 
         // And the ordinary case still divides: 0.00001 wSOL for 0.056626 of
         // the mint.
-        let ok = trade_from_row(&row("b", "2026-09-11 00:00:02", WSOL, "10000"), None)
-            .expect("converts");
+        let ok = trade_from_row(
+            &row("b", "2026-09-11 00:00:02", WSOL, "10000"),
+            &HashMap::new(),
+        )
+        .expect("converts");
         let price = ok.price.expect("both legs present");
         assert!(
             (price - (0.000_01 / 0.056_626)).abs() < 1e-12,
@@ -990,8 +927,16 @@ mod tests {
     #[test]
     fn two_trades_in_one_interval_make_one_bar_that_sums_them() {
         let trades = vec![
-            trade_from_row(&row("a", "2026-09-11 00:00:05", WSOL, "10000"), None).expect("a"),
-            trade_from_row(&row("b", "2026-09-11 00:00:45", WSOL, "20000"), None).expect("b"),
+            trade_from_row(
+                &row("a", "2026-09-11 00:00:05", WSOL, "10000"),
+                &HashMap::new(),
+            )
+            .expect("a"),
+            trade_from_row(
+                &row("b", "2026-09-11 00:00:45", WSOL, "20000"),
+                &HashMap::new(),
+            )
+            .expect("b"),
         ];
         let candles = fold_candles(&trades, 60);
         assert_eq!(candles.len(), 1, "both fall in the same minute");
@@ -1031,7 +976,7 @@ mod tests {
                 "So11111111111111111111111111111111111111112",
                 "10000",
             ),
-            None,
+            &HashMap::new(),
         )
         .expect("converts");
         // Compared within a tolerance rather than exactly: these are `f64`
@@ -1053,7 +998,7 @@ mod tests {
         // make this a trade priced at zero rather than a trade this data
         // cannot price.
         let r = row("sig-2", "2026-09-11 17:35:01.000000", "", "0");
-        let t = trade_from_row(&r, None).expect("the mint leg alone still converts");
+        let t = trade_from_row(&r, &HashMap::new()).expect("the mint leg alone still converts");
         assert_eq!(t.quote_amount, None, "no quote leg was found");
         assert_eq!(t.quote_mint, None);
         assert_eq!(t.price, None, "must never be Some(0.0)");

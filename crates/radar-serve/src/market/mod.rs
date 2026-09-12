@@ -255,6 +255,16 @@ fn to_fold_trade(row: &MarketTrade) -> market_fold::Trade {
 /// `None` when the store holds no market trades at all, which is a different
 /// answer again: not "the market is quiet", but "this instance has collected
 /// nothing", and the caller says so.
+/// Where a window of `span` seconds ending at `to` begins.
+///
+/// A window reaches **back** from its end. Written inline as `to - span` in
+/// three handlers, where an addition reaches forward instead -- asking for a
+/// span the collector has not reached and answering every caller with an empty
+/// list. One name, one subtraction, and a test that holds it.
+const fn reaching_back(to: i64, span_seconds: i64) -> i64 {
+    to - span_seconds
+}
+
 fn newest_collected(store: &Reader, as_of: AsOf) -> Result<Option<i64>, StoreError> {
     let newest = store
         .read_market_trades(as_of)?
@@ -343,7 +353,7 @@ pub async fn trades(
         .limit
         .unwrap_or(DEFAULT_TRADE_LIMIT)
         .clamp(1, MAX_TRADE_LIMIT);
-    let from = to - DEFAULT_WINDOW_SECONDS;
+    let from = reaching_back(to, DEFAULT_WINDOW_SECONDS);
     let (from_s, to_s) = (from_epoch(from), from_epoch(to));
 
     match tape_for(&state.store, as_of, mint, &from_s, &to_s) {
@@ -569,7 +579,7 @@ pub async fn coins(
         Ok(None) => return Degradation::NotCollected(NOTHING_COLLECTED).into_response(),
         Err(e) => return Degradation::from_store_error(&e).into_response(),
     };
-    let from = to - COINS_WINDOW_SECONDS;
+    let from = reaching_back(to, COINS_WINDOW_SECONDS);
     let (from_s, to_s) = (from_epoch(from), from_epoch(to));
 
     let rows = match state.store.read_market_trades(as_of) {
@@ -649,7 +659,7 @@ pub async fn token(
         Ok(None) => return Degradation::NotCollected(NOTHING_COLLECTED).into_response(),
         Err(e) => return Degradation::from_store_error(&e).into_response(),
     };
-    let from = to - DEFAULT_WINDOW_SECONDS;
+    let from = reaching_back(to, DEFAULT_WINDOW_SECONDS);
     let (from_s, to_s) = (from_epoch(from), from_epoch(to));
     let recent_trades = match tape_for(&state.store, as_of, mint, &from_s, &to_s) {
         Ok(t) => t,
@@ -780,9 +790,30 @@ mod tests {
     fn the_default_windows_are_the_spans_their_names_claim() {
         assert_eq!(DEFAULT_CANDLE_WINDOW_SECONDS, 3_600, "an hour of chart");
         assert_eq!(COINS_WINDOW_SECONDS, 600, "ten minutes of activity");
+        assert_eq!(MAX_CANDLE_WINDOW_SECONDS, 86_400, "a day is the ceiling");
         // That a chart reaches further back than a tape is held at compile
         // time beside the constants themselves -- clippy rightly refuses an
         // assertion whose value is already known.
+    }
+
+    /// A window reaches back from its end, never forward.
+    ///
+    /// Kills the mutants turning the subtraction into an addition or a
+    /// division. Forward, the window names a span that has not happened, the
+    /// store holds nothing in it, and every caller is told the market was
+    /// quiet.
+    #[test]
+    fn a_window_reaches_back_from_its_end() {
+        assert_eq!(reaching_back(1_000, 120), 880);
+        assert!(
+            reaching_back(1_000, 120) < 1_000,
+            "a window that starts after it ends is not a window"
+        );
+        assert_eq!(
+            1_000 - reaching_back(1_000, 120),
+            120,
+            "and it is exactly the span asked for"
+        );
     }
 
     /// Coverage for another table is not coverage for this one.

@@ -75,6 +75,11 @@ const DEFAULT_CANDLE_WINDOW_SECONDS: i64 = 60 * 60;
 /// The window `/v1/market/coins` ranks activity over.
 const COINS_WINDOW_SECONDS: i64 = 10 * 60;
 
+/// A chart reaches further back than a tape: a shape needs more than two
+/// minutes of itself. Held at compile time so the two windows cannot be
+/// reordered by an edit to either.
+const _: () = assert!(DEFAULT_CANDLE_WINDOW_SECONDS > DEFAULT_WINDOW_SECONDS);
+
 /// Said when the store holds no market trades at all.
 ///
 /// Distinct from a collected-and-quiet window: this instance has never had the
@@ -763,6 +768,22 @@ mod tests {
 
     const WSOL: &str = "So11111111111111111111111111111111111111112";
     const A_MINT: &str = "5NfV2sy8DqXamLvYEE4LcTWzGqZc5Emv4bqqhVDWpump";
+
+    /// The default windows are the spans their names claim.
+    ///
+    /// Both are written as products -- `60 * 60` and `10 * 60` -- and a mutant
+    /// turning either into a sum or a quotient leaves a plausible-looking small
+    /// number: 120 seconds for the chart, 70 for the coin list. Neither errors,
+    /// and both quietly show a reader a couple of minutes of market while the
+    /// interface says an hour.
+    #[test]
+    fn the_default_windows_are_the_spans_their_names_claim() {
+        assert_eq!(DEFAULT_CANDLE_WINDOW_SECONDS, 3_600, "an hour of chart");
+        assert_eq!(COINS_WINDOW_SECONDS, 600, "ten minutes of activity");
+        // That a chart reaches further back than a tape is held at compile
+        // time beside the constants themselves -- clippy rightly refuses an
+        // assertion whose value is already known.
+    }
 
     /// Coverage for another table is not coverage for this one.
     ///

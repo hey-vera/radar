@@ -260,7 +260,7 @@ fn parse_args() -> Result<Args, String> {
     // starts from its own cursor or window and runs (or measures) until
     // stopped, so requiring --from and --to would be asking for values none
     // of them are going to use.
-    if follow || measure_outcomes || market_tape {
+    if runs_without_a_range(follow, measure_outcomes, market_tape) {
         return Ok(Args {
             from: String::new(),
             to: String::new(),
@@ -640,6 +640,29 @@ fn market_tape_pass_seconds() -> i64 {
 /// never reaches past `horizon` even if `pass_seconds` would carry it there,
 /// which is what keeps the collector from asking CryptoHouse for a window
 /// that has not landed yet.
+/// Whether a mode runs from its own cursor rather than an explicit range.
+///
+/// `--follow`, `--outcomes` and `--market-tape` each start from somewhere they
+/// work out for themselves and run until stopped, so requiring `--from` and
+/// `--to` would demand values none of them reads. Named so the disjunction can
+/// be tested: with an `&&` in place of either `||`, a run of one of these modes
+/// alone falls through to the range parser and is refused for missing arguments
+/// it was never going to use.
+const fn runs_without_a_range(follow: bool, outcomes: bool, market_tape: bool) -> bool {
+    follow || outcomes || market_tape
+}
+
+/// Whether the next market-tape window has any width to it.
+///
+/// False when the horizon has not moved past the cursor yet, which is the
+/// ordinary state between passes -- the caller sleeps rather than asking
+/// CryptoHouse about a window of zero or negative length. Inverted, the
+/// collector sleeps exactly when there *is* work and asks exactly when there is
+/// none, which spends quota on empty windows and never advances the cursor.
+const fn has_a_window_to_ask_about(window_end: i64, cursor: i64) -> bool {
+    window_end > cursor
+}
+
 /// How far a market-tape pass may reach: wall-clock, less the lag that lets a
 /// window land in CryptoHouse first.
 ///
@@ -715,7 +738,7 @@ fn market_tape(args: &Args) -> Result<(), String> {
     loop {
         let horizon = market_tape_horizon(now_epoch(), MARKET_TAPE_LAG_SECONDS);
         let window_end = market_tape_window_end(cursor, pass_seconds, horizon);
-        if window_end <= cursor {
+        if !has_a_window_to_ask_about(window_end, cursor) {
             std::thread::sleep(MARKET_TAPE_PASS_INTERVAL);
             continue;
         }
@@ -1166,6 +1189,45 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    /// Any one of the cursor-driven modes runs without a range.
+    ///
+    /// Kills both `||` mutants. With an `&&`, running `--market-tape` alone
+    /// falls through to the range parser and is refused for missing `--from`
+    /// and `--to` that it would never have read -- so the mode simply stops
+    /// working, with an error blaming the operator.
+    #[test]
+    fn each_cursor_driven_mode_runs_without_a_range_on_its_own() {
+        assert!(runs_without_a_range(true, false, false), "--follow alone");
+        assert!(runs_without_a_range(false, true, false), "--outcomes alone");
+        assert!(
+            runs_without_a_range(false, false, true),
+            "--market-tape alone"
+        );
+        assert!(
+            !runs_without_a_range(false, false, false),
+            "a plain backfill does need --from and --to"
+        );
+    }
+
+    /// A window with no width is not asked about.
+    ///
+    /// Kills the mutant inverting the comparison, which would make the
+    /// collector sleep exactly when there is work and query exactly when there
+    /// is none -- spending quota on empty windows while the cursor never
+    /// advances.
+    #[test]
+    fn a_window_of_no_width_is_slept_through_rather_than_asked_about() {
+        assert!(has_a_window_to_ask_about(1_100, 1_000), "a real window");
+        assert!(
+            !has_a_window_to_ask_about(1_000, 1_000),
+            "zero width is nothing to ask about"
+        );
+        assert!(
+            !has_a_window_to_ask_about(900, 1_000),
+            "a horizon behind the cursor is not a window at all"
+        );
+    }
 
     /// The horizon is behind the clock, never ahead of it.
     ///

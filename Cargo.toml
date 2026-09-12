@@ -68,7 +68,7 @@ sha1 = "0.11"
 # Already in the tree; named here so the version is one decision rather than
 # whatever a transitive dependency happens to pick.
 base64 = "0.23"
-rand = "0.9"
+rand = "0.10"
 bs58 = { version = "0.5", default-features = false, features = ["alloc"] }
 schemars = "1.2"
 serde = { version = "1.0", features = ["derive"] }

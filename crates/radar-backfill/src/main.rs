@@ -32,12 +32,28 @@ const PAUSE_BETWEEN_WINDOWS: Duration = Duration::from_millis(400);
 
 /// How far behind wall-clock time follow mode stays.
 ///
-/// Measured: CryptoHouse carries pump.fun instructions within a minute of the
-/// chain. Five minutes is not latency Radar needs -- it explicitly does not
-/// compete on speed -- it is margin against the trailing edge of ingestion being
-/// partial, which would otherwise record a busy minute as a quiet one and never
-/// revisit it.
-const FOLLOW_LAG_SECONDS: i64 = 300;
+/// Margin against the trailing edge of ingestion being partial, which would
+/// otherwise record a busy minute as a quiet one and never revisit it. That
+/// risk is real; the size of it was not measured until 2026-09-11, and five
+/// minutes turned out to be about twenty times the margin the endpoint needs.
+///
+/// **What was measured.** Sixteen consecutive one-minute windows of
+/// `solana.token_transfers` were counted, then the identical windows counted
+/// again seven minutes later: every count matched, including the window read
+/// less than sixty seconds after it closed. Repeated at ten-second resolution
+/// to find the floor -- eight consecutive ten-second buckets, the youngest read
+/// eight seconds after it closed, re-read seventy-five seconds later. Every
+/// count matched again. Nothing arrives late.
+///
+/// Twenty seconds rather than eight, because the floor found is the floor
+/// observed on one afternoon on one endpoint, and the cost of the extra twelve
+/// seconds is nothing Radar needs. The cost of being wrong in the other
+/// direction is a busy minute silently recorded as a quiet one.
+///
+/// This is not the latency any live reader sees. A reader querying CryptoHouse
+/// directly is about three seconds behind the chain; this constant governs only
+/// how quickly the *store* fills behind it.
+const FOLLOW_LAG_SECONDS: i64 = 20;
 
 /// How long follow mode waits when it has caught up.
 const FOLLOW_IDLE: Duration = Duration::from_secs(60);

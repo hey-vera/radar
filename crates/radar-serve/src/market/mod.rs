@@ -312,6 +312,25 @@ fn to_fold_trade(row: &MarketTrade) -> market_fold::Trade {
 /// `None` when the store holds no market trades at all, which is a different
 /// answer again: not "the market is quiet", but "this instance has collected
 /// nothing", and the caller says so.
+/// Whether a stored timestamp falls inside a window.
+///
+/// **Half-open: `>= from`, `< to`**, so a row exactly at `to` belongs to the
+/// next window rather than being counted in both. The default window ends at
+/// the newest row the store holds, so an inclusive upper bound would make
+/// every default window double-count its own edge.
+///
+/// Compared as strings, which is exact for this stamp format and is why the
+/// bound is easy to get wrong in a test: `2020-01-01 00:00:30.000000` sorts
+/// after `2020-01-01 00:00:30` under either operator, so a fixture whose
+/// stamp carries microseconds never sits on the boundary at all.
+///
+/// One function, because this filter was written out twice -- once for the
+/// tape and once for the coin list -- and the second copy had its own
+/// surviving mutants on every comparison in it.
+fn within_window(ts: &str, from: &str, to: &str) -> bool {
+    ts >= from && ts < to
+}
+
 /// Where a window of `span` seconds ending at `to` begins.
 ///
 /// A window reaches **back** from its end. Written inline as `to - span` in
@@ -347,7 +366,7 @@ fn tape_for(
     let mut trades: Vec<market_fold::Trade> = store
         .read_market_trades(as_of)?
         .iter()
-        .filter(|t| t.mint == mint && t.ts.as_str() >= from_s && t.ts.as_str() < to_s)
+        .filter(|t| t.mint == mint && within_window(&t.ts, from_s, to_s))
         .map(to_fold_trade)
         .collect();
     // The same order `fold_tape` produced when the collector wrote these
@@ -646,7 +665,7 @@ pub async fn coins(
     };
     let windowed: Vec<MarketTrade> = rows
         .into_iter()
-        .filter(|t| t.ts.as_str() >= from_s.as_str() && t.ts.as_str() < to_s.as_str())
+        .filter(|t| within_window(&t.ts, &from_s, &to_s))
         .collect();
 
     let mut coins = coins_from_trades(&windowed);
@@ -887,6 +906,36 @@ mod tests {
         assert!(
             has_a_priced_fill(&[1u8]),
             "and one priced fill is something"
+        );
+    }
+
+    /// A window includes its start and excludes its end.
+    ///
+    /// Kills every mutant on the comparison: `>=` relaxed to `<` admits
+    /// nothing, `<` relaxed to `<=` counts the boundary row in two windows,
+    /// and `&&` loosened to `||` admits every row in the store.
+    #[test]
+    fn a_window_includes_its_start_and_excludes_its_end() {
+        let (from, to) = ("2020-01-01 00:00:10", "2020-01-01 00:00:20");
+        assert!(
+            within_window("2020-01-01 00:00:10", from, to),
+            "the start is in"
+        );
+        assert!(
+            within_window("2020-01-01 00:00:15", from, to),
+            "the middle is in"
+        );
+        assert!(
+            !within_window("2020-01-01 00:00:20", from, to),
+            "the end belongs to the next window, not this one and that one"
+        );
+        assert!(
+            !within_window("2020-01-01 00:00:09", from, to),
+            "before the start is out"
+        );
+        assert!(
+            !within_window("2020-01-01 00:00:21", from, to),
+            "after the end is out"
         );
     }
 

@@ -1691,30 +1691,62 @@ fn every_flushed_row_is_counted_once() {
 
 /// A file starting exactly at the watermark is read, not skipped.
 ///
-/// `read_market_trades` skips a partition whose **start** is past `as_of`.
-/// A file starting exactly at the watermark holds rows at it, which a read as
-/// of that slot must see: relaxed to `>=` the boundary file is skipped
-/// entirely, and the reader reports a quiet market for a slot it holds trades
+/// `read_market_trades` skips a partition whose **start** is past `as_of`. A
+/// file starting exactly at the watermark holds rows at it, which a read as of
+/// that slot must see: relaxed to `>=`, or narrowed to `==`, the boundary file
+/// is skipped and the reader reports a quiet market for a slot it holds trades
 /// for.
+///
+/// **The row sits on a partition boundary on purpose.** Partitions are
+/// [`SLOTS_PER_PARTITION`] slots wide, so a row at slot 500 lives in a file
+/// starting at slot **zero** — and `0 > 500` is false however the comparison
+/// is mutated. An earlier version of this test used slot 500 and could not
+/// have caught anything; CI said so.
 #[test]
 fn a_partition_starting_at_the_watermark_is_read_not_skipped() {
+    let boundary = radar_store::SLOTS_PER_PARTITION;
     let dir = tempfile::tempdir().expect("tempdir");
     let mut w = Writer::open(dir.path(), 1_000).expect("open");
-    w.append_market_trade(market_trade(1, 500, true))
+    w.append_market_trade(market_trade(1, boundary, true))
         .expect("append");
     w.flush().expect("flush");
 
     let r = Reader::open(dir.path());
     let at = r
-        .read_market_trades(AsOf::at(Slot(500)))
-        .expect("read as of the row's own slot");
-    assert_eq!(at.len(), 1, "a read as of a row's slot sees that row");
+        .read_market_trades(AsOf::at(Slot(boundary)))
+        .expect("read as of the partition's own first slot");
+    assert_eq!(
+        at.len(),
+        1,
+        "a read as of a partition's first slot sees that partition"
+    );
 
     let before = r
-        .read_market_trades(AsOf::at(Slot(499)))
-        .expect("read before it");
+        .read_market_trades(AsOf::at(Slot(boundary - 1)))
+        .expect("read one slot before it");
     assert!(
         before.is_empty(),
-        "and a read before it sees nothing: {before:?}"
+        "and a read before the partition starts sees nothing: {before:?}"
     );
+}
+
+/// Every flushed file is counted, once.
+///
+/// `written_files += 1` mutated to `*=` leaves the count at zero however many
+/// files were written. `written_rows` cannot catch it -- they are separate
+/// counters and an earlier version of these tests asserted only the first.
+#[test]
+fn every_flushed_file_is_counted_once() {
+    let boundary = radar_store::SLOTS_PER_PARTITION;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut w = Writer::open(dir.path(), 1_000).expect("open");
+    // Two partitions, so the flush writes two files rather than one.
+    w.append_market_trade(market_trade(1, 5, true))
+        .expect("append");
+    w.append_market_trade(market_trade(1, boundary + 5, true))
+        .expect("append");
+    assert_eq!(w.written_files(), 0, "nothing written before the flush");
+    w.flush().expect("flush");
+    assert_eq!(w.written_files(), 2, "one file per partition");
+    assert_eq!(w.written_rows(), 2, "and both rows counted");
 }
